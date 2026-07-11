@@ -98,6 +98,15 @@ class Workspace:
             candidate = self.root / candidate
         candidate = Path(os.path.abspath(candidate))
 
+        if candidate.is_symlink():
+            raise UnsafePathError(f"Symbolic links are not supported: {candidate}")
+        try:
+            candidate = candidate.parent.resolve(strict=True) / candidate.name
+        except OSError as error:
+            raise WorkspaceAccessError(
+                f"Cannot access parent directory: {candidate.parent}"
+            ) from error
+
         try:
             relative = candidate.relative_to(self.root)
         except ValueError as error:
