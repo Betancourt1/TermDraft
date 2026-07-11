@@ -1,0 +1,66 @@
+"""Tests for external-change and conflict classification."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from termwriter.models.document import Document
+from termwriter.services.external_changes import ExternalChangeKind, detect_external_change
+from termwriter.services.persistence import load_file
+
+
+def open_document(path: Path) -> Document:
+    loaded = load_file(path)
+    return Document(
+        path=path,
+        text=loaded.text,
+        saved_text=loaded.text,
+        snapshot=loaded.snapshot,
+        encoding=loaded.encoding,
+    )
+
+
+def test_unchanged_file_is_not_reported_as_external_change(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("same", encoding="utf-8")
+
+    change = detect_external_change(open_document(path))
+
+    assert change.kind is ExternalChangeKind.UNCHANGED
+
+
+def test_external_modification_is_detected_even_with_same_metadata(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("aaaa", encoding="utf-8")
+    document = open_document(path)
+    original_stat = path.stat()
+    path.write_text("bbbb", encoding="utf-8")
+    os.utime(path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+
+    change = detect_external_change(document)
+
+    assert change.kind is ExternalChangeKind.MODIFIED
+
+
+def test_local_and_external_modifications_are_a_conflict(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    document = open_document(path)
+    document.update_text("local")
+    path.write_text("external", encoding="utf-8")
+
+    change = detect_external_change(document)
+
+    assert change.kind is ExternalChangeKind.CONFLICT
+
+
+def test_deleted_open_file_is_detected(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    document = open_document(path)
+    path.unlink()
+
+    change = detect_external_change(document)
+
+    assert change.kind is ExternalChangeKind.DELETED

@@ -1,2 +1,1 @@
 """TermWriter test suite."""
-
