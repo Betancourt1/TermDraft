@@ -168,6 +168,22 @@ def test_invalid_view_coordinates_are_ignored(
     assert store.load(workspace).state is None
 
 
+def test_huge_scroll_integer_is_ignored_without_crashing(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = SessionStore(tmp_path / "state")
+    store.save(_state(workspace))
+    state_path = store.path_for(workspace)
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    payload["documents"][0]["scroll_y"] = 10**400
+    state_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = store.load(workspace)
+
+    assert result.state is None
+    assert "finite non-negative number" in (result.warning or "")
+
+
 @pytest.mark.parametrize("relative_path", ["../escape.md", "/outside.md", "note.txt"])
 def test_unsafe_or_unsupported_paths_are_ignored(
     tmp_path: Path,

@@ -301,14 +301,15 @@ def _nonnegative_int(value: Any, field: str) -> int:
 
 
 def _nonnegative_float(value: Any, field: str) -> float:
-    if (
-        not isinstance(value, (int, float))
-        or isinstance(value, bool)
-        or not math.isfinite(value)
-        or value < 0
-    ):
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise SessionError(f"{field} must be a finite non-negative number")
-    return float(value)
+    try:
+        normalized = float(value)
+    except OverflowError as error:
+        raise SessionError(f"{field} must be a finite non-negative number") from error
+    if not math.isfinite(normalized) or normalized < 0:
+        raise SessionError(f"{field} must be a finite non-negative number")
+    return normalized
 
 
 def _sync_directory(directory: Path) -> None:
