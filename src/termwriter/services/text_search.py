@@ -83,6 +83,7 @@ def search_text(
     *,
     limit: int = DEFAULT_RESULT_LIMIT,
     active_override: TextSearchOverride | None = None,
+    overrides: tuple[TextSearchOverride, ...] = (),
     should_cancel: Callable[[], bool] | None = None,
     options: TextSearchOptions | None = None,
     root: Path | None = None,
@@ -90,8 +91,8 @@ def search_text(
     """Search validated Markdown paths without invoking external commands.
 
     Paths are sorted and deduplicated so a result limit is stable even if the
-    caller's workspace index order changes. An active override is included even
-    when its path disappeared from the latest disk scan.
+    caller's workspace index order changes. Open-source overrides are included
+    even when their paths disappeared from the latest disk scan.
     """
     if not query or limit <= 0:
         return TextSearchResult((), ())
@@ -112,10 +113,13 @@ def search_text(
             "A workspace root is required when using a file filter.",
         )
 
-    active_override = _canonical_override(files, active_override)
+    canonical_overrides = {
+        override.path: override
+        for item in (*overrides, *((active_override,) if active_override is not None else ()))
+        if (override := _canonical_override(files, item)) is not None
+    }
     candidates = set(files)
-    if active_override is not None:
-        candidates.add(active_override.path)
+    candidates.update(canonical_overrides)
     ordered_paths = sorted(candidates, key=_path_sort_key)
 
     matches: list[TextSearchMatch] = []
@@ -139,11 +143,7 @@ def search_text(
             break
         if path_filter is not None and (root is None or not path_filter.matches(path, root=root)):
             continue
-        override = (
-            active_override
-            if active_override is not None and path == active_override.path
-            else None
-        )
+        override = canonical_overrides.get(path)
         if override is not None and not override.prefer_disk:
             text = override.text
         else:

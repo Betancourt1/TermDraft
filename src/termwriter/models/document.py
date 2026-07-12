@@ -116,6 +116,7 @@ class Document:
     encoding: str = "utf-8"
     cursor: CursorState = field(default_factory=CursorState)
     conflict: bool = False
+    read_only: bool = False
     last_save_status: str = "Loaded"
     recovery_saved: bool = False
     recovery_conflict: bool = False

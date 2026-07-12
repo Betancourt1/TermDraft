@@ -311,7 +311,7 @@ async def test_text_search_can_focus_a_dirty_active_file_deleted_from_disk(
         assert not path.exists()
 
 
-async def test_text_result_opening_keeps_unsaved_transition_guard(tmp_path: Path) -> None:
+async def test_text_result_opening_preserves_unsaved_source_in_a_tab(tmp_path: Path) -> None:
     first = tmp_path / "first.md"
     second = tmp_path / "second.md"
     first.write_text("base", encoding="utf-8")
@@ -323,16 +323,18 @@ async def test_text_result_opening_keeps_unsaved_transition_guard(tmp_path: Path
         await pilot.press("t", "a", "r", "g", "e", "t", "enter")
         await pilot.pause(0.15)
         await pilot.press("enter")
+        for _ in range(100):
+            if app.document is not None and app.document.path == second:
+                break
+            await pilot.pause(0.01)
 
-        assert isinstance(app.screen, UnsavedChangesDialog)
         assert app.document is not None
-        assert app.document.path == first
-        assert app.document.text == "xbase"
+        assert app.document.path == second
+        first_buffer = app._open_document_for_path(first)
+        assert first_buffer is not None
+        assert first_buffer.text == "xbase"
+        assert first_buffer.dirty
         assert first.read_text(encoding="utf-8") == "base"
-
-        await pilot.click("#unsaved-cancel")
-        assert app.document.path == first
-        assert app.editor.text == "xbase"
 
 
 async def test_case_insensitive_alias_is_one_active_result(tmp_path: Path) -> None:
@@ -381,7 +383,7 @@ async def test_unicode_normalization_alias_is_one_active_result(tmp_path: Path) 
         ]
 
 
-async def test_distinct_hardlink_result_uses_unsaved_transition_guard(tmp_path: Path) -> None:
+async def test_distinct_hardlink_result_opens_an_independent_tab(tmp_path: Path) -> None:
     first = tmp_path / "a.md"
     second = tmp_path / "b.md"
     first.write_text("needle", encoding="utf-8")
@@ -397,13 +399,18 @@ async def test_distinct_hardlink_result_uses_unsaved_transition_guard(tmp_path: 
         assert [match.path for match in app.screen.matches] == [first, second]
 
         await pilot.press("down", "enter")
+        for _ in range(100):
+            if app.document is not None and app.document.path == second:
+                break
+            await pilot.pause(0.01)
 
-        assert isinstance(app.screen, UnsavedChangesDialog)
         assert app.document is not None
-        assert app.document.path == first
+        assert app.document.path == second
+        first_buffer = app._open_document_for_path(first)
+        assert first_buffer is not None and first_buffer.dirty
 
 
-async def test_case_distinct_hardlink_result_uses_guard_when_supported(
+async def test_case_distinct_hardlink_result_opens_an_independent_tab_when_supported(
     tmp_path: Path,
 ) -> None:
     first = tmp_path / "a.md"
@@ -429,10 +436,15 @@ async def test_case_distinct_hardlink_result_uses_guard_when_supported(
         if selected:
             await pilot.press("down")
         await pilot.press("enter")
+        for _ in range(100):
+            if app.document is not None and app.document.path == second:
+                break
+            await pilot.pause(0.01)
 
-        assert isinstance(app.screen, UnsavedChangesDialog)
         assert app.document is not None
-        assert app.document.path == first
+        assert app.document.path == second
+        first_buffer = app._open_document_for_path(first)
+        assert first_buffer is not None and first_buffer.dirty
 
 
 async def test_clean_missing_active_search_marks_conflict_on_selection(

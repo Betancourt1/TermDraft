@@ -13,6 +13,11 @@ Screen {
     text-style: bold;
 }
 
+#document-tabs {
+    height: 3;
+    display: none;
+}
+
 #workspace {
     height: 1fr;
 }

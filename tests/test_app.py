@@ -298,7 +298,7 @@ async def test_edit_marks_dirty_updates_preview_and_save_updates_file(tmp_path: 
         assert app.document.last_save_status.startswith("Saved ")
 
 
-async def test_switching_with_changes_requires_a_real_decision(tmp_path: Path) -> None:
+async def test_opening_another_file_preserves_dirty_buffer_without_writing(tmp_path: Path) -> None:
     first = tmp_path / "one.md"
     second = tmp_path / "two.md"
     first.write_text("one", encoding="utf-8")
@@ -310,18 +310,32 @@ async def test_switching_with_changes_requires_a_real_decision(tmp_path: Path) -
         await pilot.press("ctrl+p")
         assert isinstance(app.screen, FileSearchDialog)
         await pilot.press("t", "w", "o", "enter")
+        for _ in range(100):
+            if app.document is not None and app.document.path == second:
+                break
+            await pilot.pause(0.01)
 
-        assert isinstance(app.screen, UnsavedChangesDialog)
         assert app.document is not None
-        assert app.document.path == first
+        assert app.document.path == second
         assert first.read_text(encoding="utf-8") == "one"
+        first_buffer = app._open_document_for_path(first)
+        assert first_buffer is not None
+        assert first_buffer.text == "xone"
+        assert first_buffer.dirty
 
-        await pilot.click("#unsaved-save")
-        await pilot.pause(0.03)
+        await pilot.press("ctrl+pageup")
+        assert app.document.path == first
+        assert app.editor.text == "xone"
+        await pilot.press("ctrl+s")
+        for _ in range(100):
+            if first.read_text(encoding="utf-8") == "xone":
+                break
+            await pilot.pause(0.01)
 
         assert first.read_text(encoding="utf-8") == "xone"
-        assert app.document.path == second
-        assert app.editor.text == "two"
+        second_buffer = app._open_document_for_path(second)
+        assert second_buffer is not None
+        assert second_buffer.text == "two"
 
 
 async def test_ctrl_q_does_not_discard_unsaved_content(tmp_path: Path) -> None:
@@ -406,6 +420,9 @@ async def test_conflict_save_as_preserves_both_versions(tmp_path: Path) -> None:
         assert app.document is not None
         assert app.document.path == local_copy
         assert not app.document.dirty
+        assert len(app._open_documents) == 1
+        assert app._open_document_for_path(path) is None
+        assert app._open_document_for_path(local_copy) is app.document
 
 
 async def test_save_as_replaces_pending_recovery_timer_for_future_edits(
@@ -798,7 +815,6 @@ async def test_stale_preview_timer_cannot_replace_new_file(tmp_path: Path) -> No
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.press("x", "ctrl+p")
         await pilot.press("b", "e", "t", "a", "enter")
-        await pilot.click("#unsaved-discard")
         await pilot.pause(0.1)
 
         assert app.document is not None
@@ -1458,7 +1474,7 @@ async def test_explicit_quit_discard_removes_recovery_journal(tmp_path: Path) ->
         assert not app.is_running
 
 
-async def test_discarded_transition_timer_cannot_journal_the_wrong_document(
+async def test_cancelled_mixed_open_cannot_journal_the_wrong_document(
     tmp_path: Path,
 ) -> None:
     first = tmp_path / "first.md"
@@ -1475,11 +1491,12 @@ async def test_discarded_transition_timer_cannot_journal_the_wrong_document(
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.press("x", "ctrl+p")
         await pilot.press("s", "e", "c", "o", "n", "d", "enter")
-        await pilot.click("#unsaved-discard")
         assert isinstance(app.screen, MixedLineEndingsDialog)
 
         await pilot.pause(0.06)
-        assert journal.load(first) is None
+        recovered = journal.load(first)
+        assert recovered is not None
+        assert recovered.text == "xfirst"
 
         await pilot.click("#mixed-cancel")
         await pilot.pause(0.06)
@@ -1493,7 +1510,7 @@ async def test_discarded_transition_timer_cannot_journal_the_wrong_document(
         assert journal.load(second) is None
 
 
-async def test_failed_open_after_discard_rejournals_the_active_dirty_document(
+async def test_failed_open_keeps_the_active_dirty_document_and_recovery(
     tmp_path: Path,
 ) -> None:
     first = tmp_path / "first.md"
@@ -1513,10 +1530,8 @@ async def test_failed_open_after_discard_rejournals_the_active_dirty_document(
         assert journal.load(first) is not None
 
         await pilot.press("ctrl+p")
-        await pilot.press("s", "e", "c", "o", "n", "d", "enter")
-        assert isinstance(app.screen, UnsavedChangesDialog)
         second.unlink()
-        await pilot.click("#unsaved-discard")
+        await pilot.press("s", "e", "c", "o", "n", "d", "enter")
         await pilot.pause(0.04)
 
         assert app.document is not None
@@ -1557,11 +1572,16 @@ async def test_recovery_manager_retargets_a_renamed_draft_and_opens_it(
 
         app.screen.query_one("#recovery-manager-target", Input).value = "renamed.md"
         await pilot.click("#recovery-manager-retarget")
-        for _ in range(100):
-            if journal.load(new_path) is not None:
+        for _ in range(500):
+            if (
+                journal.load(new_path) is not None
+                and journal.load(old_path) is None
+                and not app._critical_io
+            ):
                 break
             await pilot.pause(0.01)
 
+        assert not app._critical_io
         assert journal.load(old_path) is None
         moved = journal.load(new_path)
         assert moved is not None

@@ -215,9 +215,7 @@ async def test_discard_waits_for_recovery_save_then_delete_without_resurrection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     first = tmp_path / "first.md"
-    second = tmp_path / "second.md"
     first.write_text("first", encoding="utf-8")
-    second.write_text("second", encoding="utf-8")
     journal = RecoveryJournal(tmp_path / "recovery")
     app = TermWriterApp(
         Workspace.from_target(first),
@@ -243,7 +241,7 @@ async def test_discard_waits_for_recovery_save_then_delete_without_resurrection(
         app._write_recovery(app._recovery_revision)
         await _wait_until(pilot, started.is_set)
 
-        app._request_open(second)
+        app.action_close_tab()
         await _wait_until(pilot, lambda: isinstance(app.screen, UnsavedChangesDialog))
         await pilot.pause()
         await pilot.click("#unsaved-discard")
@@ -251,10 +249,7 @@ async def test_discard_waits_for_recovery_save_then_delete_without_resurrection(
         assert app.document.path == first
 
         release.set()
-        await _wait_until(
-            pilot,
-            lambda: bool(app.document and app.document.path == second),
-        )
+        await _wait_until(pilot, lambda: app.document is None)
 
         assert journal.load(first) is None
         assert first.read_text(encoding="utf-8") == "first"
@@ -304,9 +299,7 @@ async def test_edit_during_transition_probe_reenters_unsaved_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     first = tmp_path / "first.md"
-    second = tmp_path / "second.md"
     first.write_text("first", encoding="utf-8")
-    second.write_text("second", encoding="utf-8")
     app = _app(first)
     started = Event()
     release = Event()
@@ -319,8 +312,7 @@ async def test_edit_during_transition_probe_reenters_unsaved_guard(
     monkeypatch.setattr("termwriter.app.probe_file", blocked_probe)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("ctrl+p")
-        await pilot.press("s", "e", "c", "o", "n", "d", "enter")
+        app.action_close_tab()
         await _wait_until(pilot, started.is_set)
 
         assert app._critical_io

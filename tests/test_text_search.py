@@ -434,6 +434,24 @@ def test_clean_active_override_prefers_disk_and_falls_back_if_missing(
     assert "Using open source" in fallback_result.warnings[0]
 
 
+def test_multiple_open_overrides_search_independent_unsaved_sources(tmp_path: Path) -> None:
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("disk first", encoding="utf-8")
+    second.write_text("disk second", encoding="utf-8")
+
+    result = search_text(
+        (first, second),
+        "local needle",
+        overrides=(
+            TextSearchOverride(first, "first local needle"),
+            TextSearchOverride(second, "second local needle"),
+        ),
+    )
+
+    assert tuple(match.path for match in result.matches) == (first, second)
+
+
 def test_long_preview_is_bounded_and_keeps_the_match_visible(tmp_path: Path) -> None:
     path = tmp_path / "long.md"
     path.write_text("a" * 300 + " needle " + "z" * 300, encoding="utf-8")

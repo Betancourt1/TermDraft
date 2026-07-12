@@ -144,11 +144,14 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | RecoveryRetenti
         workspace_root: Path,
         *,
         protected_journal_path: Path | None = None,
+        protected_journal_paths: frozenset[Path] = frozenset(),
         retention_days: int = 30,
     ) -> None:
         self.records = records
         self.workspace_root = workspace_root
-        self.protected_journal_path = protected_journal_path
+        self.protected_journal_paths = set(protected_journal_paths)
+        if protected_journal_path is not None:
+            self.protected_journal_paths.add(protected_journal_path)
         self.retention_days = retention_days
         super().__init__(id="recovery-manager-screen")
 
@@ -193,7 +196,7 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | RecoveryRetenti
     def _record_label(self, record: RecoveryRecord) -> str:
         location = "QUARANTINE · " if record.quarantined else ""
         if record.entry is None:
-            active = " · active" if record.journal_path == self.protected_journal_path else ""
+            active = " · active" if record.journal_path in self.protected_journal_paths else ""
             return f"{location}CORRUPT · {record.journal_path.name}{active}"
         entry = record.entry
         try:
@@ -201,7 +204,7 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | RecoveryRetenti
         except ValueError:
             label = str(entry.document_path)
         flags: list[str] = []
-        if record.journal_path == self.protected_journal_path:
+        if record.journal_path in self.protected_journal_paths:
             flags.append("active")
         if not entry.document_path.exists():
             flags.append("missing")
@@ -248,7 +251,7 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | RecoveryRetenti
             return
 
         entry = record.entry
-        protected = record.journal_path == self.protected_journal_path
+        protected = record.journal_path in self.protected_journal_paths
         if record.quarantined:
             target.disabled = entry is None
             target.placeholder = "Export copy as Markdown, e.g. recovered/draft.md"
@@ -786,10 +789,12 @@ class TextSearchDialog(ModalScreen[TextSearchMatch | None]):
         workspace: Workspace,
         *,
         active_override: TextSearchOverride | None = None,
+        overrides: tuple[TextSearchOverride, ...] = (),
     ) -> None:
         self.workspace = workspace
         self.root = workspace.root
         self.active_override = active_override
+        self.overrides = overrides
         self.matches: tuple[TextSearchMatch, ...] = ()
         self._search_revision = 0
         super().__init__(id="text-search-screen")
@@ -868,6 +873,7 @@ class TextSearchDialog(ModalScreen[TextSearchMatch | None]):
                 scan.files,
                 query,
                 active_override=self.active_override,
+                overrides=self.overrides,
                 should_cancel=lambda: worker.is_cancelled,
                 options=options,
                 root=self.root,

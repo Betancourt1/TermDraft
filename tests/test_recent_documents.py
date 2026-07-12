@@ -10,7 +10,6 @@ from textual.widgets import OptionList
 from termwriter.app import TermWriterApp
 from termwriter.config import load_config
 from termwriter.models.workspace import Workspace
-from termwriter.screens.dialogs import UnsavedChangesDialog
 from termwriter.screens.recent_documents import RecentDocumentsDialog
 from termwriter.services.recovery import RecoveryJournal
 from termwriter.services.session import (
@@ -79,7 +78,7 @@ async def test_recent_switcher_uses_and_persists_mru_order(tmp_path: Path) -> No
     assert tuple(view.path for view in state.documents) == (third, second, first)
 
 
-async def test_recent_switching_with_dirty_source_requires_decision(tmp_path: Path) -> None:
+async def test_recent_switching_preserves_dirty_source_in_an_open_tab(tmp_path: Path) -> None:
     first = tmp_path / "first.md"
     second = tmp_path / "second.md"
     first.write_text("first", encoding="utf-8")
@@ -96,20 +95,21 @@ async def test_recent_switching_with_dirty_source_requires_decision(tmp_path: Pa
 
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.press("x", "ctrl+o", "down", "enter")
-
-        assert isinstance(app.screen, UnsavedChangesDialog)
-        assert app.document is not None
-        assert app.document.path == first
-        assert first.read_text(encoding="utf-8") == "first"
-
-        await pilot.click("#unsaved-cancel")
-        assert app.document.path == first
-
-        await pilot.press("ctrl+o", "down", "enter")
-        await pilot.click("#unsaved-discard")
         await _wait_for_document(app, pilot, second)
 
-        assert app.editor.text == "second"
+        assert app.document is not None
+        assert app.document.path == second
+        assert first.read_text(encoding="utf-8") == "first"
+        first_buffer = app._open_document_for_path(first)
+        assert first_buffer is not None
+        assert first_buffer.text == "xfirst"
+        assert first_buffer.dirty
+
+        await pilot.press("ctrl+o", "down", "enter")
+        await _wait_for_document(app, pilot, first)
+
+        assert app.editor.text == "xfirst"
+        assert app.document.dirty
         assert first.read_text(encoding="utf-8") == "first"
 
 

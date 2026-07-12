@@ -23,6 +23,9 @@ BINDING_ID_QUIT = "quit"
 BINDING_ID_TOGGLE_EXPLORER = "toggle_explorer"
 BINDING_ID_FIND_FILE = "find_file"
 BINDING_ID_RECENT_DOCUMENTS = "recent_documents"
+BINDING_ID_NEXT_TAB = "next_tab"
+BINDING_ID_PREVIOUS_TAB = "previous_tab"
+BINDING_ID_CLOSE_TAB = "close_tab"
 BINDING_ID_SEARCH_TEXT = "search_text"
 BINDING_ID_TOGGLE_PREVIEW = "toggle_preview"
 BINDING_ID_PREVIEW_NEXT_HEADING = "preview_next_heading"
@@ -39,6 +42,9 @@ DEFAULT_KEYBINDINGS: Mapping[str, str] = MappingProxyType(
         BINDING_ID_TOGGLE_EXPLORER: "ctrl+b",
         BINDING_ID_FIND_FILE: "ctrl+p",
         BINDING_ID_RECENT_DOCUMENTS: "ctrl+o",
+        BINDING_ID_NEXT_TAB: "ctrl+pagedown",
+        BINDING_ID_PREVIOUS_TAB: "ctrl+pageup",
+        BINDING_ID_CLOSE_TAB: "ctrl+f4",
         BINDING_ID_SEARCH_TEXT: "ctrl+shift+f",
         BINDING_ID_TOGGLE_PREVIEW: "ctrl+e",
         BINDING_ID_PREVIEW_NEXT_HEADING: "alt+down",
@@ -80,6 +86,9 @@ retention_days = 30
 # toggle_explorer = "ctrl+b"
 # find_file = "ctrl+p"
 # recent_documents = "ctrl+o"
+# next_tab = "ctrl+pagedown"
+# previous_tab = "ctrl+pageup"
+# close_tab = "ctrl+f4"
 # search_text = "ctrl+shift+f"
 # toggle_preview = "ctrl+e"
 # preview_next_heading = "alt+down"

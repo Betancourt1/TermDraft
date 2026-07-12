@@ -7,10 +7,13 @@ from collections.abc import Mapping
 from textual.binding import Binding, BindingType
 
 from termwriter.config import (
+    BINDING_ID_CLOSE_TAB,
     BINDING_ID_COMMAND_PALETTE,
     BINDING_ID_FIND_FILE,
+    BINDING_ID_NEXT_TAB,
     BINDING_ID_PREVIEW_NEXT_HEADING,
     BINDING_ID_PREVIEW_PREVIOUS_HEADING,
+    BINDING_ID_PREVIOUS_TAB,
     BINDING_ID_QUIT,
     BINDING_ID_RECENT_DOCUMENTS,
     BINDING_ID_REDO,
@@ -58,6 +61,27 @@ APP_BINDINGS: list[BindingType] = [
         "Recent",
         priority=True,
         id=BINDING_ID_RECENT_DOCUMENTS,
+    ),
+    Binding(
+        DEFAULT_KEYBINDINGS[BINDING_ID_NEXT_TAB],
+        "next_tab",
+        "Next tab",
+        priority=True,
+        id=BINDING_ID_NEXT_TAB,
+    ),
+    Binding(
+        DEFAULT_KEYBINDINGS[BINDING_ID_PREVIOUS_TAB],
+        "previous_tab",
+        "Previous tab",
+        priority=True,
+        id=BINDING_ID_PREVIOUS_TAB,
+    ),
+    Binding(
+        DEFAULT_KEYBINDINGS[BINDING_ID_CLOSE_TAB],
+        "close_tab",
+        "Close tab",
+        priority=True,
+        id=BINDING_ID_CLOSE_TAB,
     ),
     Binding(
         DEFAULT_KEYBINDINGS[BINDING_ID_SEARCH_TEXT],
@@ -113,6 +137,9 @@ _SHORTCUTS = (
     (BINDING_ID_TOGGLE_EXPLORER, "Show or hide files"),
     (BINDING_ID_FIND_FILE, "Find a Markdown file"),
     (BINDING_ID_RECENT_DOCUMENTS, "Open a recent document"),
+    (BINDING_ID_NEXT_TAB, "Activate the next open document tab"),
+    (BINDING_ID_PREVIOUS_TAB, "Activate the previous open document tab"),
+    (BINDING_ID_CLOSE_TAB, "Close the active tab safely"),
     (BINDING_ID_SEARCH_TEXT, "Search workspace text (literal / fuzzy / word / regex)"),
     (BINDING_ID_TOGGLE_PREVIEW, "Show or hide preview; switch pane when narrow"),
     (BINDING_ID_PREVIEW_NEXT_HEADING, "Select the next heading in the focused preview"),
@@ -191,7 +218,8 @@ def format_command_help(
         )
         + "\n\n"
         + f"Press {palette} in the TUI to search all commands, including:\n"
-        + "  Save, find file, open recent, search workspace text, toggle files, toggle preview,\n"
+        + "  Save, find file, open recent, next/previous/close tab, search workspace text,\n"
+        + "  toggle files, toggle preview,\n"
         + "  undo, redo,\n"
         + "  reload configuration, manage recovery drafts, shortcut help,\n"
         + "  Markdown syntax help, and safe quit."
