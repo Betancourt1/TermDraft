@@ -65,12 +65,14 @@ or recovery content. The workspace hash keeps filenames opaque; mode-0600 tempor
 `fsync`, and same-directory `os.replace` preserve the previous complete session on write failure.
 
 The app loads session metadata before mounting. An explicit CLI file overrides the stored active
-path; otherwise a valid readable active path is reopened. Each guarded file transition caches the
-outgoing view, the incoming document restores its own view, and clean quit persists the latest
-coordinates. Save As moves the cached view to the new path. Missing entries are ignored when chosen,
-corrupt session JSON is preserved and reported, and normal orphan-recovery scanning still runs after
-a directory session is restored. Concurrent TermWriter instances use last-writer-wins metadata
-because session coordinates are non-authoritative and cannot change Markdown.
+path; otherwise a valid readable active path is reopened. Document views are ordered most-recently
+used. Ctrl+O opens that persisted order in a keyboard-first `OptionList`; selection enters the same
+guarded transition as the explorer and file search. Each transition caches the outgoing view, the
+incoming document restores its own view, and clean quit persists the latest coordinates. Save As
+moves the cached view to the new path. Missing entries are omitted from the switcher, corrupt session
+JSON is preserved and reported, and normal orphan-recovery scanning still runs after a directory
+session is restored. Concurrent TermWriter instances use last-writer-wins metadata because session
+coordinates are non-authoritative and cannot change Markdown.
 
 Textual reconstructs multiline text by preferring CRLF when present, then LF, then CR. TermWriter retains
 both Textual's normalized editor baseline and the exact source represented by that baseline. Merely
@@ -125,6 +127,14 @@ message as a pointer click, and moving beyond either end returns to the screen f
 references and backlinks transfer selection to each other; external URLs remain inert because
 `open_links=False` and the handler stops every noninternal link. This representation dependency is
 contained in the preview widget and covered by Pilot tests under the Textual `<9` version pin.
+
+Heading navigation is independent of link navigation. After a successful render,
+`MarkdownPreview` indexes Textual's public `table_of_contents` against its mounted blocks. Alt+Down
+and Alt+Up select and scroll headings only while the preview owns focus. A typed `HeadingFocused`
+message carries level, label, one-based position, and total to the app. The app prioritizes that text
+in the status bar and emits a normal Textual notification. This is a terminal-visible cue, not a
+claim of native screen-reader integration. A failed render clears both link and heading indexes
+before returning, so detached blocks cannot remain keyboard-actionable.
 
 ## Workspace text search
 
@@ -187,11 +197,13 @@ The CLI resolves the configuration root in this order: explicit `--config-dir`,
 `TERMWRITER_CONFIG_HOME`, then `~/.termwriter`. Configuration is intentionally user-level rather
 than workspace-level, so merely opening a repository cannot install key behavior or visual rules.
 
-`config.toml` is parsed with the standard-library `tomllib`. Only three editor booleans and a closed
-set of binding IDs are accepted. Values map binding IDs to key strings, never to Textual action
-names; unknown sections, options, IDs, empty values, and duplicate effective keys fail closed. The
-initializer uses exclusive creation, does not replace existing files, and creates new directories
-and files with mode 0700/0600 where POSIX permissions apply.
+`config.toml` is parsed with the standard-library `tomllib`. Only three editor booleans, a positive
+`recovery.retention_days` integer, and a closed set of binding IDs are accepted. Values map binding
+IDs to key strings, never to Textual action names; unknown sections, options, IDs, empty values, and
+duplicate effective keys fail closed. The retention value is consulted only after the user opens
+Recovery Manager; it cannot schedule deletion. The initializer uses exclusive creation, does not
+replace existing files, and creates new directories and files with mode 0700/0600 where POSIX
+permissions apply.
 
 Bindings keep stable IDs and are remapped through Textual's public `App.set_keymap`. Undo and redo
 are defined on the Markdown editor subclass with IDs so remapping removes their original TextArea
@@ -200,9 +212,10 @@ The command palette exposes fixed application callbacks; configuration cannot ad
 
 Bundled layout rules live in `default.tcss`. When an existing user `theme.tcss` is present, the App
 loads `[default.tcss, theme.tcss]` in that order and enables Textual's CSS file watcher. Inline widget
-CSS is avoided so the user file can override normal selectors. Runtime reload reparses TOML and
-updates keybindings and editor properties; an existing theme is independently reloaded by Textual
-when saved. Creating the theme after application startup requires one restart.
+CSS is avoided so the user file can override normal selectors. Runtime reload reparses TOML,
+updates keybindings and editor properties, and applies the new retention age the next time Recovery
+Manager opens; an existing theme is independently reloaded by Textual when saved. Creating the theme
+after application startup requires one restart.
 
 ## Workspace boundary
 
@@ -309,6 +322,15 @@ the exact archived bytes back into the active inventory without replacing an exi
 permanent deletion requires a separate confirmation and fingerprints the selected quarantine version
 again. The manager revalidates resolved path containment and rechecks the active dirty document
 immediately before moving, archiving, or restoring a journal.
+
+A valid quarantined entry may also be exported to a new workspace-contained Markdown path. Export
+re-verifies the listed fingerprint, preserves the stored UTF-8/UTF-8-SIG source exactly, uses the
+normal parent-bound `snapshot_file` / `atomic_save` no-clobber path, and leaves the quarantine record
+unchanged. Manual retention selects only valid entries strictly older than the configured cutoff.
+The confirmation carries the exact displayed `RecoveryRecord` tuple into a worker, so a newly
+appearing old record is not implicitly added after consent. Each deletion is independently
+fingerprint-guarded; partial failures remain in the result and are reported rather than rolled into
+a false all-success message. Corrupt entries have no trusted timestamp and are never age-deleted.
 
 The journal narrows crash loss but is not autosave or history. The 500 ms window, state-directory
 write failures, forced termination during the timer, and storage failure can still lose unsaved text.

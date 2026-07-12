@@ -147,6 +147,7 @@ Rules              ---
 Enter continues bullets, numbered lists, tasks, and blockquotes. Press Enter on
 an empty marker to end the list. Press Esc to leave the indentation-enabled source editor. In the
 focused preview, Tab and Shift+Tab select links and Enter activates the selection.
+Alt+Down and Alt+Up move between rendered headings and show the current heading position.
 Footnotes navigate internally; external URLs remain inert. Raw HTML is displayed as text and never
 run.
 

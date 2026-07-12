@@ -11,6 +11,9 @@ file.
 
 ## Headings
 
+With the preview focused, use Alt+Down and Alt+Up to move through these headings. TermWriter shows
+the selected level and position in the status bar and a normal terminal notification.
+
 ### Third-level heading
 
 #### Fourth-level heading

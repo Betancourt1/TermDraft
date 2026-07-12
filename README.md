@@ -12,7 +12,9 @@ The current release is a functional MVP focused on a dependable writing loop:
 - search source text across the workspace without an external command;
 - search commands from a palette;
 - customize editor options, keybindings, and Textual CSS without reinstalling;
-- reopen the last workspace document and remember cursor/scroll positions for previously visited files;
+- reopen the last workspace document, remember per-file views, and switch through a persisted MRU list;
+- export quarantined recovery drafts and explicitly clean confirmed entries past a configured age;
+- traverse rendered headings from the keyboard with a visible level and position announcement;
 - save through a same-directory temporary file;
 - keep an atomic per-user crash-recovery journal for dirty source;
 - poll the active file for external changes while the application is running;
@@ -137,7 +139,8 @@ Clicking a footnote label scrolls to its definition; `↩` returns to the most r
 reference for that note. Esc leaves the indentation-enabled source editor for the next visible
 control; Ctrl+E toggles the preview and focuses it when shown. Once the preview has focus,
 Tab/Shift+Tab select links and Enter activates the selection. Internal footnotes navigate; external
-URLs remain inert.
+URLs remain inert. Alt+Down and Alt+Up move through rendered headings and temporarily show the
+selected heading's level and position in the status bar and a Textual notification.
 Unreferenced definitions are omitted by the footnote parser, and definition lists
 use bold terms plus quoted bodies rather than a dedicated `<dl>` layout. Alerts use a conservative
 titled-blockquote presentation rather than GitHub's color and icon treatment. Math, underline,
@@ -155,8 +158,8 @@ termwriter --config-path
 
 The default files are `~/.termwriter/config.toml` and `~/.termwriter/theme.tcss`. Override the
 directory with `TERMWRITER_CONFIG_HOME` or `--config-dir PATH`. The TOML file accepts only the
-documented editor booleans and known binding IDs; it cannot define actions, commands, or executable
-hooks.
+documented editor booleans, positive manual-retention age, and known binding IDs; it cannot define
+actions, commands, or executable hooks.
 
 ```toml
 [editor]
@@ -164,13 +167,20 @@ auto_continue_lists = true
 soft_wrap = true
 show_line_numbers = true
 
+[recovery]
+# Applied only when Delete expired is explicitly confirmed.
+retention_days = 30
+
 [keybindings]
 save = "ctrl+s"
 quit = "ctrl+q"
 toggle_explorer = "ctrl+b"
 find_file = "ctrl+p"
+recent_documents = "ctrl+o"
 search_text = "ctrl+shift+f"
 toggle_preview = "ctrl+e"
+preview_next_heading = "alt+down"
+preview_previous_heading = "alt+up"
 undo = "ctrl+z,super+z"
 redo = "ctrl+y,super+y,ctrl+shift+z"
 show_help = "f1"
@@ -205,8 +215,10 @@ TermWriter is already running, restart once so it can be added to the watched st
 | Ctrl+Q | Quit through the unsaved-change guard |
 | Ctrl+B | Show or hide the file explorer |
 | Ctrl+P | Find and open a workspace Markdown file |
+| Ctrl+O | Open the recent-document switcher |
 | Ctrl+Shift+F | Search workspace Markdown source |
 | Ctrl+E | Show/hide preview, or switch editor/preview when narrow |
+| Alt+Down / Alt+Up in preview | Select next / previous rendered heading |
 | Ctrl+Z | Undo |
 | Ctrl+Y or Ctrl+Shift+Z | Redo |
 | Ctrl+\ | Open the searchable command palette |
@@ -235,7 +247,9 @@ the editor or model.
 
 Workspace session JSON stores only the last active Markdown path and per-document cursor/scroll
 coordinates. Opening a directory restores the last active readable file; an explicit CLI file takes
-precedence. Positions for other visited files are restored when those files are reopened. Session
+precedence. Views are stored in most-recently-used order; Ctrl+O presents that order and still routes
+selection through Save / Discard / Cancel. Positions for other visited files are restored when those
+files are reopened. Session
 state is atomically replaced outside the workspace and never contains Markdown source. Missing or
 corrupt session state cannot prevent the workspace from opening; missing state is silent and corrupt
 state produces a warning.
@@ -260,9 +274,12 @@ entries and any corrupt journals. Trusted drafts can be reopened or retargeted a
 is renamed. Retarget never replaces an existing recovery entry. **Archive** removes a stale or
 corrupt entry from the active inventory while preserving its exact journal bytes under the recovery
 directory's `quarantine/` folder. Quarantined trusted entries can be restored without replacing an
-active draft. **Delete forever** requires a separate irreversible confirmation and also handles
-corrupt quarantine entries. The active dirty document's draft cannot be moved, archived, or replaced
-by a quarantine restore.
+active draft. **Export copy** publishes the archived source as a new no-clobber Markdown file while
+keeping the quarantine intact. **Delete expired** considers only valid quarantined entries older than
+`recovery.retention_days`, confirms the exact displayed inventory, and reports partial failures;
+nothing expires automatically. **Delete forever** requires a separate irreversible confirmation and
+also handles corrupt quarantine entries. The active dirty document's draft cannot be moved,
+archived, or replaced by a quarantine restore.
 
 An existing file save follows this sequence:
 
@@ -322,7 +339,8 @@ The suite covers the document model, UTF-8/BOM/LF/CRLF preservation, mixed-endin
 files, missing final newlines, recovery round trips and failures, restart recovery, atomic-save
 failures, metadata and permission bits, watcher reload/conflict/deletion behavior, workspace
 filtering, symlinks, file and workspace-text search, content-free workspace sessions, quarantine
-restore/deletion, CLI validation, and Textual Pilot workflows.
+restore/export/retention/deletion, recent-document switching, heading navigation announcements, CLI
+validation, and Textual Pilot workflows.
 Customization tests also exercise remapped keys, runtime TOML reload, user-TCSS precedence, command
 discovery, task continuation, termination, and undo grouping. Race-focused worker tests block probes,
 loads, saves, and Save As publication to verify UI responsiveness, stale-result rejection, conflict
@@ -330,8 +348,8 @@ preservation, and non-cancellable writer locking.
 
 ## Known limitations
 
-- One document is active at a time. Sessions remember visited document views, but there are no tabs
-  or recent-document switcher yet.
+- One document is active at a time. The recent switcher remembers views but does not keep multiple
+  live buffers or provide tabs.
 - Recovery has a nominal 500 ms first-write delay. Termination before the timer runs, a blocked event
   loop, or a failed journal write can lose the latest unsaved keystrokes. It is not version history,
   a backup, or an autosave of the Markdown path. Recovery entries contain the draft's plaintext
@@ -366,6 +384,9 @@ preservation, and non-cancellable writer locking.
   cleanup, and replacement operations attached to the opened parent directory.
 - Session metadata is last-writer-wins between concurrent TermWriter instances. Missing or renamed
   paths remain harmless stale view entries because automatic pruning is not implemented yet.
+- Heading navigation emits a visible Textual notification and prioritized status text. TermWriter
+  does not currently integrate a native screen-reader announcement API, so it does not claim
+  assistive-technology support beyond those terminal-visible cues.
 - Preview links are deliberately non-opening. Raw document HTML, JavaScript, and shell text are not
   executed. Inline Markdown links are not native focusable Textual widgets, so TermWriter indexes
   their rendered action metadata within the pinned Textual 8.x compatibility range.
@@ -391,9 +412,9 @@ preservation, and non-cancellable writer locking.
 
 ## Near-term roadmap
 
-1. Add a recent-document switcher or tabs on top of the content-free session cache.
-2. Add optional quarantine export and retention controls without automatic deletion defaults.
-3. Add keyboard heading navigation and accessible announcements for preview selections.
+1. Add optional tabs with independent guarded buffers, while keeping Markdown files authoritative.
+2. Bound and asynchronously load session metadata, and prune stale MRU paths after explicit use.
+3. Move recovery-journal publication off the UI thread without widening the crash-loss window.
 4. Prototype read-only semantic block mapping before attempting hybrid block editing.
 
 Implementation boundaries and tradeoffs are documented in

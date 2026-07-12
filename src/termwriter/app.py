@@ -2084,12 +2084,12 @@ class TermWriterApp(App[None]):
         yield SystemCommand("Redo", "Redo the last undone editor change", self.action_editor_redo)
         yield SystemCommand(
             "Reload configuration",
-            "Reload config.toml keybindings and editor options",
+            "Reload config.toml keybindings, editor, and retention options",
             self.action_reload_config,
         )
         yield SystemCommand(
             "Manage recovery drafts",
-            "Open, retarget, or archive crash-recovery entries",
+            "Restore, retarget, export, archive, or clean recovery entries",
             self.action_manage_recovery,
         )
         yield SystemCommand(
