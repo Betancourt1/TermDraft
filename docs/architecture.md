@@ -393,12 +393,14 @@ permissions.
 - `INACCESSIBLE`: the current disk state cannot be established.
 
 Checks run before save, before guarded close/quit transitions, when a tab is reactivated, on
-`AppFocus`, and every two seconds
-through Textual's interval timer. Probing occurs in a worker and classification occurs against the
-latest UI-thread document state. The watcher path never opens a modal: it reloads a clean external
-edit, or marks dirty/deleted/inaccessible state as a persistent conflict with one warning. Polling
-pauses while a modal, critical operation, or continuation is active. Save and transition checks
-remain authoritative and revalidate immediately before acting.
+`AppFocus`, and every two seconds through Textual's interval timer. Each periodic pass probes the
+active document plus one rotating inactive tab, so hashing work stays bounded as tab counts grow.
+Probing occurs in a worker and classification occurs against the latest UI-thread document state.
+The watcher path never opens a modal: it reloads a clean external edit only when that document is
+active. An inactive edit instead gets a persistent `!` tab state; activation performs the normal
+authoritative check and can then reload or report a conflict. Polling pauses while a modal, critical
+operation, or continuation is active. Save and transition checks remain authoritative and
+revalidate immediately before acting.
 
 The `TermWriterApp` coordinator owns pending transition and save continuations. Typed modal callbacks
 implement these paths:

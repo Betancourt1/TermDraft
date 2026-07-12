@@ -107,7 +107,6 @@ def _paths_reserve_same_spelling(left: Path, right: Path) -> bool:
 
 
 class _ProbePurpose(Enum):
-    WATCH = auto()
     TRANSITION = auto()
     CURRENT_RESULT = auto()
     SAVE_CLEAN = auto()
@@ -131,6 +130,19 @@ class _DocumentTicket:
     generation: int
     path: Path
     snapshot: FileSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class _WatchTicket:
+    document: Document
+    path: Path
+    snapshot: FileSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class _WatchResult:
+    ticket: _WatchTicket
+    probe: DiskProbe
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,6 +337,7 @@ class TermWriterApp(App[None]):
         self._critical_froze_editor = False
         self._critical_changed_status = False
         self._watch_probe_worker: Worker[None] | None = None
+        self._inactive_watch_index = 0
 
     def compose(self) -> ComposeResult:
         yield Static(f"TermWriter  ·  {self.workspace.root}", id="title-bar", markup=False)
@@ -460,6 +473,14 @@ class TermWriterApp(App[None]):
         return (
             document is ticket.document
             and self._document_generation == ticket.generation
+            and document.path == ticket.path
+            and document.snapshot == ticket.snapshot
+        )
+
+    def _watch_ticket_is_current(self, ticket: _WatchTicket) -> bool:
+        document = ticket.document
+        return (
+            self._open_entry_for_document(document) is not None
             and document.path == ticket.path
             and document.snapshot == ticket.snapshot
         )
@@ -2056,7 +2077,7 @@ class TermWriterApp(App[None]):
         probe: DiskProbe,
     ) -> None:
         if not self._ticket_is_current(ticket):
-            if purpose is not _ProbePurpose.WATCH and self._critical_io:
+            if self._critical_io:
                 self._finish_critical_io()
                 self._cancel_pending_transition()
                 self.notify(
@@ -2067,28 +2088,6 @@ class TermWriterApp(App[None]):
 
         document = ticket.document
         self._sync_editor_state()
-        if purpose is _ProbePurpose.WATCH:
-            if (
-                self._critical_io
-                or self._has_modal
-                or self._pending_transition is not None
-                or self._save_continuation is not None
-            ):
-                return
-            change = classify_external_change(
-                ticket.snapshot,
-                dirty=document.dirty,
-                probe=probe,
-            )
-            if change.kind is ExternalChangeKind.UNCHANGED and change.snapshot is not None:
-                self._accept_unchanged_snapshot(document, change.snapshot)
-            elif change.kind is ExternalChangeKind.MODIFIED:
-                self._reload_current_from_disk(automatic=True)
-            else:
-                self._mark_external_warning(change)
-            self._refresh_status()
-            return
-
         change = classify_external_change(
             ticket.snapshot,
             dirty=document.dirty,
@@ -2682,37 +2681,94 @@ class TermWriterApp(App[None]):
         ):
             return
         self._sync_editor_state()
-        try:
-            safe_path = self.workspace.validate_document_path(document.path)
-        except WorkspaceNotFoundError:
-            safe_path = document.path
-        except WorkspaceError as error:
-            self._mark_external_warning(
-                ExternalChange(ExternalChangeKind.INACCESSIBLE, None, str(error))
-            )
-            return
-        if safe_path != document.path:
-            document.path = safe_path
-            self._document_generation += 1
-        self._watch_probe_worker = self._probe_document_worker(
-            self._document_ticket(document),
-            _ProbePurpose.WATCH,
+        inactive = [
+            opened.document for opened in self._open_documents if opened.document is not document
+        ]
+        documents = [document]
+        if inactive:
+            index = self._inactive_watch_index % len(inactive)
+            documents.append(inactive[index])
+            self._inactive_watch_index = (index + 1) % len(inactive)
+        tickets = tuple(
+            _WatchTicket(candidate, candidate.path, candidate.snapshot) for candidate in documents
         )
+        self._watch_probe_worker = self._watch_documents_worker(tickets)
 
-    def _mark_external_warning(self, change: ExternalChange) -> None:
-        document = self.document
+    @work(group="document-probe", exclusive=True, thread=True, exit_on_error=False)
+    def _watch_documents_worker(self, tickets: tuple[_WatchTicket, ...]) -> None:
+        worker = get_current_worker()
+        results: list[_WatchResult] = []
+        for ticket in tickets:
+            if worker.is_cancelled:
+                return
+            try:
+                try:
+                    safe_path = self.workspace.validate_document_path(ticket.path)
+                except WorkspaceNotFoundError:
+                    safe_path = ticket.path
+                probe = probe_file(safe_path)
+            except Exception as error:
+                probe = DiskProbe(ticket.path, None, str(error))
+            results.append(_WatchResult(ticket, probe))
+        if not worker.is_cancelled:
+            self.call_from_thread(self._handle_watch_results, tuple(results))
+
+    def _handle_watch_results(self, results: tuple[_WatchResult, ...]) -> None:
+        if (
+            self._exit_requested
+            or self._critical_io
+            or self._has_modal
+            or self._pending_transition is not None
+            or self._save_continuation is not None
+        ):
+            return
+        self._sync_editor_state()
+        reload_active = False
+        for result in results:
+            ticket = result.ticket
+            if not self._watch_ticket_is_current(ticket):
+                continue
+            document = ticket.document
+            change = classify_external_change(
+                ticket.snapshot,
+                dirty=document.dirty,
+                probe=result.probe,
+            )
+            if change.kind is ExternalChangeKind.UNCHANGED and change.snapshot is not None:
+                self._accept_unchanged_snapshot(document, change.snapshot)
+            elif document is self.document and change.kind is ExternalChangeKind.MODIFIED:
+                reload_active = True
+            else:
+                self._mark_external_warning(
+                    change,
+                    document=document,
+                    notify_user=document is self.document,
+                )
+        self._refresh_status()
+        if reload_active:
+            self._reload_current_from_disk(automatic=True)
+
+    def _mark_external_warning(
+        self,
+        change: ExternalChange,
+        *,
+        document: Document | None = None,
+        notify_user: bool = True,
+    ) -> None:
+        document = document or self.document
         if document is None:
             return
         was_conflicted = document.conflict
         document.conflict = True
         status_by_kind = {
+            ExternalChangeKind.MODIFIED: "Changed externally",
             ExternalChangeKind.CONFLICT: "External conflict",
             ExternalChangeKind.DELETED: "Deleted externally",
             ExternalChangeKind.INACCESSIBLE: "File unavailable",
         }
         document.last_save_status = status_by_kind.get(change.kind, "External change")
         self._refresh_status()
-        if was_conflicted:
+        if was_conflicted or not notify_user:
             return
         if change.kind is ExternalChangeKind.DELETED:
             message = f"{document.path.name} was deleted outside TermWriter"

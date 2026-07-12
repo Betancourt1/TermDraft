@@ -255,6 +255,84 @@ async def test_reactivating_dirty_tab_detects_external_conflict(tmp_path: Path) 
         assert first.read_text(encoding="utf-8") == "external"
 
 
+async def test_inactive_clean_tab_reports_external_change_then_reloads_on_activation(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    app = _app(first)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _open(app, pilot, second)
+        first.write_text("external", encoding="utf-8")
+        app._check_external_in_background()
+        first_buffer = app._open_document_for_path(first)
+        for _ in range(200):
+            if first_buffer is not None and first_buffer.conflict:
+                break
+            await pilot.pause(0.01)
+
+        assert first_buffer is not None
+        assert first_buffer.text == "first"
+        assert first_buffer.last_save_status == "Changed externally"
+        assert app.document is not None and app.document.path == second
+        assert app.editor.text == "second"
+        assert not app._has_modal
+        assert any("! first.md" in str(tab.label) for tab in app.document_tabs.query(Tab))
+
+        await pilot.press("ctrl+pageup")
+        for _ in range(200):
+            if first_buffer.text == "external" and not first_buffer.conflict:
+                break
+            await pilot.pause(0.01)
+
+        assert app.document is first_buffer
+        assert app.editor.text == "external"
+        assert first_buffer.last_save_status == "Reloaded externally"
+
+
+async def test_inactive_watcher_rotates_without_opening_conflict_dialogs(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    third = tmp_path / "third.md"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    third.write_text("third", encoding="utf-8")
+    app = _app(first)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _open(app, pilot, second)
+        await _open(app, pilot, third)
+        first_buffer = app._open_document_for_path(first)
+        second_buffer = app._open_document_for_path(second)
+        assert first_buffer is not None and second_buffer is not None
+        first.write_text("external first", encoding="utf-8")
+        second.write_text("external second", encoding="utf-8")
+
+        app._check_external_in_background()
+        for _ in range(200):
+            if first_buffer.conflict:
+                break
+            await pilot.pause(0.01)
+        assert first_buffer.conflict
+        assert not second_buffer.conflict
+
+        app._check_external_in_background()
+        for _ in range(200):
+            if second_buffer.conflict:
+                break
+            await pilot.pause(0.01)
+
+        assert second_buffer.conflict
+        assert app.document is not None and app.document.path == third
+        assert app.editor.text == "third"
+        assert not app._has_modal
+
+
 async def test_workspace_search_uses_inactive_dirty_tab_source(tmp_path: Path) -> None:
     first = tmp_path / "first.md"
     second = tmp_path / "second.md"

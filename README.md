@@ -18,7 +18,7 @@ The current release is a functional MVP focused on a dependable writing loop:
 - traverse rendered headings from the keyboard with a visible level and position announcement;
 - save through a same-directory temporary file;
 - keep an atomic per-user crash-recovery journal for dirty source;
-- poll the active file for external changes while the application is running;
+- poll the active file and rotate through inactive tabs for external changes;
 - require consent before editing a file with mixed line endings;
 - require an explicit decision before closing, reloading, or replacing unsaved work.
 
@@ -321,7 +321,7 @@ classified on the UI thread
 against the latest dirty state, so an edit made during a watcher or transition check cannot be
 silently reloaded or left behind. During actual publication the editor is temporarily read-only;
 quit, switching, duplicate saves, and Save As dismissal wait until the non-cancellable writer has
-finished. Stale worker results are rejected with a document-generation ticket.
+finished. Stale worker results are rejected with document identity, path, and baseline tickets.
 
 Save As first rejects exact or normalized spelling variants owned by any open buffer, including a
 buffer whose disk file disappeared, then publishes a fully written temporary file with a no-clobber
@@ -398,9 +398,10 @@ writer locking.
   prompt remains open. Another TermWriter instance can publish a newer journal during that decision;
   restoring and then editing the captured draft may supersede the newer recovery journal. The
   Markdown-file conflict guard still applies, but recovery metadata is not a multi-writer history.
-- The watcher polls only the active file every two seconds. It is not an operating-system event
-  watcher. Hashing runs in a worker, so a completed check can arrive after the disk changed again;
-  save and transition checks remain authoritative.
+- The watcher polls the active file plus one rotating inactive tab every two seconds. It is not an
+  operating-system event watcher. Inactive changes set a persistent `!` tab state but never reload a
+  hidden editor or open a dialog. Hashing runs in a worker, so a completed check can arrive after the
+  disk changed again; save and transition checks remain authoritative.
 - Files must be valid UTF-8, with or without a UTF-8 BOM.
 - Uniform LF and CRLF sources round-trip through edits. Textual prefers CRLF when it is present,
   otherwise LF and then CR. After explicit consent and an edit, a deliberately mixed file is
@@ -453,9 +454,8 @@ writer locking.
 
 ## Near-term roadmap
 
-1. Check inactive tabs for external changes without introducing modal storms.
-2. Narrow the recovery timer's remaining pre-journal crash window during orderly shutdown signals.
-3. Validate nested semantic ranges and reference definitions against a larger lossless corpus before
+1. Narrow the recovery timer's remaining pre-journal crash window during orderly shutdown signals.
+2. Validate nested semantic ranges and reference definitions against a larger lossless corpus before
    considering any rendered-block experiment.
 
 Implementation boundaries and tradeoffs are documented in
