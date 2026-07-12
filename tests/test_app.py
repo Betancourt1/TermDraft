@@ -1591,6 +1591,7 @@ async def test_discarding_one_orphan_defers_the_next_recovery_dialog(
             await pilot.pause(0.01)
         assert isinstance(app.screen, RecoveryDialog)
         first_offered = app.screen.path
+        await pilot.pause(0.01)
         await pilot.click("#recovery-discard")
         for _ in range(200):
             if isinstance(app.screen, RecoveryDialog):
@@ -1599,6 +1600,7 @@ async def test_discarding_one_orphan_defers_the_next_recovery_dialog(
 
         assert isinstance(app.screen, RecoveryDialog)
         assert app.screen.path != first_offered
+        await pilot.pause(0.01)
         await pilot.click("#recovery-discard")
         for _ in range(200):
             if (
