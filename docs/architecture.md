@@ -106,8 +106,8 @@ For an existing destination, `atomic_save`:
 2. hashes the destination through that descriptor and compares content and origin;
 3. creates a random mode-0600 temporary entry relative to the open directory;
 4. writes encoded bytes, flushes, and calls `fsync`;
-5. hashes the destination again and verifies the lexical parent still has the open identity;
-6. attempts to apply the current destination mode bits to the temporary file;
+5. hashes the destination again and verifies its mode and the lexical parent's identity;
+6. attempts to apply the verified destination mode bits to the temporary file;
 7. calls descriptor-relative `os.replace`;
 8. attempts a parent-directory `fsync`;
 9. hashes the published file and verifies the intended digest and parent identity.

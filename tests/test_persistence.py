@@ -16,6 +16,7 @@ from termwriter.services.persistence import (
     UnsafeFileError,
     atomic_save,
     load_file,
+    snapshot_file,
 )
 
 
@@ -144,6 +145,30 @@ def test_atomic_save_preserves_permission_bits(tmp_path: Path) -> None:
     assert path.stat().st_mode & 0o777 == 0o640
 
 
+def test_atomic_save_rejects_concurrent_permission_tightening(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("before", encoding="utf-8")
+    path.chmod(0o644)
+    loaded = load_file(path)
+    real_write = persistence._write_temporary
+
+    def write_then_tighten_mode(descriptor: int, data: bytes, mode: int | None) -> None:
+        real_write(descriptor, data, mode)
+        path.chmod(0o600)
+
+    monkeypatch.setattr(persistence, "_write_temporary", write_then_tighten_mode)
+
+    with pytest.raises(ExternalModificationError):
+        atomic_save(path, "after", encoding="utf-8", expected=loaded.snapshot)
+
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.read_text(encoding="utf-8") == "before"
+    assert list(tmp_path.glob(".note.md.*.tmp")) == []
+
+
 def test_atomic_save_preserves_special_permission_bits(tmp_path: Path) -> None:
     path = tmp_path / "script.md"
     path.write_text("before", encoding="utf-8")
@@ -174,6 +199,7 @@ def test_new_file_save_does_not_overwrite_a_racing_creator(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "copy.md"
+    expected = snapshot_file(path)
 
     def racing_link(
         source: str | os.PathLike[str],
@@ -190,9 +216,18 @@ def test_new_file_save_does_not_overwrite_a_racing_creator(
     monkeypatch.setattr("termwriter.services.persistence.os.link", racing_link)
 
     with pytest.raises(ExternalModificationError):
-        atomic_save(path, "local", encoding="utf-8", expected=FileSnapshot.missing())
+        atomic_save(path, "local", encoding="utf-8", expected=expected)
 
     assert path.read_text(encoding="utf-8") == "racing version"
+
+
+def test_new_file_save_requires_parent_bound_snapshot(tmp_path: Path) -> None:
+    path = tmp_path / "copy.md"
+
+    with pytest.raises(PersistenceError, match="parent-bound snapshot"):
+        atomic_save(path, "local", encoding="utf-8", expected=FileSnapshot.missing())
+
+    assert not path.exists()
 
 
 def test_invalid_utf8_is_rejected(tmp_path: Path) -> None:

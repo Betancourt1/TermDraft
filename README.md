@@ -107,8 +107,8 @@ An existing file save follows this sequence:
 2. open the destination directory and create a private temporary entry relative to that descriptor;
 3. encode the current source using its detected UTF-8 or UTF-8-with-BOM encoding;
 4. write, flush, and `fsync` the temporary file;
-5. attempt to copy the original POSIX permission bits;
-6. hash the destination again to narrow the concurrent-change window;
+5. hash the destination and permission mode again, aborting if either changed during the write;
+6. attempt to copy the verified POSIX permission bits;
 7. publish with descriptor-relative `os.replace` so a renamed ancestor cannot redirect the write;
 8. attempt to `fsync` the parent directory and verify the visible bytes;
 9. only then update the document's saved/dirty state.

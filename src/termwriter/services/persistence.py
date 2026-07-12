@@ -293,6 +293,8 @@ def _matches_expected(current: FileSnapshot, expected: FileSnapshot) -> bool:
         return False
     if expected.exists and not current.has_same_origin(expected):
         return False
+    if expected.exists and current.mode != expected.mode:
+        return False
     if expected.parent_device is not None:
         return (
             current.parent_device,
@@ -323,6 +325,13 @@ def atomic_save(
     temporary_descriptor = -1
 
     try:
+        if not expected.exists and (
+            expected.parent_device is None or expected.parent_inode is None
+        ):
+            raise PersistenceError(
+                "A new-file save requires a parent-bound snapshot from snapshot_file()"
+            )
+
         current = _snapshot_at(directory_descriptor, path.name, parent_stat)
         if not _matches_expected(current, expected):
             raise ExternalModificationError(path, current)
@@ -357,8 +366,8 @@ def atomic_save(
                 raise ExternalModificationError(path, latest)
 
             try:
-                if current.mode is not None:
-                    os.fchmod(temporary_descriptor, current.mode)
+                if latest.mode is not None:
+                    os.fchmod(temporary_descriptor, latest.mode)
                 os.fsync(temporary_descriptor)
             except OSError as error:
                 raise PersistenceError(
