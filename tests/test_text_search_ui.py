@@ -119,6 +119,53 @@ async def test_text_search_dialog_reports_invalid_regex(tmp_path: Path) -> None:
         assert "Invalid regular expression" in str(status.render())
 
 
+async def test_text_search_dialog_applies_fuzzy_ranking_and_compound_filter(
+    tmp_path: Path,
+) -> None:
+    docs = tmp_path / "docs"
+    drafts = docs / "drafts"
+    drafts.mkdir(parents=True)
+    active = tmp_path / "active.md"
+    selected = docs / "selected.md"
+    excluded = drafts / "excluded.md"
+    active.write_text("nothing", encoding="utf-8")
+    selected.write_text("Research summary", encoding="utf-8")
+    excluded.write_text("Research memo", encoding="utf-8")
+    app = _app(active)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.press("ctrl+shift+f")
+        assert isinstance(app.screen, TextSearchDialog)
+        app.screen.query_one("#text-search-mode", Select).value = TextSearchMode.FUZZY.value
+        app.screen.query_one("#text-search-filter", Input).value = "docs/**/*.md, !docs/drafts/**"
+        app.screen.query_one("#text-search-input", Input).value = "rsm"
+        await pilot.press("enter")
+        await pilot.pause(0.15)
+
+        assert [(match.path, match.column) for match in app.screen.matches] == [(selected, 5)]
+        status = app.screen.query_one("#text-search-status", Static)
+        assert "fuzzy" in str(status.render())
+        assert "!docs/drafts/**" in str(status.render())
+
+
+async def test_text_search_dialog_reports_invalid_compound_filter(tmp_path: Path) -> None:
+    path = tmp_path / "active.md"
+    path.write_text("needle", encoding="utf-8")
+    app = _app(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("ctrl+shift+f")
+        assert isinstance(app.screen, TextSearchDialog)
+        app.screen.query_one("#text-search-filter", Input).value = "*.md,,!archive/**"
+        app.screen.query_one("#text-search-input", Input).value = "needle"
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+
+        assert app.screen.matches == ()
+        status = app.screen.query_one("#text-search-status", Static)
+        assert "Invalid file filter" in str(status.render())
+
+
 async def test_text_search_options_remain_visible_in_a_narrow_terminal(
     tmp_path: Path,
 ) -> None:

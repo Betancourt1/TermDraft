@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from textual.widgets import Input
+from textual.widgets import Input, Static
 
 from termwriter.app import TermWriterApp
 from termwriter.models.document import FileSnapshot
@@ -461,6 +461,51 @@ async def test_search_opens_selected_file_when_current_file_is_clean(tmp_path: P
         assert app.document is not None
         assert app.document.path == second
         assert app.editor.text == "second"
+
+
+async def test_file_search_combines_fuzzy_path_matching_and_compound_filter(
+    tmp_path: Path,
+) -> None:
+    docs = tmp_path / "docs"
+    drafts = docs / "drafts"
+    drafts.mkdir(parents=True)
+    active = tmp_path / "active.md"
+    selected = docs / "research-summary.md"
+    excluded = drafts / "research-summary.md"
+    active.write_text("active", encoding="utf-8")
+    selected.write_text("selected", encoding="utf-8")
+    excluded.write_text("excluded", encoding="utf-8")
+    app = app_for_file(active)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.press("ctrl+p")
+        assert isinstance(app.screen, FileSearchDialog)
+        app.screen.query_one("#file-search-filter", Input).value = "docs/**/*.md, !docs/drafts/**"
+        app.screen.query_one("#search-input", Input).value = "rsm"
+        await pilot.pause()
+
+        assert app.screen.matches == (selected,)
+        await pilot.press("enter")
+        await pilot.pause(0.03)
+
+        assert app.document is not None
+        assert app.document.path == selected
+
+
+async def test_file_search_reports_invalid_compound_filter(tmp_path: Path) -> None:
+    path = tmp_path / "active.md"
+    path.write_text("active", encoding="utf-8")
+    app = app_for_file(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("ctrl+p")
+        assert isinstance(app.screen, FileSearchDialog)
+        app.screen.query_one("#file-search-filter", Input).value = "*.md,,!archive/**"
+        await pilot.pause()
+
+        assert app.screen.matches == ()
+        status = app.screen.query_one("#file-search-status", Static)
+        assert "Invalid file filter" in str(status.render())
 
 
 async def test_narrow_layout_switches_between_editor_and_preview(tmp_path: Path) -> None:

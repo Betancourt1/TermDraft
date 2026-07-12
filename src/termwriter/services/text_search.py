@@ -6,13 +6,12 @@ import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from fnmatch import fnmatchcase
-from functools import cache
 from pathlib import Path
 
 import regex
 
 from termwriter.models.workspace import path_spelling_key, paths_are_spelling_aliases
+from termwriter.services.path_filter import PathFilterError, parse_path_filter
 from termwriter.services.persistence import PersistenceError, load_file
 
 DEFAULT_RESULT_LIMIT = 100
@@ -31,6 +30,7 @@ class TextSearchMode(StrEnum):
     LITERAL = "literal"
     WHOLE_WORD = "whole_word"
     REGEX = "regex"
+    FUZZY = "fuzzy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +70,12 @@ class TextSearchResult:
     error: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _FuzzyLineMatch:
+    column: int
+    rank: tuple[int, int, int, int]
+
+
 def search_text(
     files: tuple[Path, ...],
     query: str,
@@ -94,8 +100,11 @@ def search_text(
     if error is not None:
         return TextSearchResult((), (), error)
 
-    file_filter = options.file_filter.strip() if options.file_filter else None
-    if file_filter and root is None:
+    try:
+        path_filter = parse_path_filter(options.file_filter)
+    except PathFilterError as error:
+        return TextSearchResult((), (), f"Invalid file filter: {error}")
+    if path_filter is not None and root is None:
         return TextSearchResult(
             (),
             (),
@@ -109,13 +118,16 @@ def search_text(
     ordered_paths = sorted(candidates, key=_path_sort_key)
 
     matches: list[TextSearchMatch] = []
+    fuzzy_matches: list[tuple[tuple[int, int, int, int, str, str, int, int], TextSearchMatch]] = []
     warnings: list[str] = []
+    fuzzy_mode = options.mode is TextSearchMode.FUZZY
+    fuzzy_needle = query if options.case_sensitive else query.casefold()
     for path in ordered_paths:
         if should_cancel is not None and should_cancel():
             break
-        if len(matches) >= limit:
+        if not fuzzy_mode and len(matches) >= limit:
             break
-        if file_filter and not _matches_file_filter(path, file_filter, root):
+        if path_filter is not None and (root is None or not path_filter.matches(path, root=root)):
             continue
         override = (
             active_override
@@ -141,27 +153,56 @@ def search_text(
         for line_number, line in enumerate(_logical_lines(text)):
             if should_cancel is not None and should_cancel():
                 break
-            try:
-                column = matcher(line)
-            except _RegexTimedOut:
-                return TextSearchResult(
-                    (),
-                    tuple(warnings),
-                    "Regular expression timed out on a source line.",
+            fuzzy_rank: tuple[int, int, int, int] | None = None
+            column: int | None
+            if fuzzy_mode:
+                fuzzy_match = _fuzzy_line_match(
+                    line,
+                    fuzzy_needle,
+                    case_sensitive=options.case_sensitive,
                 )
+                if fuzzy_match is None:
+                    continue
+                column = fuzzy_match.column
+                fuzzy_rank = fuzzy_match.rank
+            else:
+                try:
+                    column = matcher(line)
+                except _RegexTimedOut:
+                    return TextSearchResult(
+                        (),
+                        tuple(warnings),
+                        "Regular expression timed out on a source line.",
+                    )
             if column is None:
                 continue
-            matches.append(
-                TextSearchMatch(
-                    path=path,
-                    line=line_number,
-                    column=column,
-                    preview=_line_preview(line, column),
-                )
-            )
-            if len(matches) >= limit:
-                break
 
+            result_match = TextSearchMatch(
+                path=path,
+                line=line_number,
+                column=column,
+                preview=_line_preview(line, column),
+            )
+            if fuzzy_rank is not None:
+                path_key = _path_sort_key(path)
+                rank = (
+                    *fuzzy_rank,
+                    *path_key,
+                    line_number,
+                    column,
+                )
+                fuzzy_matches.append((rank, result_match))
+                if len(fuzzy_matches) >= limit * 2:
+                    fuzzy_matches.sort(key=lambda item: item[0])
+                    del fuzzy_matches[limit:]
+            else:
+                matches.append(result_match)
+                if len(matches) >= limit:
+                    break
+
+    if fuzzy_mode:
+        fuzzy_matches.sort(key=lambda item: item[0])
+        matches = [match for _, match in fuzzy_matches[:limit]]
     return TextSearchResult(tuple(matches), tuple(warnings))
 
 
@@ -169,6 +210,9 @@ def _build_matcher(
     query: str,
     options: TextSearchOptions,
 ) -> tuple[Callable[[str], int | None], str | None]:
+    if options.mode is TextSearchMode.FUZZY:
+        return _no_match, None
+
     if options.mode is TextSearchMode.REGEX:
         if len(query) > MAX_REGEX_LENGTH:
             return _no_match, f"Regular expression is limited to {MAX_REGEX_LENGTH} characters."
@@ -230,36 +274,44 @@ def _is_word_character(character: str) -> bool:
     )
 
 
-def _matches_file_filter(path: Path, pattern: str, root: Path | None) -> bool:
-    if root is None:
-        return False
-    try:
-        relative_path = path.relative_to(root).as_posix()
-    except ValueError:
-        return False
-    path_parts = tuple(part.casefold() for part in relative_path.split("/"))
-    pattern_parts = tuple(part.casefold() for part in pattern.split("/") if part)
-    if not pattern_parts:
-        return False
-    if len(pattern_parts) == 1:
-        return fnmatchcase(path_parts[-1], pattern_parts[0])
+def _fuzzy_line_match(
+    line: str,
+    needle: str,
+    *,
+    case_sensitive: bool,
+) -> _FuzzyLineMatch | None:
+    if case_sensitive:
+        haystack = line
+        source_columns = list(range(len(line)))
+    else:
+        haystack, source_columns = _casefold_with_columns(line)
 
-    @cache
-    def match(path_index: int, pattern_index: int) -> bool:
-        if pattern_index == len(pattern_parts):
-            return path_index == len(path_parts)
-        part = pattern_parts[pattern_index]
-        if part == "**":
-            return match(path_index, pattern_index + 1) or (
-                path_index < len(path_parts) and match(path_index + 1, pattern_index)
+    best: _FuzzyLineMatch | None = None
+    first = haystack.find(needle[0])
+    while first >= 0:
+        cursor = first + 1
+        last = first
+        for character in needle[1:]:
+            last = haystack.find(character, cursor)
+            if last < 0:
+                break
+            cursor = last + 1
+        else:
+            span = last - first + 1
+            boundary_penalty = int(first > 0 and _is_word_character(haystack[first - 1]))
+            rank = (
+                span - len(needle),
+                boundary_penalty,
+                first,
+                len(haystack),
             )
-        return (
-            path_index < len(path_parts)
-            and fnmatchcase(path_parts[path_index], part)
-            and match(path_index + 1, pattern_index + 1)
-        )
+            candidate = _FuzzyLineMatch(source_columns[first], rank)
+            if best is None or candidate.rank < best.rank:
+                best = candidate
 
-    return match(0, 0)
+        first = haystack.find(needle[0], first + 1)
+
+    return best
 
 
 def _logical_lines(text: str) -> list[str]:

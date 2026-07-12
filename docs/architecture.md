@@ -104,25 +104,30 @@ launch a browser or another external application. None of these preview transfor
 
 ## Workspace text search
 
-`services/text_search.py` performs bounded literal, whole-word, or regular-expression searches over
-the validated workspace scan. Matching is case-insensitive by default, with an explicit case option
-and one case-insensitive workspace-relative POSIX glob. It uses the same safe `load_file` path as
-document opening, returns zero-based source coordinates and short line previews, and converts
-individual read/decode failures into warnings instead of aborting the search. Invalid and oversized
-regexes become result errors before file contents are read. The `regex` engine provides Unicode-aware
-whole-word boundaries, full case folding, GIL-releasing immutable-string searches, and a 50 ms
-per-line timeout for pathological expressions. The active `Document.text` is passed as a fallback:
-dirty source always wins, while a clean document prefers current disk content and still remains
-searchable if its path disappeared.
+`services/text_search.py` performs bounded literal, fuzzy, whole-word, or regular-expression searches
+over the validated workspace scan. Matching is case-insensitive by default, with an explicit case
+option. `services/path_filter.py` parses comma-separated workspace-relative POSIX globs: includes are
+ORed, `!` exclusions win, and an exclusion-only filter starts from all paths. File and text search
+share this contract. It uses the same safe `load_file` path as document opening, returns zero-based
+source coordinates and short line previews, and converts individual read/decode failures into
+warnings instead of aborting the search. Invalid filters and invalid or oversized regexes become
+result errors before file contents are read. The `regex` engine provides Unicode-aware whole-word
+boundaries, full case folding, GIL-releasing immutable-string searches, and a 50 ms per-line timeout
+for pathological expressions. The active `Document.text` is passed as a fallback: dirty source always
+wins, while a clean document prefers current disk content and still remains searchable if its path
+disappeared.
 
 The modal starts search only when Enter is submitted and runs both the recursive scan and file reads
 through a Textual thread worker. Cancellation is checked between workspace entries, files, and source
 lines; only the result callback updates widgets on the UI thread. Results are deterministic,
 same-file aliases are deduplicated, the list is limited to 100 matching lines, and each line produces
-at most one result. Selecting a different file revalidates its path and enters the same guarded
-transition used by the explorer and file search; a dirty current document therefore still requires
-Save / Discard / Cancel. A pending line/column target survives recovery and mixed-line-ending dialogs
-and is applied only after the new document is installed.
+at most one result. Fuzzy mode retains a bounded set while scanning, then orders matches globally by
+subsequence tightness, word boundary, source position, line length, path, and line. File search uses
+the same normalized subsequence idea while preserving prefix and substring priority. Selecting a
+different file revalidates its path and enters the same guarded transition used by the explorer and
+file search; a dirty current document therefore still requires Save / Discard / Cancel. A pending
+line/column target survives recovery and mixed-line-ending dialogs and is applied only after the new
+document is installed.
 
 ## Background document I/O
 
@@ -314,7 +319,8 @@ user may save that copy under a new name, explicitly continue without it, or can
 - `TermWriterApp` coordinates one active document and user decisions.
 - `Document` and `Workspace` contain state/invariants without Textual imports.
 - Persistence and external-change modules perform filesystem work without UI calls.
-- File search ranks only the scanner's validated in-process index and has no `ripgrep` dependency.
+- File search fuzzy-ranks only the scanner's validated in-process index and has no `ripgrep`
+  dependency.
 - Text search and document content I/O use thread workers and never invoke workspace commands.
 - Configuration contains data only; document/workspace contents never define commands or CSS.
 

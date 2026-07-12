@@ -267,6 +267,52 @@ def test_file_filter_matches_case_insensitive_workspace_relative_posix_glob(
     assert {match.path for match in basename_result.matches} == {direct, nested, root_file}
 
 
+def test_compound_file_filter_ors_includes_and_applies_exclusions(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    drafts = docs / "drafts"
+    drafts.mkdir(parents=True)
+    guide = docs / "guide.md"
+    draft = drafts / "idea.md"
+    journal = tmp_path / "journal.markdown"
+    private = tmp_path / "private.markdown"
+    ignored = tmp_path / "ignored.md"
+    for path in (guide, draft, journal, private, ignored):
+        path.write_text("needle\n", encoding="utf-8")
+
+    result = search_text(
+        (ignored, private, journal, draft, guide),
+        "needle",
+        options=TextSearchOptions(
+            file_filter="docs/**/*.md, *.markdown, !docs/drafts/**, !private.markdown"
+        ),
+        root=tmp_path,
+    )
+
+    assert [match.path for match in result.matches] == [guide, journal]
+    assert result.error is None
+
+
+@pytest.mark.parametrize(
+    "file_filter",
+    ("*.md,,!drafts/**", "!", "/absolute/*.md", "../*.md"),
+)
+def test_invalid_compound_file_filter_returns_error_before_loading(
+    tmp_path: Path,
+    file_filter: str,
+) -> None:
+    result = search_text(
+        (tmp_path / "missing.md",),
+        "needle",
+        options=TextSearchOptions(file_filter=file_filter),
+        root=tmp_path,
+    )
+
+    assert result.matches == ()
+    assert result.warnings == ()
+    assert result.error is not None
+    assert result.error.startswith("Invalid file filter:")
+
+
 def test_file_filter_is_applied_before_loading_or_using_active_override(
     tmp_path: Path,
 ) -> None:
@@ -441,3 +487,77 @@ def test_cancelled_search_stops_between_lines(tmp_path: Path) -> None:
     search_text((path,), "needle", should_cancel=cancel_during_matching)
 
     assert checks == 6
+
+
+def test_fuzzy_text_search_ranks_matches_by_tightness_before_source_order(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "notes.md"
+    path.write_text(
+        "alpha beta gamma\nprefix abg\nxxabg\nabg\n",
+        encoding="utf-8",
+    )
+
+    result = search_text(
+        (path,),
+        "abg",
+        options=TextSearchOptions(mode=TextSearchMode.FUZZY),
+    )
+
+    assert [(match.line, match.column) for match in result.matches] == [
+        (3, 0),
+        (1, 7),
+        (2, 2),
+        (0, 4),
+    ]
+
+
+def test_fuzzy_text_search_applies_limit_after_global_ranking(tmp_path: Path) -> None:
+    early = tmp_path / "a.md"
+    late = tmp_path / "z.md"
+    early.write_text("alpha beta gamma\n", encoding="utf-8")
+    late.write_text("abg\n", encoding="utf-8")
+
+    result = search_text(
+        (early, late),
+        "abg",
+        limit=1,
+        options=TextSearchOptions(mode=TextSearchMode.FUZZY),
+    )
+
+    assert [match.path for match in result.matches] == [late]
+
+
+def test_fuzzy_text_search_preserves_unicode_source_column(tmp_path: Path) -> None:
+    path = tmp_path / "unicode.md"
+    path.write_text("X Straße\n", encoding="utf-8")
+
+    result = search_text(
+        (path,),
+        "ss",
+        options=TextSearchOptions(mode=TextSearchMode.FUZZY),
+    )
+
+    assert [(match.line, match.column) for match in result.matches] == [(0, 6)]
+
+
+def test_fuzzy_text_search_respects_case_sensitive_option(tmp_path: Path) -> None:
+    path = tmp_path / "case.md"
+    path.write_text("Alpha Beta\n", encoding="utf-8")
+
+    insensitive = search_text(
+        (path,),
+        "ab",
+        options=TextSearchOptions(mode=TextSearchMode.FUZZY),
+    )
+    sensitive = search_text(
+        (path,),
+        "ab",
+        options=TextSearchOptions(
+            mode=TextSearchMode.FUZZY,
+            case_sensitive=True,
+        ),
+    )
+
+    assert [(match.line, match.column) for match in insensitive.matches] == [(0, 4)]
+    assert sensitive.matches == ()

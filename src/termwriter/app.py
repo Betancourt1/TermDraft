@@ -1712,7 +1712,7 @@ class TermWriterApp(App[None]):
         )
         yield SystemCommand(
             "Search workspace text",
-            "Find literal, whole-word, or regex matches in Markdown source",
+            "Find literal, fuzzy, whole-word, or regex matches in Markdown source",
             self.action_search_text,
         )
         yield SystemCommand(

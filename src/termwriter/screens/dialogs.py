@@ -20,6 +20,7 @@ from textual.worker import get_current_worker
 
 from termwriter.models.workspace import Workspace
 from termwriter.services.file_search import search_files
+from termwriter.services.path_filter import PathFilterError, parse_path_filter
 from termwriter.services.recovery import RecoveryRecord
 from termwriter.services.text_search import (
     TextSearchMatch,
@@ -500,6 +501,11 @@ class FileSearchDialog(ModalScreen[Path | None]):
         with Vertical(classes="dialog", id="search-dialog"):
             yield Static("Find Markdown file", classes="dialog-title", markup=False)
             yield Input(placeholder="Type part of a path…", id="search-input")
+            yield Input(
+                placeholder="Includes/excludes, e.g. notes/**, !notes/archive/**",
+                id="file-search-filter",
+            )
+            yield Static("Fuzzy path matching", id="file-search-status", markup=False)
             yield OptionList(id="search-results", markup=False)
 
     def on_mount(self) -> None:
@@ -507,7 +513,22 @@ class FileSearchDialog(ModalScreen[Path | None]):
         self.query_one("#search-input", Input).focus()
 
     def _set_query(self, query: str) -> None:
-        self.matches = search_files(self.files, query, root=self.root)
+        filter_expression = self.query_one("#file-search-filter", Input).value
+        try:
+            path_filter = parse_path_filter(filter_expression)
+        except PathFilterError as error:
+            self.matches = ()
+            self.query_one("#file-search-status", Static).update(f"Invalid file filter: {error}")
+            results = self.query_one("#search-results", OptionList)
+            results.set_options([Option("Invalid file filter", disabled=True)])
+            results.highlighted = None
+            return
+        self.matches = search_files(
+            self.files,
+            query,
+            root=self.root,
+            path_filter=path_filter,
+        )
         options = [
             Option(path.relative_to(self.root).as_posix(), id=str(index))
             for index, path in enumerate(self.matches)
@@ -517,10 +538,17 @@ class FileSearchDialog(ModalScreen[Path | None]):
         results = self.query_one("#search-results", OptionList)
         results.set_options(options)
         results.highlighted = 0 if self.matches else None
+        count = len(self.matches)
+        noun = "file" if count == 1 else "files"
+        status = f"{count} {noun} · fuzzy path matching"
+        if filter_expression.strip():
+            status += f" · {filter_expression.strip()}"
+        self.query_one("#file-search-status", Static).update(status)
 
-    @on(Input.Changed, "#search-input")
+    @on(Input.Changed)
     def search(self, event: Input.Changed) -> None:
-        self._set_query(event.value)
+        del event
+        self._set_query(self.query_one("#search-input", Input).value)
 
     @on(Input.Submitted, "#search-input")
     def open_first(self) -> None:
@@ -571,6 +599,7 @@ class TextSearchDialog(ModalScreen[TextSearchMatch | None]):
                 yield Select(
                     (
                         ("Literal", TextSearchMode.LITERAL.value),
+                        ("Fuzzy", TextSearchMode.FUZZY.value),
                         ("Whole word", TextSearchMode.WHOLE_WORD.value),
                         ("Regular expression", TextSearchMode.REGEX.value),
                     ),
@@ -581,7 +610,7 @@ class TextSearchDialog(ModalScreen[TextSearchMatch | None]):
                 )
                 yield Checkbox("Match case", compact=True, id="text-search-case")
             yield Input(
-                placeholder="Optional file glob, e.g. notes/**/*.md",
+                placeholder="Includes/excludes, e.g. notes/**/*.md, !notes/drafts/**",
                 id="text-search-filter",
             )
             yield Static("Enter a query to search Markdown source.", id="text-search-status")
@@ -668,6 +697,7 @@ class TextSearchDialog(ModalScreen[TextSearchMatch | None]):
         match_word = "match" if len(self.matches) == 1 else "matches"
         mode_label = {
             TextSearchMode.LITERAL: "literal",
+            TextSearchMode.FUZZY: "fuzzy",
             TextSearchMode.WHOLE_WORD: "whole word",
             TextSearchMode.REGEX: "regular expression",
         }[options.mode]

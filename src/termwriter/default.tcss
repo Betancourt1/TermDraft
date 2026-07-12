@@ -126,7 +126,13 @@ ModalScreen {
     margin-bottom: 1;
 }
 
-#search-input, #text-search-input {
+#search-input, #file-search-filter, #text-search-input {
+    margin-bottom: 1;
+}
+
+#file-search-status {
+    height: 1;
+    color: $text-muted;
     margin-bottom: 1;
 }
 

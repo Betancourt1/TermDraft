@@ -102,7 +102,7 @@ _SHORTCUTS = (
     (BINDING_ID_QUIT, "Quit safely"),
     (BINDING_ID_TOGGLE_EXPLORER, "Show or hide files"),
     (BINDING_ID_FIND_FILE, "Find a Markdown file"),
-    (BINDING_ID_SEARCH_TEXT, "Search workspace text (literal / word / regex)"),
+    (BINDING_ID_SEARCH_TEXT, "Search workspace text (literal / fuzzy / word / regex)"),
     (BINDING_ID_TOGGLE_PREVIEW, "Show or hide preview; switch pane when narrow"),
     (BINDING_ID_UNDO, "Undo"),
     (BINDING_ID_REDO, "Redo"),

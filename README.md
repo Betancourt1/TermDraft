@@ -213,10 +213,12 @@ Ctrl+Shift+Z from Ctrl+Z; Ctrl+Y remains the portable redo binding. On a bullet,
 task, or blockquote, Enter inserts the next marker; Enter on an empty marker ends that structure.
 
 Workspace text search runs only after Enter is pressed in its dialog. Choose literal, whole-word, or
-regular-expression matching; optionally match case and restrict paths with one workspace-relative
-glob such as `notes/**/*.md`. Results are capped at 100 matching lines and include the active
-document's unsaved source. Selecting another file still passes through Save / Discard / Cancel before
-leaving dirty work.
+regular-expression matching, or fuzzy subsequence ranking; optionally match case and restrict paths
+with comma-separated workspace-relative includes and `!` exclusions such as
+`notes/**/*.md, !notes/archive/**`. Results are capped at 100 matching lines and include the active
+document's unsaved source. Selecting another file still passes through Save / Discard / Cancel
+before leaving dirty work. Ctrl+P uses the same compound filter syntax and fuzzy-ranks abbreviated
+path queries.
 
 ## Data-safety behavior
 
@@ -352,9 +354,10 @@ preservation, and non-cancellable writer locking.
   source prefix through the cursor, so Enter may have a small delay in extremely large files.
 - A malformed `theme.tcss` can prevent startup until the file is corrected. Only a theme present at
   launch is watched; create the templates with `--init-config` before opening the TUI.
-- Workspace text search is not fuzzy, accepts one include glob rather than a compound filter
-  expression, returns one match per source line, and caps results at 100. Regexes are limited to 500
-  characters and 50 ms per source line; a timed-out expression returns an error instead of results.
+- Workspace text search returns one match per source line and caps results at 100. Fuzzy mode scans
+  every candidate line before returning its globally strongest matches. Compound filters do not
+  provide escaping for filenames containing commas. Regexes are limited to 500 characters and 50 ms
+  per source line; a timed-out expression returns an error instead of results.
 - Thread workers cannot stop an in-progress operating-system read or write. TermWriter ignores stale
   read/probe results; an atomic writer is deliberately allowed to finish while the UI stays locked.
 - Recovery-journal publication and workspace index refreshes remain synchronous. They can briefly
@@ -363,11 +366,10 @@ preservation, and non-cancellable writer locking.
 
 ## Near-term roadmap
 
-1. Add internal footnote navigation and improve definition-list presentation.
-2. Add recovery-entry management for renamed files and manual cleanup of corrupt/stale entries.
-3. Add fuzzy path/text ranking and compound include/exclude search filters.
-4. Add a multi-document cache and restart restoration for cursor/scroll state.
-5. Prototype read-only semantic block mapping before attempting hybrid block editing.
+1. Add a multi-document cache and restart restoration for cursor/scroll state.
+2. Add restore/permanent-delete controls for quarantined recovery entries.
+3. Add keyboard-first navigation for preview links and footnotes.
+4. Prototype read-only semantic block mapping before attempting hybrid block editing.
 
 Implementation boundaries and tradeoffs are documented in
 [`docs/architecture.md`](docs/architecture.md).
