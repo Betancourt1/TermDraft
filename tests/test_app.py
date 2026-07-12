@@ -429,9 +429,11 @@ async def test_conflict_save_as_preserves_both_versions(tmp_path: Path) -> None:
         assert app._open_document_for_path(local_copy) is app.document
 
 
+@pytest.mark.parametrize("target_name", ["second.md", "SECOND.md"])
 async def test_save_as_rejects_path_owned_by_deleted_open_tab(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    target_name: str,
 ) -> None:
     first = tmp_path / "first.md"
     second = tmp_path / "second.md"
@@ -457,7 +459,7 @@ async def test_save_as_rejects_path_owned_by_deleted_open_tab(
         await pilot.click("#conflict-save-as")
         dialog = app.screen
         assert isinstance(dialog, SaveAsDialog)
-        dialog.query_one("#save-as-input", Input).value = "second.md"
+        dialog.query_one("#save-as-input", Input).value = target_name
 
         def forbidden_save(*args: object, **kwargs: object) -> SaveResult:
             del args, kwargs
@@ -473,6 +475,7 @@ async def test_save_as_rejects_path_owned_by_deleted_open_tab(
         assert dialog.error is not None
         assert "already open in a tab" in dialog.error
         assert not second.exists()
+        assert not (tmp_path / target_name).exists()
         assert app.document is not None and app.document.path == first
         assert app._open_document_for_path(second) is second_buffer
         assert [opened.document.path for opened in app._open_documents] == [first, second]

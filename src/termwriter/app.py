@@ -29,6 +29,7 @@ from termwriter.models.workspace import (
     Workspace,
     WorkspaceError,
     WorkspaceNotFoundError,
+    path_spelling_key,
     paths_are_spelling_aliases,
 )
 from termwriter.screens.dialogs import (
@@ -2278,7 +2279,8 @@ class TermWriterApp(App[None]):
         try:
             target = self.workspace.validate_document_path(requested_path, must_exist=False)
             if any(
-                paths_are_spelling_aliases(target, occupied_path)
+                path_spelling_key(target) == path_spelling_key(occupied_path)
+                or paths_are_spelling_aliases(target, occupied_path)
                 for occupied_path in occupied_paths
             ):
                 outcome = _SaveAsWorkerResult(

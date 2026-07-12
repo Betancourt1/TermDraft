@@ -323,9 +323,10 @@ silently reloaded or left behind. During actual publication the editor is tempor
 quit, switching, duplicate saves, and Save As dismissal wait until the non-cancellable writer has
 finished. Stale worker results are rejected with a document-generation ticket.
 
-Save As first rejects paths owned by any open buffer, including a buffer whose disk file disappeared,
-then publishes a fully written temporary file with a no-clobber hard-link step. If the target appears
-concurrently, TermWriter reports a conflict instead of replacing it.
+Save As first rejects exact or normalized spelling variants owned by any open buffer, including a
+buffer whose disk file disappeared, then publishes a fully written temporary file with a no-clobber
+hard-link step. If the target appears concurrently, TermWriter reports a conflict instead of
+replacing it.
 
 If both local and disk content changed, the only choices are:
 

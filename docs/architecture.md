@@ -286,10 +286,12 @@ publication, even if that directory is renamed. A failed `os.replace` leaves the
 bytes intact. A failure after publication is different: the name may already point to the new bytes,
 so the application reports uncertainty and does not advance its in-memory baseline.
 
-For a new Save As destination, an immutable snapshot of open buffer paths first reserves all live
-document identities, including paths whose files disappeared. The fully written temporary file is
-then hard-linked to the final name. Hard-link creation fails if the name exists, providing
-no-clobber publication. The temporary name is then removed.
+For a new Save As destination, an immutable snapshot of open buffer paths first reserves exact and
+normalized spelling keys for all live document identities, including paths whose files disappeared.
+This conservative rule also prevents case/Unicode spelling variants from becoming duplicate buffers
+when the filesystem treats them as one entry. The fully written temporary file is then hard-linked
+to the final name. Hard-link creation fails if the name exists, providing no-clobber publication.
+The temporary name is then removed.
 
 Same-directory `os.replace` provides atomic namespace replacement on normal local POSIX filesystems;
 it does not prove identical behavior on every network filesystem. `fsync` improves crash durability
