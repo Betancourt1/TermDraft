@@ -9,6 +9,10 @@ from markdown_it.token import Token
 from mdit_py_plugins.deflist import deflist_plugin
 from mdit_py_plugins.footnote import footnote_plugin
 
+FOOTNOTE_BACKREF_PREFIX = "#termwriter-footnote-back-"
+FOOTNOTE_DEFINITION_PREFIX = "termwriter-footnote-"
+FOOTNOTE_LABEL_TOKEN = "termwriter_footnote_label"
+
 
 @dataclass(slots=True)
 class _DefinitionList:
@@ -67,13 +71,38 @@ def _text_token(token: Token, content: str) -> Token:
     )
 
 
-def _normalize_inline_child(token: Token) -> Token:
-    """Normalize a footnote reference at any inline nesting depth."""
-    if token.type == "footnote_ref":
-        return _text_token(token, f"[{_label(token.meta)}]")
-    if token.children is None:
-        return token
-    return token.copy(children=[_normalize_inline_child(child) for child in token.children])
+def _footnote_reference_tokens(token: Token) -> list[Token]:
+    """Turn one footnote reference into a safe in-preview link."""
+    label = _label(token.meta)
+    href = f"#{FOOTNOTE_DEFINITION_PREFIX}{label}"
+    return [
+        Token("link_open", "a", 1, attrs={"href": href}),
+        _text_token(token, f"[{label}]"),
+        Token("link_close", "a", -1),
+    ]
+
+
+def _normalize_inline_children(tokens: list[Token], *, link_references: bool = True) -> list[Token]:
+    """Normalize footnote references at any inline nesting depth."""
+    normalized: list[Token] = []
+    for token in tokens:
+        if token.type == "footnote_ref":
+            if link_references:
+                normalized.extend(_footnote_reference_tokens(token))
+            else:
+                normalized.append(_text_token(token, f"[{_label(token.meta)}]"))
+        elif token.children is None:
+            normalized.append(token)
+        else:
+            normalized.append(
+                token.copy(
+                    children=_normalize_inline_children(
+                        token.children,
+                        link_references=link_references and token.type != "image",
+                    )
+                )
+            )
+    return normalized
 
 
 def _normalize_inline(token: Token, *, bold: bool = False) -> Token:
@@ -81,7 +110,7 @@ def _normalize_inline(token: Token, *, bold: bool = False) -> Token:
     if token.children is None:
         return token
 
-    children = [_normalize_inline_child(child) for child in token.children]
+    children = _normalize_inline_children(token.children)
     if bold:
         children = [
             Token("strong_open", "strong", 1),
@@ -91,25 +120,33 @@ def _normalize_inline(token: Token, *, bold: bool = False) -> Token:
     return token.copy(children=children)
 
 
-def _footnote_label_tokens(token: Token) -> list[Token]:
-    """Build a small paragraph that labels one rendered footnote definition."""
-    marker = f"[{_label(token.meta)}]"
-    return [
-        token.copy(type="paragraph_open", tag="p", nesting=1, children=None),
-        Token(
-            "inline",
-            "",
-            0,
-            children=[
-                Token("strong_open", "strong", 1),
-                Token("text", "", 0, content=marker),
-                Token("strong_close", "strong", -1),
-            ],
-            content=marker,
-            block=True,
-        ),
-        token.copy(type="paragraph_close", tag="p", nesting=-1, children=None),
-    ]
+def _footnote_label_token(token: Token) -> Token:
+    """Build an anchored label with a link back to the last used reference."""
+    label = _label(token.meta)
+    marker = f"[{label}]"
+    return Token(
+        FOOTNOTE_LABEL_TOKEN,
+        "",
+        0,
+        attrs={"id": f"{FOOTNOTE_DEFINITION_PREFIX}{label}"},
+        children=[
+            Token("strong_open", "strong", 1),
+            Token("text", "", 0, content=marker),
+            Token("strong_close", "strong", -1),
+            Token("text", "", 0, content=" "),
+            Token(
+                "link_open",
+                "a",
+                1,
+                attrs={"href": f"{FOOTNOTE_BACKREF_PREFIX}{label}"},
+            ),
+            Token("text", "", 0, content="↩"),
+            Token("link_close", "a", -1),
+        ],
+        content=f"{marker} ↩",
+        meta=token.meta.copy(),
+        block=True,
+    )
 
 
 def _normalize_extensions(state: StateCore) -> None:
@@ -152,8 +189,10 @@ def _normalize_extensions(state: StateCore) -> None:
             if definition_lists and definition_lists[-1].term_open:
                 normalized.append(_retag(token, "paragraph_close", "p", -1))
                 definition_lists[-1].term_open = False
-        elif token_type in {"dd_open", "dd_close"}:
-            continue
+        elif token_type == "dd_open":
+            normalized.append(_retag(token, "blockquote_open", "blockquote", 1))
+        elif token_type == "dd_close":
+            normalized.append(_retag(token, "blockquote_close", "blockquote", -1))
         elif token_type == "dl_close":
             if not definition_lists:
                 continue
@@ -167,7 +206,7 @@ def _normalize_extensions(state: StateCore) -> None:
             normalized.append(_retag(token, "bullet_list_open", "ul", 1))
         elif token_type == "footnote_open":
             normalized.append(_retag(token, "list_item_open", "li", 1))
-            normalized.extend(_footnote_label_tokens(token))
+            normalized.append(_footnote_label_token(token))
         elif token_type == "footnote_anchor":
             continue
         elif token_type == "footnote_close":

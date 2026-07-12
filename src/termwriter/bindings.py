@@ -129,7 +129,7 @@ Definitions        Term followed on the next line by : Definition
 Rules              ---
 
 Enter continues bullets, numbered lists, tasks, and blockquotes. Press Enter on
-an empty marker to end the list. Footnote labels are visible but not clickable.
+an empty marker to end the list. Preview footnote labels and their ↩ arrows navigate internally.
 Raw HTML is displayed as text and never run.
 
 Not rendered yet: math, underline, subscript, and superscript.

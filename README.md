@@ -100,8 +100,9 @@ The preview supports headings H1-H6, paragraphs, emphasis, bold, strikethrough, 
 horizontal rules, links, image placeholders, inline and fenced code, nested ordered/unordered lists,
 tables, task lists, footnotes, definition lists, and the five standard GFM alerts. Task state is
 rendered as `☐` or `☑`; alert titles are bold blockquotes; footnote references and definitions
-remain visible; definition terms are shown as bold bullet items. The Markdown source remains
-unchanged. Raw HTML is displayed literally and is never executed.
+remain visible and navigate inside the preview; definition terms are bold with their definitions
+indented as quotes. The Markdown source remains unchanged. Raw HTML is displayed literally and is
+never executed.
 
 ```markdown
 Claim with a source.[^source]
@@ -131,11 +132,12 @@ command palette includes a compact Markdown syntax reference.
 The repository also includes a complete [Markdown syntax gallery](docs/markdown-gallery.md). Open it
 with `termwriter docs/markdown-gallery.md` to compare its editable syntax and preview side by side.
 
-Footnotes are terminal labels rather than clickable links and have no backlinks. Unreferenced
-definitions are omitted by the footnote parser, and definition lists use bullets rather than a
-dedicated `<dl>` layout. Alerts use a conservative titled-blockquote presentation rather than
-GitHub's color and icon treatment. Math, underline, subscript, superscript, and rendered raw HTML are
-not supported. Preview rendering never writes back to the source editor.
+Clicking a footnote label scrolls to its definition; `↩` returns to the most recently followed
+reference for that note. Unreferenced definitions are omitted by the footnote parser, and definition
+lists use bold terms plus quoted bodies rather than a dedicated `<dl>` layout. Alerts use a
+conservative titled-blockquote presentation rather than GitHub's color and icon treatment. Math,
+underline, subscript, superscript, and rendered raw HTML are not supported. Preview rendering never
+writes back to the source editor.
 
 ## Configuration
 
@@ -335,8 +337,8 @@ preservation, and non-cancellable writer locking.
 - Preview links are deliberately non-opening. Raw document HTML, JavaScript, and shell text are not
   executed.
 - Alerts use titled blockquotes without GitHub's colors or icons. Preview intentionally omits math,
-  underline, subscript, and superscript. Footnote labels are not links, definition lists use bullets,
-  and images do not render terminal graphics.
+  underline, subscript, and superscript. A repeated footnote's back arrow returns to the most recently
+  followed reference, definition lists use quoted bodies, and images do not render terminal graphics.
 - Smart Enter handles common list/task/blockquote prefixes, thematic breaks, fenced code, and the
   distinction between indented code and genuine nested lists. Ambiguous indentation parses the
   source prefix through the cursor, so Enter may have a small delay in extremely large files.

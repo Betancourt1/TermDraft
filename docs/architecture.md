@@ -95,9 +95,12 @@ The `gfm-like2` preset provides tables, task metadata, five GFM alert kinds, and
 single/double-tilde strikethrough; `mdit-py-plugins` parses footnotes and definition lists. HTML
 parsing remains disabled. A final core rule turns task metadata into visible `☐` / `☑` text and
 normalizes unsupported alert, footnote, and definition tokens into Textual-supported blockquotes,
-inline text, paragraphs, and bullet lists. Unknown alert kinds remain ordinary blockquotes. Markdown
-links render but do not launch a browser or another external application. None of these preview
-transforms change `Document.text`.
+inline links, paragraphs, and bullet lists. Footnote labels use one custom `MarkdownBlock` solely as
+an internal scroll target; the preview intercepts those generated fragments and records the last
+followed reference for `↩` navigation. Definition bodies become supported blockquotes under bold
+terms. Unknown alert kinds remain ordinary blockquotes. Other Markdown links render but do not
+launch a browser or another external application. None of these preview transforms change
+`Document.text`.
 
 ## Workspace text search
 

@@ -87,7 +87,8 @@ def greeting(name: str) -> str:
 
 ## Footnotes
 
-A statement can refer to a named footnote.[^source]
+A statement can refer to a named footnote.[^source] Click its rendered number to reach the
+definition, then use `↩` to return.
 
 [^source]: Footnote definitions render at the end with a visible number.
 
@@ -99,6 +100,8 @@ An inline footnote is supported too.^[This definition lives beside its reference
 
 TermWriter
 : A local-first Markdown editor for the terminal.
+
+: Its definition body is visually separated from the bold term.
 
 Source of truth
 : The exact Markdown text on disk and in the active document model.

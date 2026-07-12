@@ -4,9 +4,15 @@ from pathlib import Path
 
 from markdown_it.token import Token
 from textual.app import App, ComposeResult
-from textual.widgets import Markdown
+from textual.widgets.markdown import MarkdownBlock
 
-from termwriter.services.markdown_preview import preview_parser
+from termwriter.services.markdown_preview import (
+    FOOTNOTE_BACKREF_PREFIX,
+    FOOTNOTE_DEFINITION_PREFIX,
+    FOOTNOTE_LABEL_TOKEN,
+    preview_parser,
+)
+from termwriter.widgets.preview import MarkdownPreview
 
 
 def _token_types(tokens: list[Token]) -> list[str]:
@@ -29,6 +35,10 @@ def _all_token_types(tokens: list[Token]) -> list[str]:
         ]
 
     return [token_type for token in tokens for token_type in descendants(token)]
+
+
+def _footnote_labels(tokens: list[Token]) -> list[Token]:
+    return [token for token in tokens if token.type == FOOTNOTE_LABEL_TOKEN]
 
 
 def _assert_extensions_are_normalized(tokens: list[Token]) -> None:
@@ -127,8 +137,18 @@ def test_footnotes_become_visible_references_and_supported_list_blocks() -> None
 
     _assert_extensions_are_normalized(tokens)
     assert "See the named note[1] and an inline note.[2]" in _inline_text(tokens)
-    assert "[1]" in _inline_text(tokens)
-    assert "[2]" in _inline_text(tokens)
+    labels = _footnote_labels(tokens)
+    assert [token.content for token in labels] == ["[1] ↩", "[2] ↩"]
+    assert [token.attrs["id"] for token in labels] == [
+        f"{FOOTNOTE_DEFINITION_PREFIX}1",
+        f"{FOOTNOTE_DEFINITION_PREFIX}2",
+    ]
+    assert [
+        child.attrs["href"]
+        for token in labels
+        for child in token.children or []
+        if child.type == "link_open"
+    ] == [f"{FOOTNOTE_BACKREF_PREFIX}1", f"{FOOTNOTE_BACKREF_PREFIX}2"]
     assert any(token.content == "First paragraph with `code`." for token in tokens)
     assert "Second paragraph." in _inline_text(tokens)
     assert _token_types(tokens).count("bullet_list_open") == 1
@@ -150,6 +170,8 @@ def test_definition_lists_become_nested_supported_list_blocks() -> None:
     token_types = _token_types(tokens)
     assert token_types.count("bullet_list_open") == 3
     assert token_types.count("list_item_open") == 4
+    assert token_types.count("blockquote_open") == 3
+    assert token_types.count("blockquote_close") == 3
     assert {"Outer term", "Inner term", "Second term"} <= set(_inline_text(tokens))
     term_tokens = [token for token in tokens if token.type == "inline" and "term" in token.content]
     assert term_tokens
@@ -220,23 +242,24 @@ def test_named_and_inline_footnotes_receive_distinct_visible_numbers() -> None:
 
     inline_text = _inline_text(tokens)
     assert "Named[1], inline[2]." in inline_text
-    assert inline_text.count("[1]") == 1
-    assert inline_text.count("[2]") == 1
+    assert [token.content for token in _footnote_labels(tokens)] == ["[1] ↩", "[2] ↩"]
 
 
 async def test_textual_mounts_normalized_extensions_without_unhandled_blocks() -> None:
     class PreviewApp(App[None]):
         def compose(self) -> ComposeResult:
-            yield Markdown(
-                "> [!WARNING]\n> Alert with **bold** text.\n\n"
-                "Term\n: Definition with note[^n].\n\n[^n]: Note body.\n",
-                parser_factory=preview_parser,
-            )
+            yield MarkdownPreview()
 
     app = PreviewApp()
     async with app.run_test() as pilot:
+        preview = app.query_one(MarkdownPreview)
+        await preview.render_source(
+            "> [!WARNING]\n> Alert with **bold** text.\n\n"
+            "Term\n: Definition with note[^n].\n\n[^n]: Note body.\n"
+        )
         await pilot.pause()
-        assert app.query_one(Markdown).children
+        assert preview.children
+        assert preview.query_one(f"#{FOOTNOTE_DEFINITION_PREFIX}1")
 
 
 async def test_markdown_gallery_mounts_without_changing_its_source() -> None:
@@ -246,11 +269,56 @@ async def test_markdown_gallery_mounts_without_changing_its_source() -> None:
 
     class GalleryApp(App[None]):
         def compose(self) -> ComposeResult:
-            yield Markdown(source, parser_factory=preview_parser, open_links=False)
+            yield MarkdownPreview()
 
     app = GalleryApp()
     async with app.run_test(size=(100, 40)) as pilot:
+        gallery = app.query_one(MarkdownPreview)
+        await gallery.render_source(source)
         await pilot.pause()
-        gallery = app.query_one(Markdown)
         assert gallery.source == source
+        assert gallery.source_text == source
         assert gallery.children
+
+
+async def test_footnote_links_scroll_within_preview_and_never_open_urls() -> None:
+    source = (
+        "Start with a reference[^note] and an [external link](https://example.com).\n\n"
+        + "\n\n".join(f"Filler paragraph {number}." for number in range(30))
+        + "\n\n[^note]: The internal definition.\n"
+    )
+
+    class PreviewApp(App[None]):
+        CSS = "MarkdownPreview { height: 8; overflow-y: auto; }"
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.opened_urls: list[str] = []
+
+        def compose(self) -> ComposeResult:
+            yield MarkdownPreview()
+
+        def open_url(self, url: str, *, new_tab: bool = True) -> None:
+            self.opened_urls.append(url)
+
+    app = PreviewApp()
+    async with app.run_test(size=(60, 12)) as pilot:
+        preview = app.query_one(MarkdownPreview)
+        await preview.render_source(source)
+        await pilot.pause()
+
+        origin = preview.children[0]
+        assert isinstance(origin, MarkdownBlock)
+        definition = preview.query_one(f"#{FOOTNOTE_DEFINITION_PREFIX}1", MarkdownBlock)
+
+        await origin.action_link(f"#{FOOTNOTE_DEFINITION_PREFIX}1")
+        await pilot.pause()
+        assert preview.scroll_y > 0
+
+        await definition.action_link(f"{FOOTNOTE_BACKREF_PREFIX}1")
+        await pilot.pause()
+        assert preview.scroll_y == 0
+
+        await origin.action_link("https://example.com")
+        await pilot.pause()
+        assert app.opened_urls == []
