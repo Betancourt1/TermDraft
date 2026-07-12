@@ -24,7 +24,12 @@ from termwriter.screens.dialogs import (
 from termwriter.services.external_changes import DiskProbe, probe_file
 from termwriter.services.persistence import LoadedFile, SaveResult, atomic_save, load_file
 from termwriter.services.recovery import RecoveryJournal, RecoveryRecord
-from termwriter.services.session import DocumentViewState, SessionState, SessionStore
+from termwriter.services.session import (
+    DocumentViewState,
+    SessionLoadResult,
+    SessionState,
+    SessionStore,
+)
 
 
 def _app(
@@ -210,7 +215,7 @@ async def test_session_load_runs_off_the_ui_thread(
     load_threads: list[int] = []
     real_load = store.load
 
-    def tracked_load(workspace_root: Path):
+    def tracked_load(workspace_root: Path) -> SessionLoadResult:
         load_threads.append(get_ident())
         return real_load(workspace_root)
 
@@ -291,12 +296,25 @@ async def test_recovery_publication_runs_off_ui_and_keeps_latest_edit(
     publication_threads: list[int] = []
     real_publish = journal.publish
 
-    def blocked_publish(**kwargs):
+    def blocked_publish(
+        *,
+        document_path: Path,
+        workspace_root: Path,
+        text: str,
+        encoding: str,
+        base_snapshot: FileSnapshot,
+    ) -> RecoveryRecord:
         publication_threads.append(get_ident())
         if not started.is_set():
             started.set()
             assert release.wait(2)
-        return real_publish(**kwargs)
+        return real_publish(
+            document_path=document_path,
+            workspace_root=workspace_root,
+            text=text,
+            encoding=encoding,
+            base_snapshot=base_snapshot,
+        )
 
     monkeypatch.setattr(journal, "publish", blocked_publish)
 
@@ -350,10 +368,23 @@ async def test_discard_waits_for_recovery_save_then_delete_without_resurrection(
     release = Event()
     real_publish = journal.publish
 
-    def blocked_publish(**kwargs):
+    def blocked_publish(
+        *,
+        document_path: Path,
+        workspace_root: Path,
+        text: str,
+        encoding: str,
+        base_snapshot: FileSnapshot,
+    ) -> RecoveryRecord:
         started.set()
         assert release.wait(2)
-        return real_publish(**kwargs)
+        return real_publish(
+            document_path=document_path,
+            workspace_root=workspace_root,
+            text=text,
+            encoding=encoding,
+            base_snapshot=base_snapshot,
+        )
 
     monkeypatch.setattr(journal, "publish", blocked_publish)
 

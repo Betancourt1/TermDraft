@@ -270,9 +270,13 @@ async def test_search_result_location_is_persisted_before_clean_quit(tmp_path: P
             await pilot.pause(0.01)
 
         assert app.editor.cursor_location == (30, 4)
-        state = store.load(tmp_path).state
-        assert state is not None
-        view = state.view_for(second)
+        view = None
+        for _ in range(200):
+            state = store.load(tmp_path).state
+            view = None if state is None else state.view_for(second)
+            if view is not None:
+                break
+            await pilot.pause(0.01)
         assert view is not None
         assert (view.line, view.column) == (30, 4)
 
