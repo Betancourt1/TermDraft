@@ -137,6 +137,13 @@ container and malformed reference-like source remains ordinary Markdown. The env
 reference dictionary shape is pinned by the lossless diagnostic corpus but is not treated as an
 editing contract. The map is explicitly not sufficient for source splicing.
 
+The opt-in semantic reader reuses that worker and stale-result gate. It mounts a modal snapshot over
+the still-mounted full editor, renders only top-level headings and paragraphs with the safe preview
+parser and `open_links=False`, and displays every other visible segment through `Static(markup=False)`.
+Escape dismisses the snapshot and restores the prior editor focus, cursor, scroll, and undo owner.
+The reader has no callback capable of updating `Document`; reference definitions and other nonlocal
+syntax remain source fallbacks rather than being reconstructed from render output.
+
 The preview is constructed with `open_links=False` and a dedicated `markdown-it-py` parser factory.
 The `gfm-like2` preset provides tables, task metadata, five GFM alert kinds, and
 single/double-tilde strikethrough; `mdit-py-plugins` parses footnotes and definition lists. HTML

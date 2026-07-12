@@ -126,6 +126,36 @@ ModalScreen {
     height: 34;
 }
 
+#semantic-reader-dialog {
+    height: 36;
+}
+
+#semantic-reader-content {
+    height: 1fr;
+    border: round $panel-lighten-2;
+    margin-bottom: 1;
+    padding: 0 1;
+}
+
+.semantic-reading-block {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.semantic-reading-label {
+    height: 1;
+    color: $text-muted;
+}
+
+.semantic-rendered-block, .semantic-source-fallback {
+    height: auto;
+    padding: 0 1;
+}
+
+.semantic-source-fallback {
+    background: $panel;
+}
+
 #semantic-blocks {
     height: 1fr;
     min-height: 6;

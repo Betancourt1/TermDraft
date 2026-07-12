@@ -98,6 +98,11 @@ malformed input. The inspector never splices, saves, or renders source.
 Render independent top-level blocks while keeping the existing full-source editor available as a
 fallback. Measure scroll stability and parser performance. Do not hide source syntax yet.
 
+Status: a command-palette-only experiment renders top-level headings and paragraphs in a modal
+snapshot. Lists, quotes, code, tables, definitions, gaps, and other unsupported constructs remain
+exact source fallbacks; links are inert and Escape returns to the untouched full editor. This proves
+safe independent mounting, not scroll stability, nonlocal reference resolution, or editing.
+
 ### Stage 3: one active source block
 
 Allow clicking or keyboard navigation to select one block. Show that block's exact source while the

@@ -53,6 +53,7 @@ from termwriter.screens.dialogs import (
 )
 from termwriter.screens.recent_documents import RecentDocumentsDialog
 from termwriter.screens.semantic_inspector import SemanticInspectorDialog
+from termwriter.screens.semantic_reader import SemanticReaderDialog
 from termwriter.services.external_changes import (
     DiskProbe,
     ExternalChange,
@@ -119,6 +120,11 @@ class _LoadPurpose(Enum):
     RELOAD_MANUAL = auto()
 
 
+class _SemanticViewPurpose(Enum):
+    INSPECT = auto()
+    READ = auto()
+
+
 class _RecoveryMutationKind(Enum):
     SAVE = auto()
     DELETE = auto()
@@ -180,6 +186,7 @@ class _SemanticMapRequest:
     document: Document
     path: Path
     text: str
+    purpose: _SemanticViewPurpose
 
 
 @dataclass(frozen=True, slots=True)
@@ -3104,6 +3111,12 @@ class TermWriterApp(App[None]):
             self.push_screen(HelpDialog(MARKDOWN_SYNTAX_HELP, title="Markdown syntax"))
 
     def action_inspect_semantic_blocks(self) -> None:
+        self._request_semantic_view(_SemanticViewPurpose.INSPECT)
+
+    def action_read_semantic_blocks(self) -> None:
+        self._request_semantic_view(_SemanticViewPurpose.READ)
+
+    def _request_semantic_view(self, purpose: _SemanticViewPurpose) -> None:
         if self._has_modal:
             return
         self._sync_editor_state()
@@ -3111,7 +3124,9 @@ class TermWriterApp(App[None]):
         if document is None:
             self.notify("Open a Markdown document first", severity="warning")
             return
-        self._semantic_map_worker(_SemanticMapRequest(document, document.path, document.text))
+        self._semantic_map_worker(
+            _SemanticMapRequest(document, document.path, document.text, purpose)
+        )
 
     @work(group="semantic-map", exclusive=True, thread=True, exit_on_error=False)
     def _semantic_map_worker(self, request: _SemanticMapRequest) -> None:
@@ -3142,7 +3157,10 @@ class TermWriterApp(App[None]):
                 title="Semantic blocks unavailable",
             )
             return
-        self.push_screen(SemanticInspectorDialog(result.mapping), self._jump_to_semantic_block)
+        if request.purpose is _SemanticViewPurpose.READ:
+            self.push_screen(SemanticReaderDialog(result.mapping))
+        else:
+            self.push_screen(SemanticInspectorDialog(result.mapping), self._jump_to_semantic_block)
 
     def _jump_to_semantic_block(self, block: SemanticBlock | None) -> None:
         if block is not None and self.document is not None:
@@ -3237,6 +3255,11 @@ class TermWriterApp(App[None]):
             "Inspect semantic blocks",
             "Inspect read-only parser ranges for the active Markdown source",
             self.action_inspect_semantic_blocks,
+        )
+        yield SystemCommand(
+            "Read semantic blocks (experimental)",
+            "Render headings and paragraphs with source fallback for other blocks",
+            self.action_read_semantic_blocks,
         )
         yield SystemCommand(
             "Quit safely", "Prompt before discarding changes", self.action_request_quit

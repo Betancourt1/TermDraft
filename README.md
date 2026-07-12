@@ -25,7 +25,8 @@ The current release is a functional MVP focused on a dependable writing loop:
 
 Future WYSIWYM block editing is designed in
 [`docs/semantic-editing.md`](docs/semantic-editing.md). Hybrid editing is intentionally not
-implemented; a read-only semantic source-range inspector is available from the command palette.
+implemented; the command palette offers a source-range inspector and an opt-in read-only block
+rendering experiment.
 
 ## Interface
 
@@ -253,8 +254,10 @@ abbreviated path queries.
 
 **Inspect semantic blocks** in the command palette parses the active source in a worker and lists
 top-level block ranges plus uncovered separators or reference-definition source. Selecting a range
-jumps to its first line. This diagnostic never edits or renders its source and is not the future
-hybrid WYSIWYM mode.
+jumps to its first line. **Read semantic blocks (experimental)** uses the same immutable worker
+snapshot, independently renders only top-level headings and paragraphs, and shows every unsupported
+construct as exact Markdown source. Escape or **Return to source** immediately reveals the unchanged
+full editor. Links stay inert. Neither command edits, saves, or splices source.
 
 ## Data-safety behavior
 
@@ -390,6 +393,10 @@ writer locking.
   tested for diagnostics but not trusted for source splicing. The detail pane truncates very large
   block previews. It provides no inline delimiter offsets, stable block identity, visual-position
   map, incremental parsing, or hybrid editing.
+- The experimental semantic reader independently parses paragraph slices, so nonlocal reference
+  links and footnotes may not resolve like the full-document preview. Their definitions and every
+  unsupported block stay visible as exact source. The mode is a modal snapshot, not a persistent
+  reading layout or an editor.
 - Recovery has a nominal 500 ms first-write delay. Cooperative `SIGTERM` and `SIGHUP` requests are
   polled every 50 ms and drain exact dirty-tab journals before exit; a failed shutdown publication
   cancels exit and restores editing. `SIGKILL`, power loss, native crashes, a blocked event loop, or
@@ -459,11 +466,9 @@ writer locking.
 
 ## Near-term roadmap
 
-1. Prototype opt-in read-only rendering for simple paragraphs and headings with an immediate
-   full-source fallback.
-2. Validate cursor and viewport mapping under wrapping, combining characters, CJK, and emoji before
+1. Validate cursor and viewport mapping under wrapping, combining characters, CJK, and emoji before
    exposing any active-block editing.
-3. Benchmark semantic parsing and mounted-tab memory on large documents and workspaces before
+2. Benchmark semantic parsing and mounted-tab memory on large documents and workspaces before
    expanding the supported block set.
 
 Implementation boundaries and tradeoffs are documented in
