@@ -8,7 +8,7 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import ClassVar
 
-from textual import on, work
+from textual import events, on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Grid, Horizontal, Vertical
@@ -57,6 +57,8 @@ class RecoveryManagerAction(Enum):
     OPEN = auto()
     RETARGET = auto()
     QUARANTINE = auto()
+    RESTORE_QUARANTINED = auto()
+    DELETE_QUARANTINED = auto()
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,8 +144,8 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | None]):
         with Vertical(classes="dialog", id="recovery-manager-dialog"):
             yield Static("Manage recovery drafts", classes="dialog-title", markup=False)
             yield Static(
-                "Archive removes an entry from TermWriter while preserving its exact journal "
-                "bytes in the recovery quarantine.",
+                "Archive preserves bytes in quarantine. Quarantined entries can be restored or "
+                "deleted forever.",
                 classes="dialog-message",
                 markup=False,
             )
@@ -171,10 +173,15 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | None]):
         records.focus()
         self._refresh_selection()
 
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        """Keep focused recovery controls visible in short terminals."""
+        self.call_after_refresh(event.widget.scroll_visible)
+
     def _record_label(self, record: RecoveryRecord) -> str:
+        location = "QUARANTINE · " if record.quarantined else ""
         if record.entry is None:
             active = " · active" if record.journal_path == self.protected_journal_path else ""
-            return f"CORRUPT · {record.journal_path.name}{active}"
+            return f"{location}CORRUPT · {record.journal_path.name}{active}"
         entry = record.entry
         try:
             label = entry.document_path.relative_to(self.workspace_root).as_posix()
@@ -188,7 +195,7 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | None]):
         if entry.updated_at < datetime.now(UTC) - timedelta(days=30):
             flags.append("old")
         suffix = f" · {', '.join(flags)}" if flags else ""
-        return f"{label}{suffix}"
+        return f"{location}{label}{suffix}"
 
     def _selected_record(self) -> RecoveryRecord | None:
         index = self.query_one("#recovery-manager-records", OptionList).highlighted
@@ -203,6 +210,8 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | None]):
         open_button = self.query_one("#recovery-manager-open", Button)
         retarget_button = self.query_one("#recovery-manager-retarget", Button)
         archive_button = self.query_one("#recovery-manager-archive", Button)
+        open_button.label = "Open draft"
+        retarget_button.label = "Retarget"
         if record is None:
             detail.update("Nothing to manage in this recovery directory.")
             target.disabled = True
@@ -213,6 +222,22 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | None]):
 
         entry = record.entry
         protected = record.journal_path == self.protected_journal_path
+        if record.quarantined:
+            target.disabled = True
+            open_button.label = "Restore"
+            retarget_button.label = "Delete forever"
+            open_button.disabled = entry is None
+            retarget_button.disabled = False
+            archive_button.disabled = True
+            if entry is None:
+                detail.update(
+                    (record.error or "This quarantined entry could not be validated.")
+                    + " It cannot be restored, but it can be permanently deleted."
+                )
+            else:
+                updated = entry.updated_at.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+                detail.update(f"Quarantined · {entry.document_path} · updated {updated}")
+            return
         target.disabled = entry is None or protected
         open_button.disabled = entry is None or protected
         retarget_button.disabled = entry is None or protected
@@ -233,12 +258,25 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | None]):
     def open_record(self) -> None:
         record = self._selected_record()
         if record is not None and record.entry is not None:
-            self.dismiss(RecoveryManagerRequest(RecoveryManagerAction.OPEN, record))
+            action = (
+                RecoveryManagerAction.RESTORE_QUARANTINED
+                if record.quarantined
+                else RecoveryManagerAction.OPEN
+            )
+            self.dismiss(RecoveryManagerRequest(action, record))
 
     @on(Button.Pressed, "#recovery-manager-retarget")
     @on(Input.Submitted, "#recovery-manager-target")
     def retarget_record(self) -> None:
         record = self._selected_record()
+        if record is not None and record.quarantined:
+            self.dismiss(
+                RecoveryManagerRequest(
+                    RecoveryManagerAction.DELETE_QUARANTINED,
+                    record,
+                )
+            )
+            return
         target = self.query_one("#recovery-manager-target", Input).value.strip()
         if record is None or record.entry is None:
             return
@@ -267,6 +305,49 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | None]):
 
     def action_close(self) -> None:
         self.dismiss(None)
+
+
+class RecoveryDeleteDialog(ModalScreen[bool]):
+    """Confirm irreversible deletion of one quarantined recovery entry."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "cancel", "Cancel", show=False),
+    ]
+
+    def __init__(self, record: RecoveryRecord) -> None:
+        self.record = record
+        if record.entry is None:
+            self.description = record.journal_path.name
+        else:
+            self.description = str(record.entry.document_path)
+        super().__init__(id="recovery-delete-screen")
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog", id="recovery-delete-dialog"):
+            yield Static("Permanently delete recovery?", classes="dialog-title", markup=False)
+            yield Static(
+                f"Delete quarantined bytes for {self.description}? This cannot be undone.",
+                classes="dialog-message",
+                markup=False,
+            )
+            with Horizontal(classes="dialog-buttons"):
+                yield Button(
+                    "Delete forever",
+                    id="recovery-delete-confirm",
+                    variant="error",
+                )
+                yield Button("Cancel", id="recovery-delete-cancel")
+
+    @on(Button.Pressed, "#recovery-delete-confirm")
+    def confirm(self) -> None:
+        self.dismiss(True)
+
+    @on(Button.Pressed, "#recovery-delete-cancel")
+    def cancel_button(self) -> None:
+        self.dismiss(False)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
 
 
 class MixedLineEndingsDialog(ModalScreen[bool]):

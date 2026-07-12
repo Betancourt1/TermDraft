@@ -37,6 +37,7 @@ from termwriter.screens.dialogs import (
     HelpDialog,
     MixedLineEndingsDialog,
     RecoveryDecision,
+    RecoveryDeleteDialog,
     RecoveryDialog,
     RecoveryManagerAction,
     RecoveryManagerDialog,
@@ -647,7 +648,9 @@ class TermWriterApp(App[None]):
     def _load_recovery_inventory_worker(self) -> None:
         worker = get_current_worker()
         try:
-            records = self.recovery_journal.list_entries(self.workspace.root)
+            records = self.recovery_journal.list_entries(
+                self.workspace.root
+            ) + self.recovery_journal.list_quarantined(self.workspace.root)
             error_message = None
         except Exception as error:
             records = ()
@@ -693,6 +696,29 @@ class TermWriterApp(App[None]):
     ) -> None:
         if request is None:
             return
+        if request.action is RecoveryManagerAction.DELETE_QUARANTINED:
+            self.call_after_refresh(self._confirm_quarantine_delete, request)
+            return
+        self._start_recovery_management(request)
+
+    def _confirm_quarantine_delete(self, request: RecoveryManagerRequest) -> None:
+        self.push_screen(
+            RecoveryDeleteDialog(request.record),
+            lambda confirmed: self._handle_quarantine_delete_confirmation(
+                request,
+                confirmed,
+            ),
+        )
+
+    def _handle_quarantine_delete_confirmation(
+        self,
+        request: RecoveryManagerRequest,
+        confirmed: bool | None,
+    ) -> None:
+        if confirmed:
+            self._start_recovery_management(request)
+
+    def _start_recovery_management(self, request: RecoveryManagerRequest) -> None:
         self._sync_editor_state()
         document = self.document
         protected_path = document.path if document is not None and document.dirty else None
@@ -717,7 +743,32 @@ class TermWriterApp(App[None]):
                 raise RecoveryError(
                     "Cannot move or archive the active dirty document's recovery draft"
                 )
-            if request.action is RecoveryManagerAction.RETARGET:
+            if (
+                request.action is RecoveryManagerAction.RESTORE_QUARANTINED
+                and protected_path is not None
+                and request.record.entry is not None
+                and paths_are_spelling_aliases(
+                    request.record.entry.document_path,
+                    protected_path,
+                )
+            ):
+                raise RecoveryError(
+                    "Cannot restore a quarantined draft onto the active dirty document"
+                )
+            if request.action is RecoveryManagerAction.RESTORE_QUARANTINED:
+                entry = self.recovery_journal.restore_quarantined(request.record)
+                result = _RecoveryManagementResult(
+                    request.action,
+                    entry=entry,
+                    source_unavailable=self._recovery_source_is_unavailable(entry),
+                )
+            elif request.action is RecoveryManagerAction.DELETE_QUARANTINED:
+                self.recovery_journal.delete_quarantined(request.record)
+                result = _RecoveryManagementResult(
+                    request.action,
+                    quarantine_path=request.record.journal_path,
+                )
+            elif request.action is RecoveryManagerAction.RETARGET:
                 target = self.workspace.validate_document_path(
                     Path(request.target or ""),
                     must_exist=False,
@@ -788,9 +839,16 @@ class TermWriterApp(App[None]):
             name = result.quarantine_path.name if result.quarantine_path is not None else "entry"
             self.notify(f"Archived recovery {escape(name)}")
             return
+        if result.action is RecoveryManagerAction.DELETE_QUARANTINED:
+            name = result.quarantine_path.name if result.quarantine_path is not None else "entry"
+            self.notify(f"Permanently deleted quarantined recovery {escape(name)}")
+            return
         entry = result.entry
         if entry is None:
             return
+        if result.action is RecoveryManagerAction.RESTORE_QUARANTINED:
+            relative = entry.document_path.relative_to(self.workspace.root).as_posix()
+            self.notify(f"Restored quarantined recovery for {escape(relative)}")
         if result.source_unavailable:
             self._request_transition(lambda: self._open_managed_orphan_recovery(entry))
         else:

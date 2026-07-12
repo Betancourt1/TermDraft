@@ -15,6 +15,7 @@ from termwriter.screens.dialogs import (
     FileSearchDialog,
     HelpDialog,
     MixedLineEndingsDialog,
+    RecoveryDeleteDialog,
     RecoveryDialog,
     RecoveryManagerDialog,
     SaveAsDialog,
@@ -1494,3 +1495,137 @@ async def test_recovery_manager_rechecks_active_dirty_draft_before_archive(
         assert recovered is not None
         assert recovered.text == "recoverable draft"
         assert not app.editor.read_only
+
+
+async def test_recovery_manager_restores_quarantine_into_guarded_open_flow(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "active.md"
+    path.write_text("disk base", encoding="utf-8")
+    journal = RecoveryJournal(tmp_path / "state")
+    journal.save(
+        document_path=path,
+        workspace_root=tmp_path,
+        text="archived unsaved draft",
+        encoding="utf-8",
+        base_snapshot=load_file(path).snapshot,
+    )
+    (active_record,) = journal.list_entries(tmp_path)
+    journal.quarantine(active_record)
+    app = app_for_file(path, recovery_journal=journal)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        app.action_manage_recovery()
+        for _ in range(100):
+            if isinstance(app.screen, RecoveryManagerDialog):
+                break
+            await pilot.pause(0.01)
+        assert isinstance(app.screen, RecoveryManagerDialog)
+        await pilot.click("#recovery-manager-open")
+
+        for _ in range(200):
+            if isinstance(app.screen, RecoveryDialog):
+                break
+            await pilot.pause(0.01)
+        assert isinstance(app.screen, RecoveryDialog)
+        await pilot.click("#recovery-restore")
+
+        assert app.document is not None
+        assert app.document.text == "archived unsaved draft"
+        assert app.document.dirty
+        assert journal.list_quarantined(tmp_path) == ()
+        assert journal.load(path) is not None
+
+
+async def test_recovery_manager_permanently_deletes_quarantine_after_confirmation(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "active.md"
+    path.write_text("base", encoding="utf-8")
+    journal = RecoveryJournal(tmp_path / "state")
+    quarantine_root = journal.state_root / "quarantine"
+    quarantine_root.mkdir(parents=True)
+    quarantine_path = quarantine_root / f"{'f' * 64}.json"
+    quarantine_path.write_bytes(b"corrupt archived bytes")
+    app = app_for_file(path, recovery_journal=journal)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        app.action_manage_recovery()
+        for _ in range(100):
+            if isinstance(app.screen, RecoveryManagerDialog):
+                break
+            await pilot.pause(0.01)
+        assert isinstance(app.screen, RecoveryManagerDialog)
+
+        await pilot.click("#recovery-manager-retarget")
+        for _ in range(100):
+            if isinstance(app.screen, RecoveryDeleteDialog):
+                break
+            await pilot.pause(0.01)
+        assert isinstance(app.screen, RecoveryDeleteDialog)
+        assert quarantine_path.exists()
+        await pilot.click("#recovery-delete-cancel")
+        assert quarantine_path.exists()
+
+        app.action_manage_recovery()
+        for _ in range(100):
+            if isinstance(app.screen, RecoveryManagerDialog):
+                break
+            await pilot.pause(0.01)
+        assert isinstance(app.screen, RecoveryManagerDialog)
+        await pilot.click("#recovery-manager-retarget")
+        for _ in range(100):
+            if isinstance(app.screen, RecoveryDeleteDialog):
+                break
+            await pilot.pause(0.01)
+        assert isinstance(app.screen, RecoveryDeleteDialog)
+        await pilot.click("#recovery-delete-confirm")
+        for _ in range(100):
+            if not quarantine_path.exists():
+                break
+            await pilot.pause(0.01)
+
+        assert not quarantine_path.exists()
+        assert journal.list_quarantined(tmp_path) == ()
+
+
+async def test_recovery_manager_rechecks_dirty_document_before_quarantine_restore(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "active.md"
+    path.write_text("base", encoding="utf-8")
+    journal = RecoveryJournal(tmp_path / "state")
+    journal.save(
+        document_path=path,
+        workspace_root=tmp_path,
+        text="archived draft",
+        encoding="utf-8",
+        base_snapshot=load_file(path).snapshot,
+    )
+    (active_record,) = journal.list_entries(tmp_path)
+    quarantine_path = journal.quarantine(active_record)
+    app = app_for_file(path, recovery_journal=journal, recovery_debounce=10)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        app.action_manage_recovery()
+        for _ in range(100):
+            if isinstance(app.screen, RecoveryManagerDialog):
+                break
+            await pilot.pause(0.01)
+        assert isinstance(app.screen, RecoveryManagerDialog)
+        first_dialog = app.screen
+
+        app.editor.insert("x", (0, 0))
+        await pilot.pause()
+        await pilot.click("#recovery-manager-open")
+        for _ in range(150):
+            if isinstance(app.screen, RecoveryManagerDialog) and app.screen is not first_dialog:
+                break
+            await pilot.pause(0.01)
+
+        assert isinstance(app.screen, RecoveryManagerDialog)
+        assert app.screen is not first_dialog
+        assert quarantine_path.exists()
+        assert journal.load(path) is None
+        assert app.document is not None
+        assert app.document.text == "xbase"
