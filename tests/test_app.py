@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from termwriter.app import TermWriterApp
-from termwriter.models.document import Document, FileSnapshot
+from termwriter.models.document import FileSnapshot
 from termwriter.models.workspace import Workspace
 from termwriter.screens.dialogs import (
     ConflictDialog,
@@ -18,7 +18,7 @@ from termwriter.screens.dialogs import (
     SaveAsDialog,
     UnsavedChangesDialog,
 )
-from termwriter.services.external_changes import ExternalChange, ExternalChangeKind
+from termwriter.services.external_changes import DiskProbe
 from termwriter.services.persistence import SaveResult, atomic_save, load_file
 from termwriter.services.recovery import RecoveryJournal
 
@@ -277,14 +277,14 @@ async def test_dirty_inaccessible_file_offers_save_as(
     path.write_text("base", encoding="utf-8")
     app = app_for_file(path)
 
-    def inaccessible(document: Document) -> ExternalChange:
-        del document
-        return ExternalChange(ExternalChangeKind.INACCESSIBLE, None, "permission denied")
+    def inaccessible(path: Path) -> DiskProbe:
+        return DiskProbe(path, None, "permission denied")
 
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.press("x")
-        monkeypatch.setattr("termwriter.app.detect_external_change", inaccessible)
+        monkeypatch.setattr("termwriter.app.probe_file", inaccessible)
         await pilot.press("ctrl+s")
+        await pilot.pause(0.1)
 
         assert isinstance(app.screen, ConflictDialog)
         assert not app.screen.can_reload
@@ -576,6 +576,7 @@ async def test_external_watcher_marks_dirty_conflict_without_opening_modal(
         await pilot.press("x")
         path.write_text("external", encoding="utf-8")
         app._check_external_in_background()
+        await pilot.pause(0.1)
 
         assert app.document is not None
         assert app.document.text == "xbase"
@@ -593,9 +594,10 @@ async def test_external_watcher_marks_deletion_without_erasing_editor(tmp_path: 
     path.write_text("base", encoding="utf-8")
     app = app_for_file(path)
 
-    async with app.run_test(size=(100, 30)):
+    async with app.run_test(size=(100, 30)) as pilot:
         path.unlink()
         app._check_external_in_background()
+        await pilot.pause(0.1)
 
         assert app.document is not None
         assert app.document.text == "base"
@@ -622,10 +624,12 @@ async def test_external_watcher_pauses_for_modal_and_clears_reverted_conflict(
 
         await pilot.press("escape")
         app._check_external_in_background()
+        await pilot.pause(0.1)
         assert app.document.conflict
 
         path.write_text("base", encoding="utf-8")
         app._check_external_in_background()
+        await pilot.pause(0.1)
         assert not app.document.conflict
         assert app.document.text == "xbase"
         assert app.document.dirty
@@ -655,6 +659,7 @@ async def test_external_watcher_requires_consent_for_mixed_line_ending_reload(
 
         path.write_text("uniform", encoding="utf-8")
         app._check_external_in_background()
+        await pilot.pause(0.1)
         assert not app.editor.read_only
         await pilot.press("x")
         assert app.document.text == "xuniform"
@@ -670,7 +675,7 @@ async def test_external_watcher_marks_invalid_utf8_reload_as_persistent_conflict
     async with app.run_test(size=(100, 30)) as pilot:
         path.write_bytes(b"\xff\xfe")
         app._check_external_in_background()
-        app._check_external_in_background()
+        await pilot.pause(0.1)
 
         assert app.document is not None
         assert app.document.text == "base"
@@ -1061,6 +1066,7 @@ async def test_permission_tightening_before_save_is_preserved(tmp_path: Path) ->
         await pilot.press("x")
         path.chmod(0o600)
         await pilot.press("ctrl+s")
+        await pilot.pause(0.1)
 
         assert path.read_text(encoding="utf-8") == "xbase"
         assert path.stat().st_mode & 0o777 == 0o600

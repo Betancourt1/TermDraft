@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum, auto
 from pathlib import Path, PurePath
 
 from rich.markup import escape
-from textual import events, on
+from textual import events, on, work
 from textual.app import App, ComposeResult, SystemCommand
 from textual.containers import Horizontal
 from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
 from textual.widgets import DirectoryTree, Static, TextArea
+from textual.worker import Worker, get_current_worker
 
 from termwriter.bindings import (
     APP_BINDINGS,
@@ -41,23 +44,75 @@ from termwriter.screens.dialogs import (
     UnsavedDecision,
 )
 from termwriter.services.external_changes import (
+    DiskProbe,
     ExternalChange,
     ExternalChangeKind,
-    detect_external_change,
+    classify_external_change,
+    probe_file,
 )
 from termwriter.services.persistence import (
     ExternalModificationError,
+    LoadedFile,
     PersistenceError,
+    SaveResult,
     atomic_save,
     load_file,
     snapshot_file,
 )
-from termwriter.services.recovery import RecoveryEntry, RecoveryError, RecoveryJournal
+from termwriter.services.recovery import (
+    RecoveryEntry,
+    RecoveryError,
+    RecoveryJournal,
+    RecoveryScan,
+)
 from termwriter.services.text_search import TextSearchMatch, TextSearchOverride
 from termwriter.widgets.editor import MarkdownEditor
 from termwriter.widgets.file_tree import FileExplorer
 from termwriter.widgets.preview import MarkdownPreview
 from termwriter.widgets.status_bar import TermWriterStatusBar
+
+
+class _ProbePurpose(Enum):
+    WATCH = auto()
+    TRANSITION = auto()
+    CURRENT_RESULT = auto()
+    SAVE_CLEAN = auto()
+    SAVE_DIRTY = auto()
+    SAVE_RECOVERY = auto()
+
+
+class _LoadPurpose(Enum):
+    OPEN = auto()
+    RELOAD_AUTOMATIC = auto()
+    RELOAD_MANUAL = auto()
+
+
+@dataclass(frozen=True, slots=True)
+class _DocumentTicket:
+    document: Document
+    generation: int
+    path: Path
+    snapshot: FileSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class _SaveWorkerResult:
+    saved: SaveResult | None = None
+    external_snapshot: FileSnapshot | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _SaveAsWorkerResult:
+    target: Path | None = None
+    saved: SaveResult | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _OrphanWorkerResult:
+    scan: RecoveryScan
+    unavailable: tuple[RecoveryEntry, ...]
 
 
 class TermWriterApp(App[None]):
@@ -98,7 +153,7 @@ class TermWriterApp(App[None]):
         self._recovery_timer: Timer | None = None
         self._recovery_revision = 0
         self._preview_revision = 0
-        self._pending_transition: Callable[[], None] | None = None
+        self._pending_transition: Callable[[], object] | None = None
         self._save_continuation: Callable[[], None] | None = None
         self._explorer_visible = True
         self._preview_visible = True
@@ -112,6 +167,15 @@ class TermWriterApp(App[None]):
         self._orphan_recoveries: list[RecoveryEntry] = []
         self._mixed_reload_continuation: Callable[[], None] | None = None
         self._pending_open_location: tuple[Path, int, int] | None = None
+        self._pending_focus_location: tuple[int, int] | None = None
+        self._document_generation = 0
+        self._critical_io = False
+        self._critical_document: Document | None = None
+        self._critical_previous_read_only = False
+        self._critical_previous_status: str | None = None
+        self._critical_froze_editor = False
+        self._critical_changed_status = False
+        self._watch_probe_worker: Worker[None] | None = None
 
     def compose(self) -> ComposeResult:
         yield Static(f"TermWriter  ·  {self.workspace.root}", id="title-bar", markup=False)
@@ -126,7 +190,7 @@ class TermWriterApp(App[None]):
                 yield MarkdownPreview()
         yield TermWriterStatusBar()
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
         self._refresh_workspace_index()
         self._external_watch_timer = self.set_interval(
             self.external_poll_interval,
@@ -136,11 +200,13 @@ class TermWriterApp(App[None]):
         self._narrow = self.size.width < 100
         self._apply_panel_visibility()
         if self.workspace.initial_file is not None:
-            self._open_file_now(self.workspace.initial_file)
+            worker = self._open_file_now(self.workspace.initial_file)
+            if worker is not None:
+                await worker.wait()
         else:
             self.explorer.directory_tree.focus()
             self._refresh_status()
-            self._scan_orphan_recoveries()
+            await self._scan_orphan_recoveries().wait()
 
     def on_resize(self, event: events.Resize) -> None:
         was_narrow = self._narrow
@@ -169,6 +235,74 @@ class TermWriterApp(App[None]):
     @property
     def explorer(self) -> FileExplorer:
         return self.query_one(FileExplorer)
+
+    def _document_ticket(self, document: Document) -> _DocumentTicket:
+        return _DocumentTicket(
+            document=document,
+            generation=self._document_generation,
+            path=document.path,
+            snapshot=document.snapshot,
+        )
+
+    def _ticket_is_current(self, ticket: _DocumentTicket) -> bool:
+        document = self.document
+        return (
+            document is ticket.document
+            and self._document_generation == ticket.generation
+            and document.path == ticket.path
+            and document.snapshot == ticket.snapshot
+        )
+
+    def _accept_unchanged_snapshot(
+        self,
+        document: Document,
+        snapshot: FileSnapshot,
+    ) -> None:
+        if snapshot != document.snapshot:
+            self._document_generation += 1
+        document.accept_unchanged_snapshot(snapshot)
+
+    def _begin_critical_io(
+        self,
+        document: Document | None,
+        *,
+        freeze_editor: bool,
+        status: str | None = None,
+    ) -> bool:
+        if self._critical_io:
+            self.notify("A file operation is already in progress", severity="warning")
+            return False
+        self._critical_io = True
+        self._critical_document = document
+        self._critical_froze_editor = freeze_editor and document is not None
+        self._critical_changed_status = status is not None and document is not None
+        self._critical_previous_status = document.last_save_status if document is not None else None
+        if document is not None:
+            self._critical_previous_read_only = self.editor.read_only
+            if self._critical_froze_editor:
+                self.editor.read_only = True
+            if status is not None:
+                document.last_save_status = status
+        self._refresh_status()
+        return True
+
+    def _finish_critical_io(self, *, restore_status: bool = True) -> None:
+        document = self._critical_document
+        if document is not None and self.document is document:
+            if self._critical_froze_editor:
+                self.editor.read_only = self._critical_previous_read_only
+            if (
+                restore_status
+                and self._critical_changed_status
+                and self._critical_previous_status is not None
+            ):
+                document.last_save_status = self._critical_previous_status
+        self._critical_io = False
+        self._critical_document = None
+        self._critical_froze_editor = False
+        self._critical_changed_status = False
+        self._critical_previous_status = None
+        self._refresh_status()
 
     def _refresh_workspace_index(self) -> None:
         result = self.workspace.scan()
@@ -259,20 +393,18 @@ class TermWriterApp(App[None]):
 
     def _request_open_at(self, path: Path, line: int, column: int) -> None:
         """Open a validated search result through the normal transition guard."""
+        if self._critical_io:
+            self.notify("Wait for the current file operation to finish", severity="warning")
+            return
         if self.document is not None and self._is_current_document(path):
             self._sync_editor_state()
-            if not self.document.dirty:
-                change = detect_external_change(self.document)
-                if change.kind is ExternalChangeKind.MODIFIED:
-                    self._save_continuation = lambda: self._focus_editor_at(line, column)
-                    self._reload_current_from_disk(automatic=True, failure_dialog=True)
-                    return
-                if change.kind in {
-                    ExternalChangeKind.DELETED,
-                    ExternalChangeKind.INACCESSIBLE,
-                }:
-                    self._mark_external_warning(change)
-            self._focus_editor_at(line, column)
+            if self.document.dirty:
+                self._focus_editor_at(line, column)
+                return
+            self._pending_focus_location = (line, column)
+            ticket = self._document_ticket(self.document)
+            if self._begin_critical_io(self.document, freeze_editor=False):
+                self._probe_document_worker(ticket, _ProbePurpose.CURRENT_RESULT)
             return
         try:
             safe_path = self.workspace.validate_document_path(path)
@@ -294,7 +426,10 @@ class TermWriterApp(App[None]):
             return False
         return paths_are_spelling_aliases(path, document.path)
 
-    def _request_transition(self, continuation: Callable[[], None]) -> None:
+    def _request_transition(self, continuation: Callable[[], object]) -> None:
+        if self._critical_io:
+            self.notify("Wait for the current file operation to finish", severity="warning")
+            return
         self._sync_editor_state()
         document = self.document
         if document is not None and document.dirty:
@@ -303,7 +438,7 @@ class TermWriterApp(App[None]):
             return
         if document is not None:
             try:
-                document.path = self.workspace.validate_document_path(document.path)
+                safe_path = self.workspace.validate_document_path(document.path)
             except WorkspaceError as error:
                 self._pending_transition = continuation
                 self._show_conflict(
@@ -311,13 +446,14 @@ class TermWriterApp(App[None]):
                     after=self._complete_pending_transition,
                 )
                 return
-            change = detect_external_change(document)
-            if change.kind is ExternalChangeKind.UNCHANGED and change.snapshot is not None:
-                document.accept_unchanged_snapshot(change.snapshot)
-            elif change.kind in {ExternalChangeKind.DELETED, ExternalChangeKind.INACCESSIBLE}:
-                self._pending_transition = continuation
-                self._show_conflict(change, after=self._complete_pending_transition)
-                return
+            if safe_path != document.path:
+                document.path = safe_path
+                self._document_generation += 1
+            self._pending_transition = continuation
+            ticket = self._document_ticket(document)
+            if self._begin_critical_io(document, freeze_editor=False):
+                self._probe_document_worker(ticket, _ProbePurpose.TRANSITION)
+            return
         continuation()
 
     def _handle_unsaved_decision(self, decision: UnsavedDecision | None) -> None:
@@ -340,17 +476,27 @@ class TermWriterApp(App[None]):
         self._pending_transition = None
         self._save_continuation = None
         self._pending_open_location = None
+        self._pending_focus_location = None
         self._refresh_status()
 
-    def _open_file_now(self, path: Path) -> None:
+    def _open_file_now(self, path: Path) -> Worker[None] | None:
         try:
             safe_path = self.workspace.validate_document_path(path)
-            loaded = load_file(safe_path)
-        except (OSError, PersistenceError, WorkspaceError) as error:
+        except WorkspaceError as error:
             self.notify(escape(str(error)), severity="error", title="Cannot open file")
             self._cancel_pending_open()
-            return
+            return None
 
+        current = self.document
+        if not self._begin_critical_io(
+            current,
+            freeze_editor=current is not None,
+            status="Opening…" if current is not None else None,
+        ):
+            return None
+        return self._load_document_worker(None, safe_path, _LoadPurpose.OPEN, False)
+
+    def _finish_open_loaded(self, safe_path: Path, loaded: LoadedFile) -> None:
         document = Document(
             path=safe_path,
             text=loaded.text,
@@ -413,18 +559,47 @@ class TermWriterApp(App[None]):
                 self._orphan_recoveries.clear()
             self._cancel_pending_open()
 
-    def _scan_orphan_recoveries(self) -> None:
-        result = self.recovery_journal.scan_workspace(self.workspace.root)
-        if result.warnings:
+    def _scan_orphan_recoveries(self) -> Worker[None]:
+        return self._scan_orphan_recoveries_worker()
+
+    def _finish_orphan_recovery_scan(self, result: _OrphanWorkerResult) -> None:
+        scan = result.scan
+        if scan.warnings:
             self.notify(
-                f"Skipped {len(result.warnings)} invalid recovery entry or entries",
+                f"Skipped {len(scan.warnings)} invalid recovery entry or entries",
                 severity="warning",
                 title="Recovery scan",
             )
-        self._orphan_recoveries = [
-            entry for entry in result.entries if self._recovery_source_is_unavailable(entry)
-        ]
+        self._orphan_recoveries = list(result.unavailable)
         self._offer_next_orphan_recovery()
+
+    def _scan_orphan_recoveries_now(self) -> _OrphanWorkerResult:
+        result = self.recovery_journal.scan_workspace(self.workspace.root)
+        unavailable = tuple(
+            entry for entry in result.entries if self._recovery_source_is_unavailable(entry)
+        )
+        return _OrphanWorkerResult(result, unavailable)
+
+    @work(group="recovery-scan", exclusive=True, thread=True, exit_on_error=False)
+    def _scan_orphan_recoveries_worker(self) -> None:
+        worker = get_current_worker()
+        try:
+            result = self._scan_orphan_recoveries_now()
+            error_message = None
+        except Exception as error:
+            result = None
+            error_message = str(error)
+        if worker.is_cancelled:
+            return
+        if result is not None:
+            self.call_from_thread(self._finish_orphan_recovery_scan, result)
+        else:
+            self.call_from_thread(
+                self.notify,
+                escape(error_message or "Recovery scan failed"),
+                severity="warning",
+                title="Recovery scan",
+            )
 
     def _recovery_source_is_unavailable(self, entry: RecoveryEntry) -> bool:
         try:
@@ -508,6 +683,7 @@ class TermWriterApp(App[None]):
             self._recovery_timer.stop()
             self._recovery_timer = None
         self.document = document
+        self._document_generation += 1
         with self.editor.prevent(TextArea.Changed):
             self.editor.load_text(document.text)
         self._editor_baseline_text = self.editor.text
@@ -609,6 +785,9 @@ class TermWriterApp(App[None]):
             self._save_current()
 
     def _save_current(self, *, after: Callable[[], None] | None = None) -> None:
+        if self._critical_io:
+            self.notify("Wait for the current file operation to finish", severity="warning")
+            return
         self._sync_editor_state()
         document = self.document
         if document is None:
@@ -616,75 +795,243 @@ class TermWriterApp(App[None]):
             return
 
         try:
-            document.path = self.workspace.validate_document_path(document.path)
+            safe_path = self.workspace.validate_document_path(document.path)
         except WorkspaceError as error:
             self._show_conflict(
                 ExternalChange(ExternalChangeKind.INACCESSIBLE, None, str(error)),
                 after=after,
             )
             return
+        if safe_path != document.path:
+            document.path = safe_path
+            self._document_generation += 1
 
+        self._save_continuation = after
+        ticket = self._document_ticket(document)
         if document.recovery_conflict:
-            current = detect_external_change(document)
-            if current.kind is ExternalChangeKind.INACCESSIBLE:
-                self._show_conflict(current, after=after)
-            else:
-                self._show_conflict(
-                    ExternalChange(ExternalChangeKind.CONFLICT, current.snapshot),
-                    after=after,
+            purpose = _ProbePurpose.SAVE_RECOVERY
+        elif document.dirty:
+            purpose = _ProbePurpose.SAVE_DIRTY
+        else:
+            purpose = _ProbePurpose.SAVE_CLEAN
+        if self._begin_critical_io(document, freeze_editor=False, status="Checking…"):
+            self._probe_document_worker(ticket, purpose)
+
+    @work(group="document-probe", exclusive=True, thread=True, exit_on_error=False)
+    def _probe_document_worker(
+        self,
+        ticket: _DocumentTicket,
+        purpose: _ProbePurpose,
+    ) -> None:
+        worker = get_current_worker()
+        try:
+            probe = probe_file(ticket.path)
+        except Exception as error:
+            probe = DiskProbe(ticket.path, None, str(error))
+        if not worker.is_cancelled:
+            self.call_from_thread(self._handle_probe_result, ticket, purpose, probe)
+
+    def _handle_probe_result(
+        self,
+        ticket: _DocumentTicket,
+        purpose: _ProbePurpose,
+        probe: DiskProbe,
+    ) -> None:
+        if not self._ticket_is_current(ticket):
+            if purpose is not _ProbePurpose.WATCH and self._critical_io:
+                self._finish_critical_io()
+                self._cancel_pending_transition()
+                self.notify(
+                    "Ignored a stale file check; the document state changed",
+                    severity="warning",
                 )
             return
 
-        change = detect_external_change(document)
-        if change.kind is ExternalChangeKind.UNCHANGED:
-            if change.snapshot is not None:
-                document.accept_unchanged_snapshot(change.snapshot)
-            if not document.dirty:
-                document.last_save_status = "No changes"
-                self._clear_recovery(document.path)
-                self._refresh_status()
-                if after is not None:
-                    after()
+        document = ticket.document
+        if purpose is _ProbePurpose.WATCH:
+            if (
+                self._critical_io
+                or self._has_modal
+                or self._pending_transition is not None
+                or self._save_continuation is not None
+            ):
                 return
-        elif change.kind is ExternalChangeKind.MODIFIED:
-            self._save_continuation = after
-            self._reload_current_from_disk(automatic=True, failure_dialog=True)
-            return
-        elif change.kind is ExternalChangeKind.INACCESSIBLE:
-            self._show_conflict(change, after=after)
-            return
-        else:
-            self._show_conflict(change, after=after)
+            change = classify_external_change(
+                ticket.snapshot,
+                dirty=document.dirty,
+                probe=probe,
+            )
+            if change.kind is ExternalChangeKind.UNCHANGED and change.snapshot is not None:
+                self._accept_unchanged_snapshot(document, change.snapshot)
+            elif change.kind is ExternalChangeKind.MODIFIED:
+                self._reload_current_from_disk(automatic=True)
+            else:
+                self._mark_external_warning(change)
+            self._refresh_status()
             return
 
-        try:
-            result = atomic_save(
-                document.path,
-                document.text,
-                encoding=document.encoding,
-                expected=document.snapshot,
-            )
-        except ExternalModificationError:
-            self._show_conflict(detect_external_change(document), after=after)
+        change = classify_external_change(
+            ticket.snapshot,
+            dirty=document.dirty,
+            probe=probe,
+        )
+
+        if purpose is _ProbePurpose.TRANSITION:
+            if document.dirty:
+                continuation = self._pending_transition
+                self._pending_transition = None
+                self._finish_critical_io()
+                if continuation is not None:
+                    self._request_transition(continuation)
+                return
+            if change.kind is ExternalChangeKind.UNCHANGED and change.snapshot is not None:
+                self._accept_unchanged_snapshot(document, change.snapshot)
+            if change.kind in {ExternalChangeKind.DELETED, ExternalChangeKind.INACCESSIBLE}:
+                self._finish_critical_io()
+                self._show_conflict(change, after=self._complete_pending_transition)
+                return
+            self._finish_critical_io()
+            self._complete_pending_transition()
             return
+
+        if purpose is _ProbePurpose.CURRENT_RESULT:
+            location = self._pending_focus_location
+            self._pending_focus_location = None
+            if change.kind is ExternalChangeKind.UNCHANGED and change.snapshot is not None:
+                self._accept_unchanged_snapshot(document, change.snapshot)
+                self._finish_critical_io()
+            elif change.kind is ExternalChangeKind.MODIFIED:
+                if location is not None:
+                    self._save_continuation = lambda: self._focus_editor_at(*location)
+                self._finish_critical_io()
+                self._reload_current_from_disk(automatic=True, failure_dialog=True)
+                return
+            else:
+                self._finish_critical_io()
+                self._mark_external_warning(change)
+            if location is not None:
+                self._focus_editor_at(*location)
+            return
+
+        continuation = self._save_continuation
+        if purpose is _ProbePurpose.SAVE_CLEAN and document.dirty:
+            self._save_continuation = None
+            self._finish_critical_io()
+            self._save_current(after=continuation)
+            return
+
+        if purpose is _ProbePurpose.SAVE_RECOVERY:
+            if change.kind is not ExternalChangeKind.INACCESSIBLE:
+                change = ExternalChange(ExternalChangeKind.CONFLICT, change.snapshot)
+            self._finish_critical_io()
+            self._show_conflict(change, after=continuation)
+            return
+
+        if purpose is _ProbePurpose.SAVE_DIRTY:
+            if change.kind is not ExternalChangeKind.UNCHANGED:
+                self._finish_critical_io()
+                self._show_conflict(change, after=continuation)
+                return
+            if change.snapshot is not None:
+                self._accept_unchanged_snapshot(document, change.snapshot)
+            self._finish_critical_io()
+            ticket = self._document_ticket(document)
+            if self._begin_critical_io(document, freeze_editor=True, status="Saving…"):
+                self._save_document_worker(ticket, document.text, document.encoding)
+            return
+
+        if change.kind is ExternalChangeKind.UNCHANGED and change.snapshot is not None:
+            self._accept_unchanged_snapshot(document, change.snapshot)
+            document.last_save_status = "No changes"
+            self._save_continuation = None
+            self._clear_recovery(document.path)
+            self._finish_critical_io(restore_status=False)
+            if continuation is not None:
+                continuation()
+            return
+        if change.kind is ExternalChangeKind.MODIFIED:
+            self._finish_critical_io()
+            self._reload_current_from_disk(automatic=True, failure_dialog=True)
+            return
+        self._finish_critical_io()
+        self._show_conflict(change, after=continuation)
+
+    @work(group="document-save", exclusive=True, thread=True, exit_on_error=False)
+    def _save_document_worker(
+        self,
+        ticket: _DocumentTicket,
+        text: str,
+        encoding: str,
+    ) -> None:
+        worker = get_current_worker()
+        try:
+            saved = atomic_save(
+                ticket.path,
+                text,
+                encoding=encoding,
+                expected=ticket.snapshot,
+            )
+            outcome = _SaveWorkerResult(saved=saved)
+        except ExternalModificationError as error:
+            outcome = _SaveWorkerResult(external_snapshot=error.current)
         except (OSError, PersistenceError) as error:
+            outcome = _SaveWorkerResult(error=str(error))
+        except Exception as error:
+            outcome = _SaveWorkerResult(error=f"Unexpected save failure: {error}")
+        if not worker.is_cancelled:
+            self.call_from_thread(self._handle_save_worker_result, ticket, outcome)
+
+    def _handle_save_worker_result(
+        self,
+        ticket: _DocumentTicket,
+        outcome: _SaveWorkerResult,
+    ) -> None:
+        continuation = self._save_continuation
+        if not self._ticket_is_current(ticket):
+            self._finish_critical_io()
+            self._cancel_pending_transition()
+            self.notify(
+                "Save finished, but its document baseline changed; verify the disk file",
+                severity="error",
+                title="Save state uncertain",
+            )
+            return
+
+        document = ticket.document
+        if outcome.external_snapshot is not None:
+            change = classify_external_change(
+                ticket.snapshot,
+                dirty=document.dirty,
+                probe=DiskProbe(ticket.path, outcome.external_snapshot),
+            )
+            self._finish_critical_io()
+            self._show_conflict(change, after=continuation)
+            return
+        if outcome.error is not None or outcome.saved is None:
             document.last_save_status = "Save failed"
-            self.notify(escape(str(error)), severity="error", title="Save failed")
+            self._finish_critical_io(restore_status=False)
+            self.notify(
+                escape(outcome.error or "The save did not return a result"),
+                severity="error",
+                title="Save failed",
+            )
             self._cancel_pending_transition()
             return
 
         timestamp = datetime.now().astimezone().strftime("Saved %H:%M:%S")
-        document.mark_saved(result.snapshot, timestamp)
+        document.mark_saved(outcome.saved.snapshot, timestamp)
+        self._document_generation += 1
         self._editor_baseline_text = self.editor.text
         self._editor_baseline_source_text = document.text
         self._clear_recovery(document.path)
-        self._refresh_status()
-        if result.warning:
-            self.notify(result.warning, severity="warning")
+        self._save_continuation = None
+        self._finish_critical_io(restore_status=False)
+        if outcome.saved.warning:
+            self.notify(outcome.saved.warning, severity="warning")
         else:
             self.notify(f"Saved {escape(document.path.name)}")
-        if after is not None:
-            after()
+        if continuation is not None:
+            continuation()
 
     def _show_conflict(
         self,
@@ -735,6 +1082,8 @@ class TermWriterApp(App[None]):
 
     @on(SaveAsDialog.Submitted)
     def _handle_save_as_submission(self, event: SaveAsDialog.Submitted) -> None:
+        if self._critical_io:
+            return
         document = self.document
         if document is None:
             event.dialog.dismiss(False)
@@ -743,47 +1092,84 @@ class TermWriterApp(App[None]):
         if not event.value:
             event.dialog.show_error("Enter a Markdown filename.")
             return
+        ticket = self._document_ticket(document)
+        if self._begin_critical_io(document, freeze_editor=True, status="Saving copy…"):
+            event.dialog.set_busy(True)
+            self._save_as_worker(
+                ticket,
+                event.dialog,
+                Path(event.value),
+                document.text,
+                document.encoding,
+            )
+
+    @work(group="save-as", exclusive=True, thread=True, exit_on_error=False)
+    def _save_as_worker(
+        self,
+        ticket: _DocumentTicket,
+        dialog: SaveAsDialog,
+        requested_path: Path,
+        text: str,
+        encoding: str,
+    ) -> None:
+        worker = get_current_worker()
         try:
-            target = self.workspace.validate_document_path(Path(event.value), must_exist=False)
+            target = self.workspace.validate_document_path(requested_path, must_exist=False)
             expected_target = snapshot_file(target)
             target = self.workspace.validate_document_path(target, must_exist=False)
-        except WorkspaceError as error:
-            event.dialog.show_error(str(error))
+            if expected_target.exists or target.exists() or target.is_symlink():
+                outcome = _SaveAsWorkerResult(
+                    error="That path already exists; choose a new filename."
+                )
+            else:
+                saved = atomic_save(
+                    target,
+                    text,
+                    encoding=encoding,
+                    expected=expected_target,
+                )
+                outcome = _SaveAsWorkerResult(target=target, saved=saved)
+        except (OSError, PersistenceError, WorkspaceError) as error:
+            outcome = _SaveAsWorkerResult(error=str(error))
+        except Exception as error:
+            outcome = _SaveAsWorkerResult(error=f"Unexpected Save As failure: {error}")
+        if not worker.is_cancelled:
+            self.call_from_thread(self._handle_save_as_worker_result, ticket, dialog, outcome)
+
+    def _handle_save_as_worker_result(
+        self,
+        ticket: _DocumentTicket,
+        dialog: SaveAsDialog,
+        outcome: _SaveAsWorkerResult,
+    ) -> None:
+        if not self._ticket_is_current(ticket):
+            self._finish_critical_io()
+            dialog.show_error("The active document changed before Save As completed.")
             return
-        except (OSError, PersistenceError) as error:
-            event.dialog.show_error(str(error))
-            return
-        if expected_target.exists or target.exists() or target.is_symlink():
-            event.dialog.show_error("That path already exists; choose a new filename.")
+        if outcome.error is not None or outcome.target is None or outcome.saved is None:
+            self._finish_critical_io()
+            dialog.show_error(outcome.error or "Save As did not return a result.")
             return
 
-        try:
-            result = atomic_save(
-                target,
-                document.text,
-                encoding=document.encoding,
-                expected=expected_target,
-            )
-        except (OSError, PersistenceError) as error:
-            event.dialog.show_error(str(error))
-            return
-
+        document = ticket.document
         previous_path = document.path
         self._clear_recovery(previous_path)
-        document.retarget(target)
+        document.retarget(outcome.target)
         timestamp = datetime.now().astimezone().strftime("Saved %H:%M:%S")
-        document.mark_saved(result.snapshot, timestamp)
+        document.mark_saved(outcome.saved.snapshot, timestamp)
+        self._document_generation += 1
         self._editor_baseline_text = self.editor.text
         self._editor_baseline_source_text = document.text
-        self.explorer.set_active(target)
+        self.explorer.set_active(outcome.target)
         self._refresh_workspace_index()
         self.explorer.directory_tree.reload()
-        self._refresh_status()
-        if result.warning:
-            self.notify(result.warning, severity="warning")
+        self._finish_critical_io(restore_status=False)
+        if outcome.saved.warning:
+            self.notify(outcome.saved.warning, severity="warning")
         else:
-            self.notify(f"Saved local version as {escape(target.name)}")
-        event.dialog.dismiss(True)
+            self.notify(f"Saved local version as {escape(outcome.target.name)}")
+        dialog.set_busy(False)
+        dialog.dismiss(True)
 
     def _handle_save_as_closed(self, saved: bool | None) -> None:
         if not saved:
@@ -800,14 +1186,16 @@ class TermWriterApp(App[None]):
         automatic: bool,
         failure_dialog: bool = False,
     ) -> None:
+        if self._critical_io:
+            self.notify("Wait for the current file operation to finish", severity="warning")
+            return
         document = self.document
         if document is None:
             self._cancel_pending_transition()
             return
         try:
-            document.path = self.workspace.validate_document_path(document.path)
-            loaded = load_file(document.path)
-        except (OSError, PersistenceError, WorkspaceError) as error:
+            safe_path = self.workspace.validate_document_path(document.path)
+        except WorkspaceError as error:
             if failure_dialog:
                 continuation = self._save_continuation
                 self._save_continuation = None
@@ -825,8 +1213,111 @@ class TermWriterApp(App[None]):
             self._cancel_pending_transition()
             return
 
+        if safe_path != document.path:
+            document.path = safe_path
+            self._document_generation += 1
+        ticket = self._document_ticket(document)
+        purpose = _LoadPurpose.RELOAD_AUTOMATIC if automatic else _LoadPurpose.RELOAD_MANUAL
+        if self._begin_critical_io(document, freeze_editor=True, status="Reloading…"):
+            self._load_document_worker(ticket, safe_path, purpose, failure_dialog)
+
+    @work(group="document-load", exclusive=True, thread=True, exit_on_error=False)
+    def _load_document_worker(
+        self,
+        ticket: _DocumentTicket | None,
+        path: Path,
+        purpose: _LoadPurpose,
+        failure_dialog: bool,
+    ) -> None:
+        worker = get_current_worker()
+        try:
+            loaded = load_file(path)
+            error_message = None
+        except (OSError, PersistenceError) as error:
+            loaded = None
+            error_message = str(error)
+        except Exception as error:
+            loaded = None
+            error_message = f"Unexpected load failure: {error}"
+        if not worker.is_cancelled:
+            self.call_from_thread(
+                self._handle_load_worker_result,
+                ticket,
+                path,
+                purpose,
+                failure_dialog,
+                loaded,
+                error_message,
+            )
+
+    def _handle_load_worker_result(
+        self,
+        ticket: _DocumentTicket | None,
+        path: Path,
+        purpose: _LoadPurpose,
+        failure_dialog: bool,
+        loaded: LoadedFile | None,
+        error_message: str | None,
+    ) -> None:
+        if purpose is _LoadPurpose.OPEN:
+            self._finish_critical_io()
+            if loaded is None:
+                self.notify(
+                    escape(error_message or "The file could not be loaded"),
+                    severity="error",
+                    title="Cannot open file",
+                )
+                self._cancel_pending_open()
+                return
+            self._finish_open_loaded(path, loaded)
+            return
+
+        if ticket is None or not self._ticket_is_current(ticket):
+            self._finish_critical_io()
+            self._cancel_pending_transition()
+            self.notify(
+                "Ignored a stale reload because the document baseline changed",
+                severity="warning",
+            )
+            return
+
+        automatic = purpose is _LoadPurpose.RELOAD_AUTOMATIC
+        if loaded is None:
+            self._finish_critical_io()
+            error = ExternalChange(
+                ExternalChangeKind.INACCESSIBLE,
+                None,
+                error_message or "The file could not be loaded",
+            )
+            if failure_dialog:
+                continuation = self._save_continuation
+                self._save_continuation = None
+                self._show_conflict(error, after=continuation)
+            elif automatic:
+                self._mark_external_warning(error)
+            else:
+                self.notify(
+                    escape(error.detail or "Reload failed"),
+                    severity="error",
+                    title="Reload failed",
+                )
+                self._cancel_pending_transition()
+            return
+
+        self._finish_critical_io()
+        self._finish_reload_loaded(ticket.document, loaded, automatic=automatic)
+
+    def _finish_reload_loaded(
+        self,
+        document: Document,
+        loaded: LoadedFile,
+        *,
+        automatic: bool,
+    ) -> None:
+
         previous_path = document.path
         document.replace_from_disk(loaded.text, loaded.snapshot, loaded.encoding)
+        self._document_generation += 1
         with self.editor.prevent(TextArea.Changed):
             self.editor.load_text(document.text)
         self._editor_baseline_text = self.editor.text
@@ -879,31 +1370,30 @@ class TermWriterApp(App[None]):
         document = self.document
         if (
             document is None
+            or self._critical_io
             or self._has_modal
             or self._pending_transition is not None
             or self._save_continuation is not None
+            or (self._watch_probe_worker is not None and self._watch_probe_worker.is_running)
         ):
             return
         self._sync_editor_state()
         try:
-            document.path = self.workspace.validate_document_path(document.path)
+            safe_path = self.workspace.validate_document_path(document.path)
         except WorkspaceNotFoundError:
-            self._mark_external_warning(detect_external_change(document))
-            return
+            safe_path = document.path
         except WorkspaceError as error:
             self._mark_external_warning(
                 ExternalChange(ExternalChangeKind.INACCESSIBLE, None, str(error))
             )
             return
-        change = detect_external_change(document)
-        if change.kind is ExternalChangeKind.UNCHANGED:
-            if change.snapshot is not None:
-                document.accept_unchanged_snapshot(change.snapshot)
-        elif change.kind is ExternalChangeKind.MODIFIED:
-            self._reload_current_from_disk(automatic=True)
-        else:
-            self._mark_external_warning(change)
-        self._refresh_status()
+        if safe_path != document.path:
+            document.path = safe_path
+            self._document_generation += 1
+        self._watch_probe_worker = self._probe_document_worker(
+            self._document_ticket(document),
+            _ProbePurpose.WATCH,
+        )
 
     def _mark_external_warning(self, change: ExternalChange) -> None:
         document = self.document

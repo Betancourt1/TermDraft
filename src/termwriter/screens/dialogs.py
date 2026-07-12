@@ -249,6 +249,7 @@ class SaveAsDialog(ModalScreen[bool]):
     def __init__(self, suggested_path: str, error: str | None = None) -> None:
         self.suggested_path = suggested_path
         self.error = error
+        self._busy = False
         super().__init__()
 
     def compose(self) -> ComposeResult:
@@ -258,33 +259,54 @@ class SaveAsDialog(ModalScreen[bool]):
                 self.suggested_path,
                 placeholder="notes/local-copy.md",
                 id="save-as-input",
+                disabled=self._busy,
             )
             yield Static(self.error or "", id="save-as-error", markup=False)
             with Horizontal(classes="dialog-buttons"):
-                yield Button("Save copy", id="save-as-confirm", variant="primary")
-                yield Button("Cancel", id="save-as-cancel")
+                yield Button(
+                    "Save copy",
+                    id="save-as-confirm",
+                    variant="primary",
+                    disabled=self._busy,
+                )
+                yield Button("Cancel", id="save-as-cancel", disabled=self._busy)
 
     def on_mount(self) -> None:
-        self.query_one("#save-as-input", Input).focus()
+        if not self._busy:
+            self.query_one("#save-as-input", Input).focus()
 
     @on(Input.Submitted, "#save-as-input")
     def submit_input(self, event: Input.Submitted) -> None:
-        self.post_message(self.Submitted(self, event.value.strip()))
+        if not self._busy:
+            self.post_message(self.Submitted(self, event.value.strip()))
 
     @on(Button.Pressed, "#save-as-confirm")
     def submit_button(self) -> None:
-        value = self.query_one("#save-as-input", Input).value.strip()
-        self.post_message(self.Submitted(self, value))
+        if not self._busy:
+            value = self.query_one("#save-as-input", Input).value.strip()
+            self.post_message(self.Submitted(self, value))
 
     @on(Button.Pressed, "#save-as-cancel")
     def cancel_button(self) -> None:
-        self.dismiss(False)
+        if not self._busy:
+            self.dismiss(False)
 
     def action_cancel(self) -> None:
-        self.dismiss(False)
+        if not self._busy:
+            self.dismiss(False)
+
+    def set_busy(self, busy: bool) -> None:
+        """Lock or unlock the modal while a save is being published."""
+        self._busy = busy
+        if not self.is_mounted:
+            return
+        self.query_one("#save-as-input", Input).disabled = busy
+        self.query_one("#save-as-confirm", Button).disabled = busy
+        self.query_one("#save-as-cancel", Button).disabled = busy
 
     def show_error(self, error: str) -> None:
         """Keep the modal open and report a recoverable validation/save error."""
+        self.set_busy(False)
         self.error = error
         self.query_one("#save-as-error", Static).update(error)
         self.query_one("#save-as-input", Input).focus()
