@@ -1959,6 +1959,9 @@ class TermWriterApp(App[None]):
     def action_open_recent(self) -> None:
         if self._has_modal:
             return
+        if self._critical_io:
+            self.notify("Wait for the current file operation to finish", severity="warning")
+            return
         self._sync_editor_state()
         paths = self._recent_document_paths()
         if not paths:

@@ -151,3 +151,29 @@ async def test_recent_binding_is_configurable_and_command_is_discoverable(
 
         await pilot.press("ctrl+r")
         assert isinstance(app.screen, RecentDocumentsDialog)
+
+
+async def test_recent_switcher_waits_for_critical_file_io(tmp_path: Path) -> None:
+    active = tmp_path / "active.md"
+    other = tmp_path / "other.md"
+    active.write_text("active", encoding="utf-8")
+    other.write_text("other", encoding="utf-8")
+    store = SessionStore(tmp_path / "sessions")
+    store.save(
+        SessionState(
+            tmp_path,
+            active,
+            (DocumentViewState(active), DocumentViewState(other)),
+        )
+    )
+    app = _app(active, store)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        app._critical_io = True
+        await pilot.press("ctrl+o")
+
+        assert not isinstance(app.screen, RecentDocumentsDialog)
+        assert app.document is not None
+        assert app.document.path == active
+
+        app._critical_io = False
