@@ -23,7 +23,7 @@ from termwriter.screens.dialogs import (
 )
 from termwriter.services.external_changes import DiskProbe, probe_file
 from termwriter.services.persistence import LoadedFile, SaveResult, atomic_save, load_file
-from termwriter.services.recovery import RecoveryJournal
+from termwriter.services.recovery import RecoveryJournal, RecoveryRecord
 from termwriter.services.session import DocumentViewState, SessionState, SessionStore
 
 
@@ -102,6 +102,61 @@ async def test_workspace_index_runs_off_the_ui_thread(
         assert app.workspace_files == (path,)
         assert scan_threads
         assert all(thread != ui_thread for thread in scan_threads)
+
+
+async def test_open_recovery_record_read_runs_off_the_ui_thread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    journal = RecoveryJournal(tmp_path / "recovery")
+    ui_thread = get_ident()
+    read_threads: list[int] = []
+    real_record_for = journal.record_for
+
+    def tracked_record_for(document_path: Path) -> RecoveryRecord | None:
+        read_threads.append(get_ident())
+        return real_record_for(document_path)
+
+    monkeypatch.setattr(journal, "record_for", tracked_record_for)
+    app = _app(path, journal=journal)
+
+    async with app.run_test(size=(100, 30)):
+        assert app.document is not None
+        assert read_threads
+        assert all(thread != ui_thread for thread in read_threads)
+
+
+async def test_orphan_recovery_record_read_runs_off_the_ui_thread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing = tmp_path / "missing.md"
+    journal = RecoveryJournal(tmp_path / "recovery")
+    journal.publish(
+        document_path=missing,
+        workspace_root=tmp_path,
+        text="draft",
+        encoding="utf-8",
+        base_snapshot=FileSnapshot.missing(),
+    )
+    ui_thread = get_ident()
+    read_threads: list[int] = []
+    real_record_for = journal.record_for
+
+    def tracked_record_for(document_path: Path) -> RecoveryRecord | None:
+        read_threads.append(get_ident())
+        return real_record_for(document_path)
+
+    monkeypatch.setattr(journal, "record_for", tracked_record_for)
+    app = _app(tmp_path, journal=journal)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _wait_until(pilot, lambda: isinstance(app.screen, RecoveryDialog))
+
+        assert read_threads
+        assert all(thread != ui_thread for thread in read_threads)
 
 
 async def test_blocked_file_index_keeps_editor_responsive(

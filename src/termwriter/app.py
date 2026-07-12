@@ -139,15 +139,24 @@ class _WorkspaceIndexResult:
 
 
 @dataclass(frozen=True, slots=True)
+class _LoadWorkerResult:
+    loaded: LoadedFile | None = None
+    recovery_record: RecoveryRecord | None = None
+    load_error: str | None = None
+    recovery_error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class _OrphanWorkerResult:
     scan: RecoveryScan
-    unavailable: tuple[RecoveryEntry, ...]
+    unavailable: tuple[RecoveryRecord, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class _RecoveryManagementResult:
     action: RecoveryManagerAction
     entry: RecoveryEntry | None = None
+    record: RecoveryRecord | None = None
     quarantine_path: Path | None = None
     target: Path | None = None
     warning: str | None = None
@@ -263,7 +272,7 @@ class TermWriterApp(App[None]):
         self._pending_recovery_entry: RecoveryEntry | None = None
         self._pending_recovery_record: RecoveryRecord | None = None
         self._pending_recovery_is_orphan = False
-        self._orphan_recoveries: list[RecoveryEntry] = []
+        self._orphan_recoveries: list[RecoveryRecord] = []
         self._scan_orphans_after_session_open = False
         self._mixed_reload_continuation: Callable[[], None] | None = None
         self._mixed_reload_document: Document | None = None
@@ -981,7 +990,12 @@ class TermWriterApp(App[None]):
             return None
         return self._load_document_worker(None, safe_path, _LoadPurpose.OPEN, False)
 
-    def _finish_open_loaded(self, safe_path: Path, loaded: LoadedFile) -> None:
+    def _finish_open_loaded(
+        self,
+        safe_path: Path,
+        loaded: LoadedFile,
+        recovery_record: RecoveryRecord | None,
+    ) -> None:
         document = Document(
             path=safe_path,
             text=loaded.text,
@@ -991,11 +1005,6 @@ class TermWriterApp(App[None]):
         )
         self._pending_open_document = document
         self._pending_recovery_is_orphan = False
-        try:
-            recovery_record = self.recovery_journal.record_for(document.path)
-        except RecoveryError as error:
-            self.notify(escape(str(error)), severity="error", title="Recovery draft unavailable")
-            recovery_record = None
         recovery = None if recovery_record is None else recovery_record.entry
         self._pending_recovery_record = recovery_record
         if recovery_record is not None:
@@ -1236,9 +1245,11 @@ class TermWriterApp(App[None]):
                 )
             if request.action is RecoveryManagerAction.RESTORE_QUARANTINED:
                 entry = self.recovery_journal.restore_quarantined(request.record)
+                record = self.recovery_journal.record_for(entry.document_path)
                 result = _RecoveryManagementResult(
                     request.action,
                     entry=entry,
+                    record=record,
                     source_unavailable=self._recovery_source_is_unavailable(entry),
                 )
             elif request.action is RecoveryManagerAction.DELETE_QUARANTINED:
@@ -1287,10 +1298,13 @@ class TermWriterApp(App[None]):
                 )
             else:
                 selected = request.record.entry
-                loaded_entry = (
-                    None if selected is None else self.recovery_journal.load(selected.document_path)
+                record = (
+                    None
+                    if selected is None
+                    else self.recovery_journal.record_for(selected.document_path)
                 )
-                if loaded_entry is None:
+                loaded_entry = None if record is None else record.entry
+                if loaded_entry is None or record is None:
                     result = _RecoveryManagementResult(
                         request.action,
                         error="The selected recovery draft is no longer available.",
@@ -1299,6 +1313,7 @@ class TermWriterApp(App[None]):
                     result = _RecoveryManagementResult(
                         request.action,
                         entry=loaded_entry,
+                        record=record,
                         source_unavailable=self._recovery_source_is_unavailable(loaded_entry),
                     )
         except (OSError, PersistenceError, RecoveryError, WorkspaceError) as error:
@@ -1352,12 +1367,19 @@ class TermWriterApp(App[None]):
             relative = entry.document_path.relative_to(self.workspace.root).as_posix()
             self.notify(f"Restored quarantined recovery for {escape(relative)}")
         if result.source_unavailable:
-            self._request_transition(lambda: self._open_managed_orphan_recovery(entry))
+            record = result.record
+            if record is None:
+                self.notify(
+                    "The selected recovery draft changed before it could be opened",
+                    severity="warning",
+                )
+                return
+            self._request_transition(lambda: self._open_managed_orphan_recovery(record))
         else:
             self._request_transition(lambda: self._open_file_now(entry.document_path))
 
-    def _open_managed_orphan_recovery(self, entry: RecoveryEntry) -> None:
-        self._orphan_recoveries.insert(0, entry)
+    def _open_managed_orphan_recovery(self, record: RecoveryRecord) -> None:
+        self._orphan_recoveries.insert(0, record)
         self._offer_next_orphan_recovery()
 
     def _finish_orphan_recovery_scan(self, result: _OrphanWorkerResult) -> None:
@@ -1372,11 +1394,23 @@ class TermWriterApp(App[None]):
         self._offer_next_orphan_recovery()
 
     def _scan_orphan_recoveries_now(self) -> _OrphanWorkerResult:
-        result = self.recovery_journal.scan_workspace(self.workspace.root)
-        unavailable = tuple(
-            entry for entry in result.entries if self._recovery_source_is_unavailable(entry)
-        )
-        return _OrphanWorkerResult(result, unavailable)
+        scan = self.recovery_journal.scan_workspace(self.workspace.root)
+        unavailable: list[RecoveryRecord] = []
+        warnings = list(scan.warnings)
+        for entry in scan.entries:
+            if not self._recovery_source_is_unavailable(entry):
+                continue
+            try:
+                record = self.recovery_journal.record_for(entry.document_path)
+            except RecoveryError as error:
+                warnings.append(str(error))
+                continue
+            if record is None or record.entry != entry:
+                warnings.append(f"Recovery draft changed while scanning: {entry.document_path}")
+                continue
+            unavailable.append(record)
+        result = RecoveryScan(scan.entries, tuple(warnings))
+        return _OrphanWorkerResult(result, tuple(unavailable))
 
     @work(group="recovery-scan", exclusive=True, thread=True, exit_on_error=False)
     def _scan_orphan_recoveries_worker(self) -> None:
@@ -1410,14 +1444,12 @@ class TermWriterApp(App[None]):
     def _offer_next_orphan_recovery(self) -> None:
         if self._has_modal or not self._orphan_recoveries:
             return
-        recovery = self._orphan_recoveries.pop(0)
-        try:
-            recovery_record = self.recovery_journal.record_for(recovery.document_path)
-        except RecoveryError as error:
-            self.notify(escape(str(error)), severity="warning", title="Recovery draft changed")
-            recovery_record = None
-        if recovery_record is not None:
-            self._known_recovery_fingerprints[recovery.document_path] = recovery_record.fingerprint
+        recovery_record = self._orphan_recoveries.pop(0)
+        recovery = recovery_record.entry
+        if recovery is None:
+            self.call_after_refresh(self._offer_next_orphan_recovery)
+            return
+        self._known_recovery_fingerprints[recovery.document_path] = recovery_record.fingerprint
         document = Document(
             path=recovery.document_path,
             text=recovery.text,
@@ -2354,13 +2386,28 @@ class TermWriterApp(App[None]):
         worker = get_current_worker()
         try:
             loaded = load_file(path)
-            error_message = None
+            load_error = None
         except (OSError, PersistenceError) as error:
             loaded = None
-            error_message = str(error)
+            load_error = str(error)
         except Exception as error:
             loaded = None
-            error_message = f"Unexpected load failure: {error}"
+            load_error = f"Unexpected load failure: {error}"
+        recovery_record = None
+        recovery_error = None
+        if loaded is not None and purpose is _LoadPurpose.OPEN:
+            try:
+                recovery_record = self.recovery_journal.record_for(path)
+            except RecoveryError as error:
+                recovery_error = str(error)
+            except Exception as error:
+                recovery_error = f"Unexpected recovery read failure: {error}"
+        result = _LoadWorkerResult(
+            loaded=loaded,
+            recovery_record=recovery_record,
+            load_error=load_error,
+            recovery_error=recovery_error,
+        )
         if not worker.is_cancelled:
             self.call_from_thread(
                 self._handle_load_worker_result,
@@ -2368,8 +2415,7 @@ class TermWriterApp(App[None]):
                 path,
                 purpose,
                 failure_dialog,
-                loaded,
-                error_message,
+                result,
             )
 
     def _handle_load_worker_result(
@@ -2378,20 +2424,26 @@ class TermWriterApp(App[None]):
         path: Path,
         purpose: _LoadPurpose,
         failure_dialog: bool,
-        loaded: LoadedFile | None,
-        error_message: str | None,
+        result: _LoadWorkerResult,
     ) -> None:
+        loaded = result.loaded
         if purpose is _LoadPurpose.OPEN:
             self._finish_critical_io()
             if loaded is None:
                 self.notify(
-                    escape(error_message or "The file could not be loaded"),
+                    escape(result.load_error or "The file could not be loaded"),
                     severity="error",
                     title="Cannot open file",
                 )
                 self._cancel_pending_open()
                 return
-            self._finish_open_loaded(path, loaded)
+            if result.recovery_error is not None:
+                self.notify(
+                    escape(result.recovery_error),
+                    severity="error",
+                    title="Recovery draft unavailable",
+                )
+            self._finish_open_loaded(path, loaded, result.recovery_record)
             return
 
         if ticket is None or not self._ticket_is_current(ticket):
@@ -2409,7 +2461,7 @@ class TermWriterApp(App[None]):
             error = ExternalChange(
                 ExternalChangeKind.INACCESSIBLE,
                 None,
-                error_message or "The file could not be loaded",
+                result.load_error or "The file could not be loaded",
             )
             if failure_dialog:
                 continuation = self._save_continuation
