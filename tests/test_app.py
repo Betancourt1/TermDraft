@@ -668,7 +668,10 @@ async def test_parent_symlink_swap_cannot_redirect_save(tmp_path: Path) -> None:
     outside_file = outside / "note.md"
     original.write_text("base", encoding="utf-8")
     outside_file.write_text("base", encoding="utf-8")
-    app = app_for_file(original)
+    app = app_for_file(
+        original,
+        recovery_journal=RecoveryJournal(tmp_path / "state"),
+    )
 
     async with app.run_test(size=(100, 30)) as pilot:
         workspace_path.rename(moved_workspace)
