@@ -9,6 +9,8 @@ from textual.binding import Binding, BindingType
 from termwriter.config import (
     BINDING_ID_COMMAND_PALETTE,
     BINDING_ID_FIND_FILE,
+    BINDING_ID_PREVIEW_NEXT_HEADING,
+    BINDING_ID_PREVIEW_PREVIOUS_HEADING,
     BINDING_ID_QUIT,
     BINDING_ID_RECENT_DOCUMENTS,
     BINDING_ID_REDO,
@@ -113,6 +115,11 @@ _SHORTCUTS = (
     (BINDING_ID_RECENT_DOCUMENTS, "Open a recent document"),
     (BINDING_ID_SEARCH_TEXT, "Search workspace text (literal / fuzzy / word / regex)"),
     (BINDING_ID_TOGGLE_PREVIEW, "Show or hide preview; switch pane when narrow"),
+    (BINDING_ID_PREVIEW_NEXT_HEADING, "Select the next heading in the focused preview"),
+    (
+        BINDING_ID_PREVIEW_PREVIOUS_HEADING,
+        "Select the previous heading in the focused preview",
+    ),
     (BINDING_ID_UNDO, "Undo"),
     (BINDING_ID_REDO, "Redo"),
     (BINDING_ID_COMMAND_PALETTE, "Open the command palette"),

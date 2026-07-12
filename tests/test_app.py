@@ -722,6 +722,27 @@ async def test_showing_wide_preview_focuses_keyboard_link_navigation(tmp_path: P
         assert app.preview.query(".keyboard-link-selected")
 
 
+async def test_preview_heading_navigation_announces_position_in_status(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("# Overview\n\n## Details\n", encoding="utf-8")
+    app = app_for_file(path)
+
+    async with app.run_test(size=(70, 24)) as pilot:
+        await pilot.pause(0.03)
+        await pilot.press("ctrl+e", "alt+down")
+        await pilot.pause()
+
+        status = app.query_one("#status-bar", Static)
+        assert "H1 1/2 · Overview" in str(status.render())
+
+        await pilot.press("alt+down")
+        assert "H2 2/2 · Details" in str(status.render())
+
+        await pilot.press("ctrl+e")
+        assert app.focused is app.editor
+        assert "H2 2/2 · Details" not in str(status.render())
+
+
 async def test_stale_preview_timer_cannot_replace_new_file(tmp_path: Path) -> None:
     first = tmp_path / "alpha.md"
     second = tmp_path / "beta.md"

@@ -84,6 +84,9 @@ def test_cli_commands_show_effective_remapped_keys(
     assert "Tab / Shift+Tab in preview" in output
     assert "Select links or leave the preview" in output
     assert "Enter in preview" in output
+    assert "Alt+Down" in output
+    assert "next heading in the focused preview" in output
+    assert "Alt+Up" in output
     assert "Enter in a list" not in output
 
 

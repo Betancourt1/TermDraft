@@ -16,7 +16,14 @@ class TermWriterStatusBar(Static):
     def __init__(self) -> None:
         super().__init__("FILES | No file open", id="status-bar", markup=False)
 
-    def show_document(self, document: Document | None, *, root: Path, mode: str) -> None:
+    def show_document(
+        self,
+        document: Document | None,
+        *,
+        root: Path,
+        mode: str,
+        announcement: str | None = None,
+    ) -> None:
         status = Text(mode, style="bold")
         status.append("  |  ", style="dim")
         if document is None:
@@ -31,6 +38,13 @@ class TermWriterStatusBar(Static):
             status.append("  |  RECOVERY STORED", style="bold cyan")
         if document.has_mixed_line_endings:
             status.append(f"  |  {document.line_ending_label}", style="bold magenta")
+        if announcement is not None:
+            status.append("  |  ", style="dim")
+            status.append(announcement, style="bold cyan")
+            if document.conflict:
+                status.append("  |  CONFLICT", style="bold red")
+            self.update(status)
+            return
         status.append(f"  |  {document.word_count} words")
         status.append(f"  |  Ln {document.cursor.line + 1}, Col {document.cursor.column + 1}")
         status.append(f"  |  {document.last_save_status}")

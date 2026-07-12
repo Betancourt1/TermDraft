@@ -24,6 +24,8 @@ BINDING_ID_FIND_FILE = "find_file"
 BINDING_ID_RECENT_DOCUMENTS = "recent_documents"
 BINDING_ID_SEARCH_TEXT = "search_text"
 BINDING_ID_TOGGLE_PREVIEW = "toggle_preview"
+BINDING_ID_PREVIEW_NEXT_HEADING = "preview_next_heading"
+BINDING_ID_PREVIEW_PREVIOUS_HEADING = "preview_previous_heading"
 BINDING_ID_UNDO = "undo"
 BINDING_ID_REDO = "redo"
 BINDING_ID_SHOW_HELP = "show_help"
@@ -38,6 +40,8 @@ DEFAULT_KEYBINDINGS: Mapping[str, str] = MappingProxyType(
         BINDING_ID_RECENT_DOCUMENTS: "ctrl+o",
         BINDING_ID_SEARCH_TEXT: "ctrl+shift+f",
         BINDING_ID_TOGGLE_PREVIEW: "ctrl+e",
+        BINDING_ID_PREVIEW_NEXT_HEADING: "alt+down",
+        BINDING_ID_PREVIEW_PREVIOUS_HEADING: "alt+up",
         BINDING_ID_UNDO: "ctrl+z,super+z",
         BINDING_ID_REDO: "ctrl+y,super+y,ctrl+shift+z",
         BINDING_ID_SHOW_HELP: "f1",
@@ -76,6 +80,8 @@ retention_days = 30
 # recent_documents = "ctrl+o"
 # search_text = "ctrl+shift+f"
 # toggle_preview = "ctrl+e"
+# preview_next_heading = "alt+down"
+# preview_previous_heading = "alt+up"
 # undo = "ctrl+z,super+z"
 # redo = "ctrl+y,super+y,ctrl+shift+z"
 # show_help = "f1"

@@ -13,6 +13,11 @@ from textual.message import Message
 from textual.widgets import Markdown
 from textual.widgets.markdown import MarkdownBlock
 
+from termwriter.config import (
+    BINDING_ID_PREVIEW_NEXT_HEADING,
+    BINDING_ID_PREVIEW_PREVIOUS_HEADING,
+    DEFAULT_KEYBINDINGS,
+)
 from termwriter.services.markdown_preview import (
     FOOTNOTE_BACKREF_PREFIX,
     FOOTNOTE_DEFINITION_PREFIX,
@@ -58,18 +63,18 @@ class MarkdownPreview(Markdown):
         Binding("shift+tab", "select_previous_link", "Previous preview link", show=False),
         Binding("enter", "activate_selected_link", "Open preview link", show=False),
         Binding(
-            "alt+down",
+            DEFAULT_KEYBINDINGS[BINDING_ID_PREVIEW_NEXT_HEADING],
             "select_next_heading",
             "Next preview heading",
             show=False,
-            id="preview_next_heading",
+            id=BINDING_ID_PREVIEW_NEXT_HEADING,
         ),
         Binding(
-            "alt+up",
+            DEFAULT_KEYBINDINGS[BINDING_ID_PREVIEW_PREVIOUS_HEADING],
             "select_previous_heading",
             "Previous preview heading",
             show=False,
-            id="preview_previous_heading",
+            id=BINDING_ID_PREVIEW_PREVIOUS_HEADING,
         ),
     ]
     DEFAULT_CSS = """

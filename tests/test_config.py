@@ -80,6 +80,7 @@ retention_days = 45
 [keybindings]
 save = "ctrl+shift+s"
 search_text = "ctrl+f"
+preview_next_heading = "ctrl+n"
 redo = "ctrl+r, ctrl+shift+r"
 """,
         encoding="utf-8",
@@ -95,6 +96,7 @@ redo = "ctrl+r, ctrl+shift+r"
     assert config.recovery == RecoveryConfig(retention_days=45)
     assert config.keybindings["save"] == "ctrl+shift+s"
     assert config.keybindings["search_text"] == "ctrl+f"
+    assert config.keybindings["preview_next_heading"] == "ctrl+n"
     assert config.keybindings["redo"] == "ctrl+r,ctrl+shift+r"
     assert config.keybindings["quit"] == "ctrl+q"
 

@@ -215,6 +215,7 @@ class TermWriterApp(App[None]):
         self._mixed_reload_continuation: Callable[[], None] | None = None
         self._pending_open_location: tuple[Path, int, int] | None = None
         self._pending_focus_location: tuple[int, int] | None = None
+        self._preview_heading_announcement: str | None = None
         self._document_generation = 0
         self._critical_io = False
         self._critical_document: Document | None = None
@@ -502,8 +503,17 @@ class TermWriterApp(App[None]):
         self._request_open(event.path)
 
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
-        del event
+        if not isinstance(event.widget, MarkdownPreview):
+            self._preview_heading_announcement = None
         self._refresh_status()
+
+    @on(MarkdownPreview.HeadingFocused)
+    def preview_heading_focused(self, event: MarkdownPreview.HeadingFocused) -> None:
+        event.stop()
+        announcement = f"H{event.level} {event.position}/{event.total} · {event.label}"
+        self._preview_heading_announcement = announcement
+        self._refresh_status()
+        self.notify(escape(announcement), title="Preview heading")
 
     def _request_open(self, path: Path) -> None:
         try:
@@ -1230,6 +1240,7 @@ class TermWriterApp(App[None]):
     async def _render_preview(self, revision: int) -> None:
         if revision != self._preview_revision or self.document is None:
             return
+        self._preview_heading_announcement = None
         source = self.document.text
         try:
             await self.preview.render_source(source)
@@ -2113,4 +2124,5 @@ class TermWriterApp(App[None]):
             self.document,
             root=self.workspace.root,
             mode=self._focus_mode(),
+            announcement=self._preview_heading_announcement,
         )
