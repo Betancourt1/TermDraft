@@ -184,6 +184,12 @@ class _OrphanWorkerResult:
 
 
 @dataclass(frozen=True, slots=True)
+class _OrphanOfferResult:
+    record: RecoveryRecord | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class _RecoveryManagementResult:
     action: RecoveryManagerAction
     entry: RecoveryEntry | None = None
@@ -304,6 +310,7 @@ class TermWriterApp(App[None]):
         self._pending_recovery_record: RecoveryRecord | None = None
         self._pending_recovery_is_orphan = False
         self._orphan_recoveries: list[RecoveryRecord] = []
+        self._orphan_offer_in_flight = False
         self._scan_orphans_after_session_open = False
         self._mixed_reload_continuation: Callable[[], None] | None = None
         self._mixed_reload_document: Document | None = None
@@ -1473,9 +1480,63 @@ class TermWriterApp(App[None]):
         return False
 
     def _offer_next_orphan_recovery(self) -> None:
-        if self._has_modal or not self._orphan_recoveries:
+        if self._exit_requested or self._orphan_offer_in_flight:
             return
-        recovery_record = self._orphan_recoveries.pop(0)
+        if self._has_modal or self._critical_io:
+            if self._orphan_recoveries:
+                self.set_timer(0.2, self._offer_next_orphan_recovery)
+            return
+        if not self._orphan_recoveries:
+            return
+        candidate = self._orphan_recoveries.pop(0)
+        self._orphan_offer_in_flight = True
+        self._revalidate_orphan_record_worker(candidate)
+
+    @work(group="recovery-offer", exclusive=True, thread=True, exit_on_error=False)
+    def _revalidate_orphan_record_worker(self, candidate: RecoveryRecord) -> None:
+        worker = get_current_worker()
+        entry = candidate.entry
+        try:
+            if entry is None:
+                result = _OrphanOfferResult(error="Recovery draft is no longer valid")
+            else:
+                current = self.recovery_journal.record_for(entry.document_path)
+                if current is None:
+                    result = _OrphanOfferResult(error="Recovery draft is no longer available")
+                elif current.entry is None:
+                    result = _OrphanOfferResult(error="Recovery draft is no longer valid")
+                elif not self._recovery_source_is_unavailable(current.entry):
+                    result = _OrphanOfferResult()
+                else:
+                    result = _OrphanOfferResult(record=current)
+        except (OSError, PersistenceError, RecoveryError, WorkspaceError) as error:
+            result = _OrphanOfferResult(error=str(error))
+        except Exception as error:
+            result = _OrphanOfferResult(error=f"Unexpected recovery read failure: {error}")
+        if not worker.is_cancelled:
+            self.call_from_thread(self._finish_orphan_record_revalidation, result)
+
+    def _finish_orphan_record_revalidation(self, result: _OrphanOfferResult) -> None:
+        self._orphan_offer_in_flight = False
+        if self._exit_requested:
+            return
+        if result.error is not None:
+            self.notify(
+                escape(result.error),
+                severity="warning",
+                title="Recovery draft changed",
+            )
+        recovery_record = result.record
+        if recovery_record is None:
+            self.call_after_refresh(self._offer_next_orphan_recovery)
+            return
+        if self._has_modal or self._critical_io:
+            self._orphan_recoveries.insert(0, recovery_record)
+            self.set_timer(0.2, self._offer_next_orphan_recovery)
+            return
+        self._show_orphan_recovery(recovery_record)
+
+    def _show_orphan_recovery(self, recovery_record: RecoveryRecord) -> None:
         recovery = recovery_record.entry
         if recovery is None:
             self.call_after_refresh(self._offer_next_orphan_recovery)
@@ -2939,7 +3000,10 @@ class TermWriterApp(App[None]):
         request = result.request
         document = self.document
         if (
-            document is not request.document
+            self._exit_requested
+            or self._critical_io
+            or self._has_modal
+            or document is not request.document
             or document.path != request.path
             or document.text != request.text
         ):

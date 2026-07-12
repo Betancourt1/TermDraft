@@ -11,6 +11,7 @@ from textual.pilot import Pilot
 
 from termwriter.app import TermWriterApp
 from termwriter.models.workspace import Workspace
+from termwriter.screens.dialogs import HelpDialog
 from termwriter.screens.semantic_inspector import SemanticInspectorDialog
 from termwriter.services.recovery import RecoveryJournal
 from termwriter.services.semantic_blocks import SemanticBlockMap, map_semantic_blocks
@@ -87,3 +88,34 @@ async def test_stale_semantic_result_is_discarded_after_edit(
         await pilot.pause(0.05)
 
         assert not isinstance(app.screen, SemanticInspectorDialog)
+
+
+async def test_semantic_result_does_not_stack_over_an_existing_modal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("# Heading\n", encoding="utf-8")
+    app = _app(path)
+    started = Event()
+    release = Event()
+
+    def blocked_map(source: str) -> SemanticBlockMap:
+        started.set()
+        assert release.wait(2)
+        return map_semantic_blocks(source)
+
+    monkeypatch.setattr("termwriter.app.map_semantic_blocks", blocked_map)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        app.action_inspect_semantic_blocks()
+        await _wait_until(pilot, started.is_set)
+        try:
+            app.action_show_help()
+            assert isinstance(app.screen, HelpDialog)
+        finally:
+            release.set()
+        await pilot.pause(0.05)
+
+        assert isinstance(app.screen, HelpDialog)
+        assert not any(isinstance(screen, SemanticInspectorDialog) for screen in app.screen_stack)

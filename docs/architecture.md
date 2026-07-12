@@ -129,8 +129,9 @@ are reported in the UI and never mutate `Document`.
 `MarkdownIt.parse` token stream and `Token.map` line ranges with HTML disabled, converts those lines
 to exact Python-string offsets for LF/CRLF/CR source, and records every uncovered slice as a
 separator or unmapped source. The command-palette inspector parses in a worker, rejects results if
-the active document or captured text changed, and can only move the source cursor. Nested containers
-remain one outer top-level block, and the map is explicitly not sufficient for source splicing.
+the active document or captured text changed, and discards results while a modal, critical
+operation, or exit is active. It can only move the source cursor. Nested containers remain one outer
+top-level block, and the map is explicitly not sufficient for source splicing.
 
 The preview is constructed with `open_links=False` and a dedicated `markdown-it-py` parser factory.
 The `gfm-like2` preset provides tables, task metadata, five GFM alert kinds, and
@@ -343,7 +344,9 @@ hashed filenames, entry schemas, workspace containment, and Markdown suffixes. E
 path is missing, no longer a regular file, inaccessible, or invalid UTF-8 are offered as orphan
 recovery. Restoring one installs an unavailable-path conflict: Ctrl+S cannot recreate or replace the
 original name, while Save As can publish a new workspace-relative copy. Entries belonging to another
-workspace are ignored.
+workspace are ignored. Immediately before each orphan prompt, a worker rereads the exact
+`RecoveryRecord` and source availability so a delayed inventory cannot present an older cooperating
+process's draft.
 
 Every successful publication returns an exact content fingerprint. Cleanup acquires the same
 per-journal lock and deletes only that observed version; a newer or newly appeared journal is

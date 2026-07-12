@@ -164,6 +164,35 @@ async def test_orphan_recovery_record_read_runs_off_the_ui_thread(
         assert all(thread != ui_thread for thread in read_threads)
 
 
+async def test_orphan_prompt_revalidates_to_latest_recovery_record(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.md"
+    journal = RecoveryJournal(tmp_path / "recovery")
+    app = _app(tmp_path, journal=journal)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        old = journal.publish(
+            document_path=missing,
+            workspace_root=tmp_path,
+            text="old draft",
+            encoding="utf-8",
+            base_snapshot=FileSnapshot.missing(),
+        )
+        latest = journal.publish(
+            document_path=missing,
+            workspace_root=tmp_path,
+            text="latest draft",
+            encoding="utf-8",
+            base_snapshot=FileSnapshot.missing(),
+        )
+        app._orphan_recoveries = [old]
+        app._offer_next_orphan_recovery()
+        await _wait_until(pilot, lambda: isinstance(app.screen, RecoveryDialog))
+
+        assert app._pending_recovery_entry is not None
+        assert app._pending_recovery_entry.text == "latest draft"
+        assert app._pending_recovery_record == latest
+
+
 async def test_blocked_file_index_keeps_editor_responsive(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
