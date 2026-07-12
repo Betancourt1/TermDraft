@@ -75,6 +75,9 @@ are pruned after this explicit use, while access failures are retained. Each act
 outgoing view, and Save As moves the cached view to the new path. Runtime tabs are intentionally not
 reconstructed. Corrupt session JSON is preserved and reported. Concurrent TermWriter instances use
 last-writer-wins metadata because coordinates are non-authoritative and cannot change Markdown.
+Quit traversal does not promote the inspected tabs in MRU order and restores the pre-quit active
+buffer before queuing the final snapshot. Once that snapshot is queued, tab activation and document
+opening remain sealed until the session and recovery queues drain.
 
 Textual reconstructs multiline text by preferring CRLF when present, then LF, then CR. TermWriter retains
 both Textual's normalized editor baseline and the exact source represented by that baseline. Merely
@@ -100,7 +103,9 @@ non-destructive and therefore does not prompt for dirty work. Closing a tab, rep
 reloading, and quitting remain guarded. Activating a buffer synchronizes the outgoing exact source,
 cursor, and scroll; queues its dirty recovery source immediately; and restores the incoming state.
 The shared `TextArea.load_text()` call clears undo history, so histories cannot cross buffers but also
-do not survive a tab switch in this iteration.
+do not survive a tab switch in this iteration. Registration also reuses the stable tab for an already
+open canonical path. An explicitly restored recovery draft may replace that clean buffer, but cannot
+replace an existing dirty buffer.
 
 `MarkdownEditor` intercepts Enter only for an empty selection and delegates the source/cursor
 calculation to the pure `services/markdown_continuation.py` function. It continues bullets, ordered
@@ -307,7 +312,8 @@ DELETE removes queued saves and forms an ordering barrier behind any in-flight p
 completion marks `recovery_saved` only when its document identity, path, exact source, encoding, and
 baseline still match. Successful Markdown saves, explicit discards, and reloads wait for ordered
 cleanup before continuing. The status bar shows `RECOVERY STORED` only after a current publication
-succeeds.
+succeeds. Destructive transitions keep the shared editor read-only across this cleanup barrier;
+Discard restores the model's saved source before its close or quit continuation runs.
 
 On open, Restore draft keeps the freshly loaded Markdown source as `saved_text` and installs the
 journal source as current `text`, so dirty state remains derived rather than forced. If the journal's
@@ -387,7 +393,9 @@ dirty close/reload/quit ──► Save ──► save succeeds ──► continu
 No dialog merely displays a warning and then ignores the answer. A save failure or cancellation
 clears the continuation, leaves the source in memory, and stops the transition. External deletion of
 a clean file is also guarded before transition because the in-memory source may be the last copy; the
-user may save that copy under a new name, explicitly continue without it, or cancel.
+user may save that copy under a new name, explicitly continue without it, or cancel. Multi-document
+quit starts with the active buffer, inspects every other buffer without changing MRU order, restores
+the original active buffer, and then seals editing while final state writes drain.
 
 ## Widget/domain limits
 

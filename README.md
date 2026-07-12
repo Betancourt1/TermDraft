@@ -262,7 +262,8 @@ the last active readable file, while an explicit CLI file takes precedence. Ctrl
 most-recently-used order. Confirmed missing entries are pruned when that switcher is opened;
 temporarily inaccessible entries are retained. Positions are restored when files are opened again,
 but the full runtime tab set is not reconstructed. Session state is atomically replaced outside the
-workspace and never contains Markdown source. Missing or corrupt state cannot prevent startup.
+workspace and never contains Markdown source. A clean quit preserves the tab that was active before
+the guard inspected the other buffers. Missing or corrupt state cannot prevent startup.
 
 The first dirty edit schedules a recovery write for 500 ms later; continued typing updates the
 pending payload without postponing that deadline. Publications and deletions run through one ordered
@@ -326,7 +327,9 @@ If both local and disk content changed, the only choices are:
 Opening or activating another tab preserves the current buffer without prompting. Closing a dirty
 tab, reloading it, replacing its source, and quitting still use Save / Discard / Cancel. Quit checks
 every open document in order, and Cancel stops the entire quit. Save failures keep the affected
-document dirty and stop the requested transition.
+document dirty and stop the requested transition. After Save or Discard, the editor remains
+read-only until its ordered recovery cleanup completes; Discard also restores that `Document` to its
+saved baseline before a close or quit continuation can run.
 
 If a clean open file disappears or becomes inaccessible, a guarded transition offers Save local as,
 Continue without copy, or Cancel. Ctrl+S never recreates the missing original path silently.
@@ -368,6 +371,9 @@ writer locking.
 - Tabs keep multiple live buffers only for the current run; restart restores the last active file and
   MRU views, not the complete tab set. Tabs share one public Textual `TextArea`, whose documented
   `load_text()` behavior clears undo history, so undo history resets when switching tabs.
+- Recovery restore reuses a clean tab already open for the same canonical path. A rare Save As to the
+  externally deleted path of another open clean tab can still leave duplicate path tabs; later save
+  conflict checks prevent silent overwrite, but the duplicate should be normalized in a future pass.
 - Recovery has a nominal 500 ms first-write delay. Termination before the timer runs, a blocked event
   loop, or a failed journal write can lose the latest unsaved keystrokes. It is not version history,
   a backup, or an autosave of the Markdown path. Recovery entries contain the draft's plaintext
@@ -432,7 +438,8 @@ writer locking.
 
 1. Give each tab independent editor undo history and optionally restore the previous runtime tab set.
 2. Move workspace indexing and recovery-entry reads fully off the UI thread.
-3. Prototype read-only semantic block mapping before attempting hybrid block editing.
+3. Prevent or merge the remaining deleted-target Save As duplicate-tab edge, then prototype read-only
+   semantic block mapping.
 
 Implementation boundaries and tradeoffs are documented in
 [`docs/architecture.md`](docs/architecture.md).
