@@ -198,6 +198,21 @@ def test_integer_over_json_digit_limit_is_ignored_without_crashing(tmp_path: Pat
     assert "Ignoring invalid session state" in (result.warning or "")
 
 
+def test_deeply_nested_json_is_ignored_without_crashing(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = SessionStore(tmp_path / "state")
+    state_path = store.path_for(workspace)
+    state_path.parent.mkdir()
+    nesting = 20_000
+    state_path.write_text("[" * nesting + "0" + "]" * nesting, encoding="utf-8")
+
+    result = store.load(workspace)
+
+    assert result.state is None
+    assert "Ignoring invalid session state" in (result.warning or "")
+
+
 @pytest.mark.parametrize("relative_path", ["../escape.md", "/outside.md", "note.txt"])
 def test_unsafe_or_unsupported_paths_are_ignored(
     tmp_path: Path,
