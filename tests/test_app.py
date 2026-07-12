@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -18,6 +20,7 @@ from termwriter.screens.dialogs import (
     RecoveryDeleteDialog,
     RecoveryDialog,
     RecoveryManagerDialog,
+    RecoveryRetentionDialog,
     SaveAsDialog,
     UnsavedChangesDialog,
 )
@@ -1729,6 +1732,73 @@ async def test_recovery_manager_permanently_deletes_quarantine_after_confirmatio
 
         assert not quarantine_path.exists()
         assert journal.list_quarantined(tmp_path) == ()
+
+
+async def test_recovery_manager_cleans_only_confirmed_expired_quarantine(
+    tmp_path: Path,
+) -> None:
+    active = tmp_path / "active.md"
+    active.write_text("base", encoding="utf-8")
+    journal = RecoveryJournal(tmp_path / "state")
+    expired = tmp_path / "expired.md"
+    journal.save(
+        document_path=expired,
+        workspace_root=tmp_path,
+        text="expired draft",
+        encoding="utf-8",
+        base_snapshot=FileSnapshot.missing(),
+    )
+    journal_path = journal.path_for(expired)
+    payload = json.loads(journal_path.read_text(encoding="utf-8"))
+    payload["updated_at"] = (datetime.now(UTC) - timedelta(days=90)).isoformat()
+    journal_path.write_text(json.dumps(payload), encoding="utf-8")
+    (record,) = journal.list_entries(tmp_path)
+    quarantine_path = journal.quarantine(record)
+    app = app_for_file(active, recovery_journal=journal)
+
+    async with app.run_test(size=(100, 36)) as pilot:
+        app.action_manage_recovery()
+        for _ in range(100):
+            if isinstance(app.screen, RecoveryManagerDialog):
+                break
+            await pilot.pause(0.01)
+        assert isinstance(app.screen, RecoveryManagerDialog)
+        await pilot.pause()
+        await pilot.click("#recovery-manager-retention")
+
+        for _ in range(100):
+            if isinstance(app.screen, RecoveryRetentionDialog):
+                break
+            await pilot.pause(0.01)
+        assert isinstance(app.screen, RecoveryRetentionDialog)
+        assert app.screen.query_one("#recovery-retention-cancel").has_focus
+        await pilot.click("#recovery-retention-cancel")
+        for _ in range(100):
+            if not isinstance(app.screen, (RecoveryManagerDialog, RecoveryRetentionDialog)):
+                break
+            await pilot.pause(0.01)
+        assert quarantine_path.exists()
+
+        app.action_manage_recovery()
+        for _ in range(100):
+            if isinstance(app.screen, RecoveryManagerDialog):
+                break
+            await pilot.pause(0.01)
+        assert isinstance(app.screen, RecoveryManagerDialog)
+        await pilot.pause()
+        await pilot.click("#recovery-manager-retention")
+        for _ in range(100):
+            if isinstance(app.screen, RecoveryRetentionDialog):
+                break
+            await pilot.pause(0.01)
+        assert isinstance(app.screen, RecoveryRetentionDialog)
+        await pilot.click("#recovery-retention-confirm")
+
+        for _ in range(200):
+            if not quarantine_path.exists():
+                break
+            await pilot.pause(0.01)
+        assert not quarantine_path.exists()
 
 
 async def test_recovery_manager_rechecks_dirty_document_before_quarantine_restore(

@@ -71,6 +71,15 @@ class RecoveryManagerRequest:
     target: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class RecoveryRetentionRequest:
+    """Exact quarantine records confirmed for age-based cleanup."""
+
+    cutoff: datetime
+    records: tuple[RecoveryRecord, ...]
+    retention_days: int
+
+
 class RecoveryDialog(ModalScreen[RecoveryDecision | None]):
     """Offer a crash journal without silently replacing the disk version."""
 
@@ -122,7 +131,7 @@ class RecoveryDialog(ModalScreen[RecoveryDecision | None]):
         self.dismiss(RecoveryDecision.CANCEL)
 
 
-class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | None]):
+class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | RecoveryRetentionRequest | None]):
     """Inspect, reopen, retarget, or safely archive recovery journals."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -135,10 +144,12 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | None]):
         workspace_root: Path,
         *,
         protected_journal_path: Path | None = None,
+        retention_days: int = 30,
     ) -> None:
         self.records = records
         self.workspace_root = workspace_root
         self.protected_journal_path = protected_journal_path
+        self.retention_days = retention_days
         super().__init__(id="recovery-manager-screen")
 
     def compose(self) -> ComposeResult:
@@ -166,6 +177,7 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | None]):
                 yield Button("Open draft", id="recovery-manager-open", variant="primary")
                 yield Button("Retarget", id="recovery-manager-retarget")
                 yield Button("Archive", id="recovery-manager-archive", variant="warning")
+                yield Button("Delete expired", id="recovery-manager-retention", variant="error")
                 yield Button("Close", id="recovery-manager-close")
 
     def on_mount(self) -> None:
@@ -193,7 +205,7 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | None]):
             flags.append("active")
         if not entry.document_path.exists():
             flags.append("missing")
-        if entry.updated_at < datetime.now(UTC) - timedelta(days=30):
+        if entry.updated_at < datetime.now(UTC) - timedelta(days=self.retention_days):
             flags.append("old")
         suffix = f" · {', '.join(flags)}" if flags else ""
         return f"{location}{label}{suffix}"
@@ -204,6 +216,14 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | None]):
             return None
         return self.records[index]
 
+    def _expired_records(self) -> tuple[RecoveryRecord, ...]:
+        cutoff = datetime.now(UTC) - timedelta(days=self.retention_days)
+        return tuple(
+            record
+            for record in self.records
+            if record.quarantined and record.entry is not None and record.entry.updated_at < cutoff
+        )
+
     def _refresh_selection(self) -> None:
         record = self._selected_record()
         detail = self.query_one("#recovery-manager-detail", Static)
@@ -211,6 +231,10 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | None]):
         open_button = self.query_one("#recovery-manager-open", Button)
         retarget_button = self.query_one("#recovery-manager-retarget", Button)
         archive_button = self.query_one("#recovery-manager-archive", Button)
+        retention_button = self.query_one("#recovery-manager-retention", Button)
+        expired_count = len(self._expired_records())
+        retention_button.label = f"Delete >{self.retention_days}d ({expired_count})"
+        retention_button.disabled = expired_count == 0
         open_button.label = "Open draft"
         retarget_button.label = "Retarget"
         archive_button.label = "Archive"
@@ -329,6 +353,19 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | None]):
         else:
             self.retarget_record()
 
+    @on(Button.Pressed, "#recovery-manager-retention")
+    def cleanup_expired(self) -> None:
+        records = self._expired_records()
+        if not records:
+            return
+        self.dismiss(
+            RecoveryRetentionRequest(
+                cutoff=datetime.now(UTC) - timedelta(days=self.retention_days),
+                records=records,
+                retention_days=self.retention_days,
+            )
+        )
+
     @on(Button.Pressed, "#recovery-manager-close")
     def close_button(self) -> None:
         self.dismiss(None)
@@ -376,6 +413,51 @@ class RecoveryDeleteDialog(ModalScreen[bool]):
         self.dismiss(True)
 
     @on(Button.Pressed, "#recovery-delete-cancel")
+    def cancel_button(self) -> None:
+        self.dismiss(False)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
+class RecoveryRetentionDialog(ModalScreen[bool]):
+    """Confirm deletion of the exact expired quarantine inventory shown."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "cancel", "Cancel", show=False),
+    ]
+
+    def __init__(self, request: RecoveryRetentionRequest) -> None:
+        self.request = request
+        super().__init__(id="recovery-retention-screen")
+
+    def compose(self) -> ComposeResult:
+        count = len(self.request.records)
+        noun = "draft" if count == 1 else "drafts"
+        with Vertical(classes="dialog", id="recovery-retention-dialog"):
+            yield Static("Delete expired recoveries?", classes="dialog-title", markup=False)
+            yield Static(
+                f"Permanently delete {count} quarantined {noun} older than "
+                f"{self.request.retention_days} days? This cannot be undone.",
+                classes="dialog-message",
+                markup=False,
+            )
+            with Horizontal(classes="dialog-buttons"):
+                yield Button(
+                    "Delete expired",
+                    id="recovery-retention-confirm",
+                    variant="error",
+                )
+                yield Button("Cancel", id="recovery-retention-cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#recovery-retention-cancel", Button).focus()
+
+    @on(Button.Pressed, "#recovery-retention-confirm")
+    def confirm(self) -> None:
+        self.dismiss(True)
+
+    @on(Button.Pressed, "#recovery-retention-cancel")
     def cancel_button(self) -> None:
         self.dismiss(False)
 

@@ -12,6 +12,7 @@ from termwriter.screens.dialogs import (
     RecoveryManagerAction,
     RecoveryManagerDialog,
     RecoveryManagerRequest,
+    RecoveryRetentionRequest,
     SaveAsDialog,
 )
 from termwriter.services.recovery import RecoveryJournal
@@ -44,8 +45,11 @@ class RecoveryManagerHarness(App[None]):
     def on_mount(self) -> None:
         self.push_screen(self.dialog, self._store_result)
 
-    def _store_result(self, result: RecoveryManagerRequest | None) -> None:
-        self.result = result
+    def _store_result(
+        self,
+        result: RecoveryManagerRequest | RecoveryRetentionRequest | None,
+    ) -> None:
+        self.result = result if isinstance(result, RecoveryManagerRequest) else None
 
 
 class RecoveryDeleteFlowHarness(App[None]):
@@ -59,8 +63,11 @@ class RecoveryDeleteFlowHarness(App[None]):
     def on_mount(self) -> None:
         self.push_screen(self.dialog, self._show_confirmation)
 
-    def _show_confirmation(self, request: RecoveryManagerRequest | None) -> None:
-        if request is not None:
+    def _show_confirmation(
+        self,
+        request: RecoveryManagerRequest | RecoveryRetentionRequest | None,
+    ) -> None:
+        if isinstance(request, RecoveryManagerRequest):
             self.push_screen(RecoveryDeleteDialog(request.record), self._store_confirmation)
 
     def _store_confirmation(self, confirmed: bool | None) -> None:
@@ -192,6 +199,7 @@ async def test_recovery_manager_actions_fit_and_scroll_into_a_narrow_terminal(
             "#recovery-manager-open",
             "#recovery-manager-retarget",
             "#recovery-manager-archive",
+            "#recovery-manager-retention",
             "#recovery-manager-close",
         ):
             button = dialog.query_one(selector, Button).focus()

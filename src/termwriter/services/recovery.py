@@ -452,15 +452,21 @@ class RecoveryJournal:
         *,
         before: datetime,
         workspace_root: Path | None = None,
+        records: tuple[RecoveryRecord, ...] | None = None,
     ) -> RecoveryRetentionResult:
         """Explicitly delete valid quarantined entries older than an aware cutoff."""
         if before.tzinfo is None or before.utcoffset() is None:
             raise RecoveryError("Recovery retention cutoff must include a timezone")
 
+        expected_root = None if workspace_root is None else _absolute_path(workspace_root)
+        inventory = self.list_quarantined(workspace_root) if records is None else records
         selected = tuple(
             record
-            for record in self.list_quarantined(workspace_root)
-            if record.entry is not None and record.entry.updated_at < before
+            for record in inventory
+            if record.quarantined
+            and record.entry is not None
+            and record.entry.updated_at < before
+            and (expected_root is None or record.entry.workspace_root == expected_root)
         )
         outcomes: list[RecoveryRetentionOutcome] = []
         for record in selected:

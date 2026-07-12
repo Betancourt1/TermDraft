@@ -1105,6 +1105,37 @@ def test_retention_cleanup_reports_partial_failures_and_continues(
     assert not second.journal_path.exists()
 
 
+def test_retention_cleanup_deletes_only_the_confirmed_inventory(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    journal = RecoveryJournal(tmp_path / "state")
+    confirmed = _quarantine_draft(
+        journal,
+        document_path=workspace / "confirmed.md",
+        workspace_root=workspace,
+        text="confirmed",
+        updated_at=now - timedelta(days=90),
+    )
+    unconfirmed = _quarantine_draft(
+        journal,
+        document_path=workspace / "unconfirmed.md",
+        workspace_root=workspace,
+        text="unconfirmed",
+        updated_at=now - timedelta(days=90),
+    )
+
+    result = journal.cleanup_quarantined(
+        before=now - timedelta(days=30),
+        workspace_root=workspace,
+        records=(confirmed,),
+    )
+
+    assert result.deleted_count == 1
+    assert not confirmed.journal_path.exists()
+    assert unconfirmed.journal_path.exists()
+
+
 def test_retarget_preserves_draft_and_timestamp(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

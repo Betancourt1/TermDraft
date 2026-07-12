@@ -109,7 +109,7 @@ ModalScreen {
 }
 
 #recovery-manager-dialog {
-    height: 32;
+    height: 35;
 }
 
 #recovery-manager-records {
@@ -131,10 +131,10 @@ ModalScreen {
 }
 
 #recovery-manager-buttons {
-    height: 6;
-    grid-size: 2 2;
+    height: 9;
+    grid-size: 2 3;
     grid-columns: 1fr 1fr;
-    grid-rows: 3 3;
+    grid-rows: 3 3 3;
     grid-gutter: 0 1;
 }
 

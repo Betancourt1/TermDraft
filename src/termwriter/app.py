@@ -42,6 +42,8 @@ from termwriter.screens.dialogs import (
     RecoveryManagerAction,
     RecoveryManagerDialog,
     RecoveryManagerRequest,
+    RecoveryRetentionDialog,
+    RecoveryRetentionRequest,
     SaveAsDialog,
     TextSearchDialog,
     UnsavedChangesDialog,
@@ -69,6 +71,7 @@ from termwriter.services.recovery import (
     RecoveryError,
     RecoveryJournal,
     RecoveryRecord,
+    RecoveryRetentionResult,
     RecoveryScan,
 )
 from termwriter.services.session import (
@@ -135,6 +138,12 @@ class _RecoveryManagementResult:
     target: Path | None = None
     warning: str | None = None
     source_unavailable: bool = False
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _RecoveryCleanupWorkerResult:
+    result: RecoveryRetentionResult | None = None
     error: str | None = None
 
 
@@ -720,20 +729,80 @@ class TermWriterApp(App[None]):
                 records,
                 self.workspace.root,
                 protected_journal_path=protected_journal_path,
+                retention_days=self.config.recovery.retention_days,
             ),
             self._handle_recovery_manager_request,
         )
 
     def _handle_recovery_manager_request(
         self,
-        request: RecoveryManagerRequest | None,
+        request: RecoveryManagerRequest | RecoveryRetentionRequest | None,
     ) -> None:
         if request is None:
+            return
+        if isinstance(request, RecoveryRetentionRequest):
+            self.call_after_refresh(self._confirm_recovery_cleanup, request)
             return
         if request.action is RecoveryManagerAction.DELETE_QUARANTINED:
             self.call_after_refresh(self._confirm_quarantine_delete, request)
             return
         self._start_recovery_management(request)
+
+    def _confirm_recovery_cleanup(self, request: RecoveryRetentionRequest) -> None:
+        self.push_screen(
+            RecoveryRetentionDialog(request),
+            lambda confirmed: self._handle_recovery_cleanup_confirmation(request, confirmed),
+        )
+
+    def _handle_recovery_cleanup_confirmation(
+        self,
+        request: RecoveryRetentionRequest,
+        confirmed: bool | None,
+    ) -> None:
+        if not confirmed:
+            return
+        self._sync_editor_state()
+        if self._begin_critical_io(self.document, freeze_editor=False):
+            self._cleanup_recovery_worker(request)
+
+    @work(group="recovery-management", exclusive=True, thread=True, exit_on_error=False)
+    def _cleanup_recovery_worker(self, request: RecoveryRetentionRequest) -> None:
+        worker = get_current_worker()
+        try:
+            result = self.recovery_journal.cleanup_quarantined(
+                before=request.cutoff,
+                workspace_root=self.workspace.root,
+                records=request.records,
+            )
+            outcome = _RecoveryCleanupWorkerResult(result=result)
+        except Exception as error:
+            outcome = _RecoveryCleanupWorkerResult(error=str(error))
+        if not worker.is_cancelled:
+            self.call_from_thread(self._handle_recovery_cleanup_result, outcome)
+
+    def _handle_recovery_cleanup_result(self, outcome: _RecoveryCleanupWorkerResult) -> None:
+        self._finish_critical_io()
+        if outcome.error is not None:
+            self.notify(
+                escape(outcome.error),
+                severity="error",
+                title="Recovery retention failed",
+            )
+            return
+        result = outcome.result
+        if result is None:
+            return
+        message = f"Deleted {result.deleted_count} of {result.selected_count} expired recoveries"
+        if result.failed_count:
+            failed = next(item for item in result.outcomes if not item.deleted)
+            message += f". {failed.document_path.name}: {failed.error or 'deletion failed'}"
+            self.notify(
+                escape(message),
+                severity="warning",
+                title=f"{result.failed_count} recovery deletion(s) failed",
+            )
+        else:
+            self.notify(message)
 
     def _confirm_quarantine_delete(self, request: RecoveryManagerRequest) -> None:
         self.push_screen(
