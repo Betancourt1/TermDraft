@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from markdown_it import MarkdownIt
+
 
 @dataclass(frozen=True, slots=True)
 class MarkdownContinuationEdit:
@@ -35,6 +37,7 @@ _QUOTE_PREFIX = re.compile(r"^(?P<prefix>[ \t]*(?:>[ \t]*)+)")
 _TASK_PREFIX = re.compile(r"(?P<marker>\[[ xX]\])(?P<gap>[ \t]*)(?P<body>.*)$")
 _FENCE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<rest>.*)$")
 _THEMATIC_BREAK = re.compile(r"^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")
+_COMMONMARK = MarkdownIt("commonmark", {"html": False})
 
 
 def continuation_edit(
@@ -61,6 +64,8 @@ def continuation_edit(
 
     list_match = _LIST_PREFIX.match(line)
     if list_match is not None:
+        if _ambiguous_indent_is_not_a_list(lines, cursor_line, list_match):
+            return None
         prefix_end = list_match.end()
         task_match = _TASK_PREFIX.match(line, prefix_end)
         task_body = ""
@@ -159,6 +164,25 @@ def _increment_ordered_marker(match: re.Match[str]) -> str:
     if len(number) > 1 and number.startswith("0"):
         incremented = incremented.zfill(len(number))
     return incremented + match.group("delimiter")
+
+
+def _ambiguous_indent_is_not_a_list(
+    lines: tuple[_LogicalLine, ...],
+    line_number: int,
+    list_match: re.Match[str],
+) -> bool:
+    context = list_match.group("context")
+    if "\t" not in context and "    " not in context:
+        return False
+
+    current_line = lines[line_number].text
+    if not current_line[list_match.end() :].strip():
+        current_line += "termwriter"
+    source_prefix = "".join(line.text + line.ending for line in lines[:line_number]) + current_line
+    return not any(
+        token.type == "list_item_open" and token.map is not None and token.map[0] == line_number
+        for token in _COMMONMARK.parse(source_prefix)
+    )
 
 
 def _inside_fenced_code(lines: tuple[_LogicalLine, ...], line_number: int) -> bool:
