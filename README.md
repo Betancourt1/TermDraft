@@ -333,8 +333,9 @@ preservation, and non-cancellable writer locking.
 - Ordinary POSIX permission bits are preserved where the filesystem permits. Special setuid/setgid
   bits are not guaranteed. Ownership, ACLs, extended attributes, Finder metadata, and hard-link
   identity are not preserved by replacement.
-- Conflict Save As depends on hard-link support in the destination filesystem and fails cleanly when
-  that publication mechanism is unavailable. It is currently available only from conflict recovery.
+- Conflict Save As, recovery retargeting, and recovery archiving depend on hard-link support in the
+  relevant filesystem and fail cleanly when that publication mechanism is unavailable. Conflict
+  Save As is currently available only from conflict recovery.
 - A second hash check narrows but cannot eliminate the race between that check and `os.replace` if
   another process writes at exactly that moment. Cooperative file locking would not protect against
   editors that ignore the lock.

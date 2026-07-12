@@ -1347,3 +1347,46 @@ async def test_recovery_manager_archives_corrupt_entry_without_changing_bytes(
 
         assert not corrupt_path.exists()
         assert quarantine_path.read_bytes() == corrupt_bytes
+
+
+async def test_recovery_manager_rechecks_active_dirty_draft_before_archive(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "active.md"
+    path.write_text("base", encoding="utf-8")
+    journal = RecoveryJournal(tmp_path / "state")
+    app = app_for_file(path, recovery_journal=journal)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        assert app.document is not None
+        journal.save(
+            document_path=path,
+            workspace_root=tmp_path,
+            text="recoverable draft",
+            encoding="utf-8",
+            base_snapshot=app.document.snapshot,
+        )
+        app.action_manage_recovery()
+        for _ in range(100):
+            if isinstance(app.screen, RecoveryManagerDialog):
+                break
+            await pilot.pause(0.01)
+        assert isinstance(app.screen, RecoveryManagerDialog)
+        first_dialog = app.screen
+
+        app.editor.insert("x", (0, 0))
+        await pilot.pause()
+        assert app.document.dirty
+        await pilot.click("#recovery-manager-archive")
+
+        for _ in range(150):
+            if isinstance(app.screen, RecoveryManagerDialog) and app.screen is not first_dialog:
+                break
+            await pilot.pause(0.01)
+
+        assert isinstance(app.screen, RecoveryManagerDialog)
+        assert app.screen is not first_dialog
+        recovered = journal.load(path)
+        assert recovered is not None
+        assert recovered.text == "recoverable draft"
+        assert not app.editor.read_only

@@ -626,9 +626,10 @@ class TermWriterApp(App[None]):
     ) -> None:
         if request is None:
             return
+        self._sync_editor_state()
         document = self.document
         protected_path = document.path if document is not None and document.dirty else None
-        if self._begin_critical_io(None, freeze_editor=False):
+        if self._begin_critical_io(document, freeze_editor=True):
             self._manage_recovery_worker(request, protected_path)
 
     @work(group="recovery-management", exclusive=True, thread=True, exit_on_error=False)
@@ -639,6 +640,16 @@ class TermWriterApp(App[None]):
     ) -> None:
         worker = get_current_worker()
         try:
+            protected_journal_path = (
+                None if protected_path is None else self.recovery_journal.path_for(protected_path)
+            )
+            if (
+                request.action in {RecoveryManagerAction.RETARGET, RecoveryManagerAction.QUARANTINE}
+                and request.record.journal_path == protected_journal_path
+            ):
+                raise RecoveryError(
+                    "Cannot move or archive the active dirty document's recovery draft"
+                )
             if request.action is RecoveryManagerAction.RETARGET:
                 target = self.workspace.validate_document_path(
                     Path(request.target or ""),
@@ -698,8 +709,9 @@ class TermWriterApp(App[None]):
             self.notify(
                 escape(result.error),
                 severity="error",
-                title="Recovery entry unchanged",
+                title="Recovery operation may be incomplete",
             )
+            self.call_after_refresh(self._load_recovery_inventory_worker)
             return
         if result.action is RecoveryManagerAction.RETARGET and result.entry is not None:
             relative = result.entry.document_path.relative_to(self.workspace.root).as_posix()
