@@ -1,5 +1,7 @@
 """Tests for the safe Markdown preview parser."""
 
+from pathlib import Path
+
 from markdown_it.token import Token
 from textual.app import App, ComposeResult
 from textual.widgets import Markdown
@@ -33,6 +35,7 @@ def _assert_extensions_are_normalized(tokens: list[Token]) -> None:
     unsupported = {"dl_open", "dl_close", "dt_open", "dt_close", "dd_open", "dd_close"}
     assert not unsupported.intersection(_all_token_types(tokens))
     assert not any(token_type.startswith("footnote_") for token_type in _all_token_types(tokens))
+    assert not any(token_type.startswith("alert") for token_type in _all_token_types(tokens))
 
 
 def test_task_lists_render_visible_symbols_at_each_nesting_level() -> None:
@@ -68,13 +71,51 @@ def test_raw_html_is_literal_text() -> None:
     assert _inline_text(tokens) == ["<script>alert('no')</script>"]
 
 
-def test_gfm_alert_syntax_stays_a_safe_blockquote() -> None:
-    tokens = preview_parser().parse("> [!NOTE]\n> Preview only.\n")
-    token_types = _token_types(tokens)
+def test_supported_gfm_alerts_become_safe_titled_blockquotes() -> None:
+    source = "\n\n".join(
+        f"> [!{kind}]\n> {kind.title()} body with **bold** text."
+        for kind in ("NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION")
+    )
 
-    assert "blockquote_open" in token_types
-    assert not any(token_type.startswith("alert") for token_type in token_types)
-    assert _inline_text(tokens) == ["[!NOTE]Preview only."]
+    tokens = preview_parser().parse(source)
+
+    _assert_extensions_are_normalized(tokens)
+    token_types = _token_types(tokens)
+    assert token_types.count("blockquote_open") == 5
+    assert token_types.count("blockquote_close") == 5
+    assert _inline_text(tokens) == [
+        "Note",
+        "Note body with bold text.",
+        "Tip",
+        "Tip body with bold text.",
+        "Important",
+        "Important body with bold text.",
+        "Warning",
+        "Warning body with bold text.",
+        "Caution",
+        "Caution body with bold text.",
+    ]
+    titles = [token for token in tokens if token.type == "inline" and token.content.istitle()]
+    assert len(titles) == 5
+    assert all(
+        title.children is not None
+        and title.children[0].type == "strong_open"
+        and title.children[-1].type == "strong_close"
+        for title in titles
+    )
+
+
+def test_unknown_alert_and_raw_html_remain_literal_text() -> None:
+    tokens = preview_parser().parse(
+        "> [!DANGER]\n> <script>alert('no')</script>\n\n"
+        "> [!WARNING]\n> <img src=x onerror=alert('no')>\n"
+    )
+
+    _assert_extensions_are_normalized(tokens)
+    assert "html_block" not in _token_types(tokens)
+    assert "html_inline" not in _all_token_types(tokens)
+    assert "[!DANGER]<script>alert('no')</script>" in _inline_text(tokens)
+    assert "<img src=x onerror=alert('no')>" in _inline_text(tokens)
 
 
 def test_footnotes_become_visible_references_and_supported_list_blocks() -> None:
@@ -187,6 +228,7 @@ async def test_textual_mounts_normalized_extensions_without_unhandled_blocks() -
     class PreviewApp(App[None]):
         def compose(self) -> ComposeResult:
             yield Markdown(
+                "> [!WARNING]\n> Alert with **bold** text.\n\n"
                 "Term\n: Definition with note[^n].\n\n[^n]: Note body.\n",
                 parser_factory=preview_parser,
             )
@@ -195,3 +237,20 @@ async def test_textual_mounts_normalized_extensions_without_unhandled_blocks() -
     async with app.run_test() as pilot:
         await pilot.pause()
         assert app.query_one(Markdown).children
+
+
+async def test_markdown_gallery_mounts_without_changing_its_source() -> None:
+    source = (Path(__file__).parents[1] / "docs" / "markdown-gallery.md").read_text(
+        encoding="utf-8"
+    )
+
+    class GalleryApp(App[None]):
+        def compose(self) -> ComposeResult:
+            yield Markdown(source, parser_factory=preview_parser, open_links=False)
+
+    app = GalleryApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        gallery = app.query_one(Markdown)
+        assert gallery.source == source
+        assert gallery.children

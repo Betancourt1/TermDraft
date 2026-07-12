@@ -91,12 +91,13 @@ revision, so an old file's render cannot become the final preview for a newer fi
 are reported in the UI and never mutate `Document`.
 
 The preview is constructed with `open_links=False` and a dedicated `markdown-it-py` parser factory.
-The `gfm-like2` preset provides tables, task metadata, and single/double-tilde strikethrough;
-`mdit-py-plugins` parses footnotes and definition lists. Alerts and HTML parsing are disabled because
-Textual does not safely render those token types. A final core rule turns task metadata into visible
-`☐` / `☑` text and normalizes unsupported footnote/definition tokens into Textual-supported inline
-text, paragraphs, and bullet lists. Markdown links render but do not launch a browser or another
-external application. None of these preview transforms change `Document.text`.
+The `gfm-like2` preset provides tables, task metadata, five GFM alert kinds, and
+single/double-tilde strikethrough; `mdit-py-plugins` parses footnotes and definition lists. HTML
+parsing remains disabled. A final core rule turns task metadata into visible `☐` / `☑` text and
+normalizes unsupported alert, footnote, and definition tokens into Textual-supported blockquotes,
+inline text, paragraphs, and bullet lists. Unknown alert kinds remain ordinary blockquotes. Markdown
+links render but do not launch a browser or another external application. None of these preview
+transforms change `Document.text`.
 
 ## Workspace text search
 

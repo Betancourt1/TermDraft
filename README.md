@@ -97,9 +97,10 @@ termwriter --commands
 
 The preview supports headings H1-H6, paragraphs, emphasis, bold, strikethrough, blockquotes,
 horizontal rules, links, image placeholders, inline and fenced code, nested ordered/unordered lists,
-tables, task lists, footnotes, and definition lists. Task state is rendered as `☐` or `☑`;
-footnote references and definitions remain visible; definition terms are shown as bold bullet items.
-The Markdown source remains unchanged. Raw HTML is displayed literally and is never executed.
+tables, task lists, footnotes, definition lists, and the five standard GFM alerts. Task state is
+rendered as `☐` or `☑`; alert titles are bold blockquotes; footnote references and definitions
+remain visible; definition terms are shown as bold bullet items. The Markdown source remains
+unchanged. Raw HTML is displayed literally and is never executed.
 
 ```markdown
 Claim with a source.[^source]
@@ -108,6 +109,9 @@ Claim with a source.[^source]
 
 Term
 : Definition text.
+
+> [!WARNING]
+> Review before saving.
 ```
 
 Nested ordered items use an indented normal marker:
@@ -123,10 +127,14 @@ Nested ordered items use an indented normal marker:
 bold; portable Markdown has no underline syntax. F1 opens the effective shortcut list, and the
 command palette includes a compact Markdown syntax reference.
 
+The repository also includes a complete [Markdown syntax gallery](docs/markdown-gallery.md). Open it
+with `termwriter docs/markdown-gallery.md` to compare its editable syntax and preview side by side.
+
 Footnotes are terminal labels rather than clickable links and have no backlinks. Unreferenced
 definitions are omitted by the footnote parser, and definition lists use bullets rather than a
-dedicated `<dl>` layout. GFM alerts, math, underline, subscript, superscript, and rendered raw HTML
-are not supported. Preview rendering never writes back to the source editor.
+dedicated `<dl>` layout. Alerts use a conservative titled-blockquote presentation rather than
+GitHub's color and icon treatment. Math, underline, subscript, superscript, and rendered raw HTML are
+not supported. Preview rendering never writes back to the source editor.
 
 ## Configuration
 
@@ -313,8 +321,9 @@ discovery, task continuation, termination, and undo grouping.
   cache or restart restoration yet.
 - Preview links are deliberately non-opening. Raw document HTML, JavaScript, and shell text are not
   executed.
-- Preview intentionally omits alerts, math, underline, subscript, and superscript. Footnote labels
-  are not links, definition lists use bullets, and images do not render terminal graphics.
+- Alerts use titled blockquotes without GitHub's colors or icons. Preview intentionally omits math,
+  underline, subscript, and superscript. Footnote labels are not links, definition lists use bullets,
+  and images do not render terminal graphics.
 - Smart Enter handles common list/task/blockquote prefixes, thematic breaks, fenced code, and the
   distinction between indented code and genuine nested lists. Ambiguous indentation parses the
   source prefix through the cursor, so Enter may have a small delay in extremely large files.
@@ -325,8 +334,7 @@ discovery, task continuation, termination, and undo grouping.
 
 ## Near-term roadmap
 
-1. Add a syntax-help fixture/gallery and broaden preview support only where Textual can render tokens
-   safely.
+1. Broaden preview support only where Textual can render tokens safely.
 2. Add recovery-entry management for renamed files and manual cleanup of corrupt/stale entries.
 3. Add optional regex and whole-word modes to workspace text search.
 4. Add a multi-document cache and restart restoration for cursor/scroll state.

@@ -118,6 +118,7 @@ Numbered lists     1. item
 Nested lists       Indent the nested marker by at least three spaces
 Tasks              - [ ] pending   - [x] done
 Quotes             > quoted text
+Alerts             > [!NOTE] then > body (NOTE/TIP/IMPORTANT/WARNING/CAUTION)
 Links              [label](https://example.com)
 Images             ![alt](path) (shown as a terminal placeholder)
 Code               `inline` or fenced ``` blocks
@@ -131,7 +132,7 @@ Enter continues bullets, numbered lists, tasks, and blockquotes. Press Enter on
 an empty marker to end the list. Footnote labels are visible but not clickable.
 Raw HTML is displayed as text and never run.
 
-Not rendered yet: math, underline, subscript, superscript, and GFM alerts.
+Not rendered yet: math, underline, subscript, and superscript.
 Markdown has no portable __underline__ syntax; double underscores mean bold.
 A nested ordered item is "   1. item", not "1.1.".
 """

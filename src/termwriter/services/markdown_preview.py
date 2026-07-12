@@ -116,11 +116,22 @@ def _normalize_extensions(state: StateCore) -> None:
     """Map plugin tokens to the conservative block vocabulary Textual renders."""
     normalized: list[Token] = []
     definition_lists: list[_DefinitionList] = []
+    alert_title_open = False
 
     for token in state.tokens:
         token_type = token.type
 
-        if token_type == "dl_open":
+        if token_type == "alert_open":
+            normalized.append(_retag(token, "blockquote_open", "blockquote", 1))
+        elif token_type == "alert_title_open":
+            normalized.append(_retag(token, "paragraph_open", "p", 1))
+            alert_title_open = True
+        elif token_type == "alert_title_close":
+            normalized.append(_retag(token, "paragraph_close", "p", -1))
+            alert_title_open = False
+        elif token_type == "alert_close":
+            normalized.append(_retag(token, "blockquote_close", "blockquote", -1))
+        elif token_type == "dl_open":
             normalized.append(_retag(token, "bullet_list_open", "ul", 1))
             definition_lists.append(_DefinitionList())
         elif token_type == "dt_open":
@@ -164,8 +175,10 @@ def _normalize_extensions(state: StateCore) -> None:
         elif token_type == "footnote_block_close":
             normalized.append(_retag(token, "bullet_list_close", "ul", -1))
         elif token_type == "inline":
-            bold_term = bool(definition_lists and definition_lists[-1].term_open)
-            normalized.append(_normalize_inline(token, bold=bold_term))
+            bold_inline = alert_title_open or bool(
+                definition_lists and definition_lists[-1].term_open
+            )
+            normalized.append(_normalize_inline(token, bold=bold_inline))
         else:
             normalized.append(token)
 
@@ -175,7 +188,7 @@ def _normalize_extensions(state: StateCore) -> None:
 
 def preview_parser() -> MarkdownIt:
     """Build the GFM-like parser used only for safe preview rendering."""
-    parser = MarkdownIt("gfm-like2", {"alerts": False, "html": False})
+    parser = MarkdownIt("gfm-like2", {"alerts": True, "html": False})
     parser.use(deflist_plugin)
     parser.use(
         footnote_plugin,
