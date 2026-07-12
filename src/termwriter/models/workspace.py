@@ -18,6 +18,24 @@ def path_spelling_key(path: Path) -> str:
     return unicodedata.normalize("NFC", path.as_posix()).casefold()
 
 
+def paths_are_spelling_aliases(left: Path, right: Path) -> bool:
+    """Return true for one directory entry reached through equivalent spellings."""
+    if left == right:
+        return True
+    if path_spelling_key(left) != path_spelling_key(right):
+        return False
+    try:
+        if not left.parent.samefile(right.parent):
+            return False
+        with os.scandir(left.parent) as entries:
+            names = {entry.name for entry in entries}
+        if left.name != right.name and left.name in names and right.name in names:
+            return False
+        return left.samefile(right)
+    except OSError:
+        return False
+
+
 class WorkspaceError(Exception):
     """Base class for user-facing workspace errors."""
 

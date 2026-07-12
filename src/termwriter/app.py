@@ -25,7 +25,7 @@ from termwriter.models.workspace import (
     Workspace,
     WorkspaceError,
     WorkspaceNotFoundError,
-    path_spelling_key,
+    paths_are_spelling_aliases,
 )
 from termwriter.screens.dialogs import (
     ConflictDecision,
@@ -292,14 +292,7 @@ class TermWriterApp(App[None]):
         document = self.document
         if document is None:
             return False
-        if path == document.path:
-            return True
-        if path_spelling_key(path) != path_spelling_key(document.path):
-            return False
-        try:
-            return path.samefile(document.path)
-        except OSError:
-            return False
+        return paths_are_spelling_aliases(path, document.path)
 
     def _request_transition(self, continuation: Callable[[], None]) -> None:
         self._sync_editor_state()

@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from termwriter.models.workspace import path_spelling_key
+from termwriter.models.workspace import path_spelling_key, paths_are_spelling_aliases
 from termwriter.services.persistence import PersistenceError, load_file
 
 DEFAULT_RESULT_LIMIT = 100
@@ -119,17 +119,15 @@ def _canonical_override(
     """Use the workspace path spelling for an existing case-insensitive alias."""
     if override is None:
         return None
-    override_key = path_spelling_key(override.path)
     for candidate in files:
         if candidate == override.path:
             return override
+    override_key = path_spelling_key(override.path)
+    for candidate in files:
         if path_spelling_key(candidate) != override_key:
             continue
-        try:
-            if candidate.samefile(override.path):
-                return TextSearchOverride(candidate, override.text, override.prefer_disk)
-        except OSError:
-            continue
+        if paths_are_spelling_aliases(candidate, override.path):
+            return TextSearchOverride(candidate, override.text, override.prefer_disk)
     return override
 
 

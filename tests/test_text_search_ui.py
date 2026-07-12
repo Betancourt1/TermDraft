@@ -214,6 +214,38 @@ async def test_distinct_hardlink_result_uses_unsaved_transition_guard(tmp_path: 
         assert app.document.path == first
 
 
+async def test_case_distinct_hardlink_result_uses_guard_when_supported(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "a.md"
+    second = tmp_path / "A.md"
+    first.write_text("needle", encoding="utf-8")
+    try:
+        second.hardlink_to(first)
+    except FileExistsError:
+        pytest.skip("requires a case-sensitive filesystem")
+    app = _app(first)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("x", "ctrl+shift+f")
+        await pilot.press("n", "e", "e", "d", "l", "e", "enter")
+        await pilot.pause(0.15)
+
+        assert isinstance(app.screen, TextSearchDialog)
+        assert set(match.path for match in app.screen.matches) == {first, second}
+
+        selected = next(
+            index for index, match in enumerate(app.screen.matches) if match.path == second
+        )
+        if selected:
+            await pilot.press("down")
+        await pilot.press("enter")
+
+        assert isinstance(app.screen, UnsavedChangesDialog)
+        assert app.document is not None
+        assert app.document.path == first
+
+
 async def test_clean_missing_active_search_marks_conflict_on_selection(
     tmp_path: Path,
 ) -> None:
