@@ -1790,10 +1790,10 @@ class TermWriterApp(App[None]):
         else:
             self._preview_visible = not self._preview_visible
         self._apply_panel_visibility()
-        if self._narrow_pane == "editor" and self.document is not None:
-            self.editor.focus()
-        elif self.preview.display:
+        if self.preview.display:
             self.preview.focus()
+        elif self.document is not None:
+            self.editor.focus()
 
     def action_find_file(self) -> None:
         if self._has_modal:

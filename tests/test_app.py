@@ -625,9 +625,31 @@ async def test_narrow_layout_switches_between_editor_and_preview(tmp_path: Path)
         await pilot.press("ctrl+e")
         assert not app.editor.display
         assert app.preview.display
+        assert app.focused is app.preview
 
         await pilot.press("ctrl+b")
         assert not app.explorer.display
+
+
+async def test_showing_wide_preview_focuses_keyboard_link_navigation(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("[Reference](https://example.com)\n", encoding="utf-8")
+    app = app_for_file(path)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause(0.03)
+        assert app.preview.display
+        assert app.focused is app.editor
+
+        await pilot.press("ctrl+e")
+        assert not app.preview.display
+        assert app.focused is app.editor
+
+        await pilot.press("ctrl+e")
+        assert app.preview.display
+        assert app.focused is app.preview
+        await pilot.press("tab")
+        assert app.preview.query(".keyboard-link-selected")
 
 
 async def test_stale_preview_timer_cannot_replace_new_file(tmp_path: Path) -> None:

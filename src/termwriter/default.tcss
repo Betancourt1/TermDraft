@@ -56,6 +56,10 @@ Screen {
     overflow-y: auto;
 }
 
+#markdown-preview:focus {
+    outline: tall $accent;
+}
+
 #status-bar {
     height: 1;
     padding: 0 1;

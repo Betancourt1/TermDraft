@@ -129,8 +129,9 @@ Definitions        Term followed on the next line by : Definition
 Rules              ---
 
 Enter continues bullets, numbered lists, tasks, and blockquotes. Press Enter on
-an empty marker to end the list. Preview footnote labels and their ↩ arrows navigate internally.
-Raw HTML is displayed as text and never run.
+an empty marker to end the list. In the focused preview, Tab and Shift+Tab select links and Enter
+activates the selection. Footnotes navigate internally; external URLs remain inert. Raw HTML is
+displayed as text and never run.
 
 Not rendered yet: math, underline, subscript, and superscript.
 Markdown has no portable __underline__ syntax; double underscores mean bold.
@@ -148,7 +149,8 @@ def format_shortcut_help(
         (_display_keys(keybindings[binding_id]), description)
         for binding_id, description in _SHORTCUTS
     ]
-    rows.append(("Tab / Shift+Tab", "Move focus"))
+    rows.append(("Tab / Shift+Tab", "Move focus or select links in the focused preview"))
+    rows.append(("Enter in preview", "Activate the selected preview link"))
     if auto_continue_lists:
         rows.append(("Enter in a list", "Continue it; an empty marker ends it"))
     width = max(len(keys) for keys, _description in rows) + 3
