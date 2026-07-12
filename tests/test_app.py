@@ -425,6 +425,55 @@ async def test_conflict_save_as_preserves_both_versions(tmp_path: Path) -> None:
         assert app._open_document_for_path(local_copy) is app.document
 
 
+async def test_save_as_rejects_path_owned_by_deleted_open_tab(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    app = app_for_file(first)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        app._request_open(second)
+        for _ in range(200):
+            if app.document is not None and app.document.path == second:
+                break
+            await pilot.pause(0.01)
+        second_buffer = app.document
+        second.unlink()
+        await pilot.press("ctrl+pageup", "x")
+        first.write_text("external", encoding="utf-8")
+        await pilot.press("ctrl+s")
+        for _ in range(200):
+            if isinstance(app.screen, ConflictDialog):
+                break
+            await pilot.pause(0.01)
+        await pilot.click("#conflict-save-as")
+        dialog = app.screen
+        assert isinstance(dialog, SaveAsDialog)
+        dialog.query_one("#save-as-input", Input).value = "second.md"
+
+        def forbidden_save(*args: object, **kwargs: object) -> SaveResult:
+            del args, kwargs
+            raise AssertionError("Save As must not publish onto an open buffer path")
+
+        monkeypatch.setattr("termwriter.app.atomic_save", forbidden_save)
+        await pilot.press("enter")
+        for _ in range(200):
+            if dialog.error is not None:
+                break
+            await pilot.pause(0.01)
+
+        assert dialog.error is not None
+        assert "already open in a tab" in dialog.error
+        assert not second.exists()
+        assert app.document is not None and app.document.path == first
+        assert app._open_document_for_path(second) is second_buffer
+        assert [opened.document.path for opened in app._open_documents] == [first, second]
+
+
 async def test_save_as_replaces_pending_recovery_timer_for_future_edits(
     tmp_path: Path,
 ) -> None:

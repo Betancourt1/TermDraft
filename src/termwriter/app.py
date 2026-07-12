@@ -2234,12 +2234,14 @@ class TermWriterApp(App[None]):
         ticket = self._document_ticket(document)
         if self._begin_critical_io(document, freeze_editor=True, status="Saving copy…"):
             event.dialog.set_busy(True)
+            occupied_paths = tuple(opened.document.path for opened in self._open_documents)
             self._save_as_worker(
                 ticket,
                 event.dialog,
                 Path(event.value),
                 document.text,
                 document.encoding,
+                occupied_paths,
             )
 
     @work(group="save-as", exclusive=True, thread=True, exit_on_error=False)
@@ -2250,24 +2252,36 @@ class TermWriterApp(App[None]):
         requested_path: Path,
         text: str,
         encoding: str,
+        occupied_paths: tuple[Path, ...],
     ) -> None:
         worker = get_current_worker()
         try:
             target = self.workspace.validate_document_path(requested_path, must_exist=False)
-            expected_target = snapshot_file(target)
-            target = self.workspace.validate_document_path(target, must_exist=False)
-            if expected_target.exists or target.exists() or target.is_symlink():
+            if any(
+                paths_are_spelling_aliases(target, occupied_path)
+                for occupied_path in occupied_paths
+            ):
                 outcome = _SaveAsWorkerResult(
-                    error="That path already exists; choose a new filename."
+                    error=(
+                        "That path is already open in a tab or already exists; "
+                        "choose a different filename."
+                    )
                 )
             else:
-                saved = atomic_save(
-                    target,
-                    text,
-                    encoding=encoding,
-                    expected=expected_target,
-                )
-                outcome = _SaveAsWorkerResult(target=target, saved=saved)
+                expected_target = snapshot_file(target)
+                target = self.workspace.validate_document_path(target, must_exist=False)
+                if expected_target.exists or target.exists() or target.is_symlink():
+                    outcome = _SaveAsWorkerResult(
+                        error="That path already exists; choose a new filename."
+                    )
+                else:
+                    saved = atomic_save(
+                        target,
+                        text,
+                        encoding=encoding,
+                        expected=expected_target,
+                    )
+                    outcome = _SaveAsWorkerResult(target=target, saved=saved)
         except (OSError, PersistenceError, WorkspaceError) as error:
             outcome = _SaveAsWorkerResult(error=str(error))
         except Exception as error:
