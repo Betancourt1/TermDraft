@@ -2014,7 +2014,13 @@ async def test_recovery_manager_permanently_deletes_quarantine_after_confirmatio
             await pilot.pause(0.01)
         assert isinstance(app.screen, RecoveryManagerDialog)
 
-        await pilot.click("#recovery-manager-retarget")
+        clicked = False
+        for _ in range(20):
+            await pilot.pause(0.01)
+            clicked = await pilot.click("#recovery-manager-retarget")
+            if clicked:
+                break
+        assert clicked
         for _ in range(100):
             if isinstance(app.screen, RecoveryDeleteDialog):
                 break
