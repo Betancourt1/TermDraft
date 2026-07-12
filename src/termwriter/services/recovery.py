@@ -141,6 +141,26 @@ class RecoveryJournal:
         base_snapshot: FileSnapshot,
     ) -> RecoveryEntry:
         """Atomically record the current source without touching the Markdown file."""
+        record = self.publish(
+            document_path=document_path,
+            workspace_root=workspace_root,
+            text=text,
+            encoding=encoding,
+            base_snapshot=base_snapshot,
+        )
+        assert record.entry is not None
+        return record.entry
+
+    def publish(
+        self,
+        *,
+        document_path: Path,
+        workspace_root: Path,
+        text: str,
+        encoding: str,
+        base_snapshot: FileSnapshot,
+    ) -> RecoveryRecord:
+        """Atomically publish source and return its exact deletion token."""
         entry = RecoveryEntry(
             document_path=_absolute_path(document_path),
             workspace_root=_absolute_path(workspace_root),
@@ -188,7 +208,12 @@ class RecoveryJournal:
                         pass
                     except OSError:
                         pass
-        return entry
+        return RecoveryRecord(
+            destination,
+            _fingerprint(data),
+            entry=entry,
+            has_content_fingerprint=True,
+        )
 
     def load(self, document_path: Path) -> RecoveryEntry | None:
         """Load and validate a document journal, returning ``None`` when absent."""
@@ -208,6 +233,31 @@ class RecoveryJournal:
                 f"found {entry.document_path}"
             )
         return entry
+
+    def record_for(self, document_path: Path) -> RecoveryRecord | None:
+        """Return the exact valid journal version currently stored for a document."""
+        expected_path = _absolute_path(document_path)
+        journal_path = self.path_for(expected_path)
+        with self._journal_locks(journal_path):
+            try:
+                journal_path.lstat()
+            except FileNotFoundError:
+                return None
+            except OSError as error:
+                raise RecoveryError(
+                    f"Cannot inspect recovery journal for {expected_path}: {error}"
+                ) from error
+            record = self._inspect(journal_path)
+            if record.entry is None:
+                raise RecoveryError(
+                    record.error or f"Cannot validate recovery journal for {expected_path}"
+                )
+            if record.entry.document_path != expected_path:
+                raise RecoveryError(
+                    f"Recovery journal path mismatch: expected {expected_path}, "
+                    f"found {record.entry.document_path}"
+                )
+            return record
 
     def scan_workspace(self, workspace_root: Path) -> RecoveryScan:
         """Find trusted journals for a workspace, including entries whose file vanished."""
@@ -497,20 +547,46 @@ class RecoveryJournal:
     def delete(self, document_path: Path) -> None:
         """Delete a recovery journal after a successful save or explicit discard."""
         journal_path = self.path_for(document_path)
-        try:
-            journal_path.unlink()
-        except FileNotFoundError:
-            return
-        except OSError as error:
-            raise RecoveryError(
-                f"Cannot delete recovery journal for {_absolute_path(document_path)}: {error}"
-            ) from error
-        try:
-            _sync_directory(self.state_root)
-        except OSError as error:
-            raise RecoveryError(
-                f"Recovery journal was deleted, but its directory could not be synced: {error}"
-            ) from error
+        with self._journal_locks(journal_path):
+            try:
+                journal_path.unlink()
+            except FileNotFoundError:
+                return
+            except OSError as error:
+                raise RecoveryError(
+                    f"Cannot delete recovery journal for {_absolute_path(document_path)}: {error}"
+                ) from error
+            try:
+                _sync_directory(self.state_root)
+            except OSError as error:
+                raise RecoveryError(
+                    f"Recovery journal was deleted, but its directory could not be synced: {error}"
+                ) from error
+
+    def delete_expected(
+        self,
+        document_path: Path,
+        *,
+        fingerprint: str | None,
+    ) -> None:
+        """Delete only the exact observed version, or confirm expected absence."""
+        expected_path = _absolute_path(document_path)
+        journal_path = self.path_for(expected_path)
+        with self._journal_locks(journal_path):
+            try:
+                journal_path.lstat()
+            except FileNotFoundError:
+                return
+            except OSError as error:
+                raise RecoveryError(
+                    f"Cannot inspect recovery journal for {expected_path}: {error}"
+                ) from error
+            if fingerprint is None:
+                raise RecoveryError("Recovery entry appeared after cleanup was requested")
+            current = self._inspect(journal_path)
+            if not current.has_content_fingerprint or current.fingerprint != fingerprint:
+                raise RecoveryError("Recovery entry changed after cleanup was requested")
+            self._unlink_record(current)
 
     def _inspect(
         self,

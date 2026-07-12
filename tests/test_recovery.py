@@ -266,6 +266,71 @@ def test_delete_is_idempotent(tmp_path: Path) -> None:
     assert journal.load(document) is None
 
 
+def test_publish_returns_exact_record_for_conditional_deletion(tmp_path: Path) -> None:
+    document = tmp_path / "note.md"
+    journal = RecoveryJournal(tmp_path / "state")
+
+    record = journal.publish(
+        document_path=document,
+        workspace_root=tmp_path,
+        text="draft",
+        encoding="utf-8",
+        base_snapshot=_BASE_SNAPSHOT,
+    )
+
+    assert record.entry is not None
+    assert record.entry.text == "draft"
+    assert record == journal.record_for(document)
+    journal.delete_expected(document, fingerprint=record.fingerprint)
+    assert journal.record_for(document) is None
+
+
+def test_conditional_delete_preserves_a_newer_publication(tmp_path: Path) -> None:
+    document = tmp_path / "note.md"
+    journal = RecoveryJournal(tmp_path / "state")
+    older = journal.publish(
+        document_path=document,
+        workspace_root=tmp_path,
+        text="older",
+        encoding="utf-8",
+        base_snapshot=_BASE_SNAPSHOT,
+    )
+    journal.save(
+        document_path=document,
+        workspace_root=tmp_path,
+        text="newer",
+        encoding="utf-8",
+        base_snapshot=_BASE_SNAPSHOT,
+    )
+
+    with pytest.raises(RecoveryError, match="changed after cleanup was requested"):
+        journal.delete_expected(document, fingerprint=older.fingerprint)
+
+    current = journal.load(document)
+    assert current is not None
+    assert current.text == "newer"
+
+
+def test_conditional_delete_preserves_entry_that_appeared_after_expected_absence(
+    tmp_path: Path,
+) -> None:
+    document = tmp_path / "note.md"
+    journal = RecoveryJournal(tmp_path / "state")
+    assert journal.record_for(document) is None
+    journal.save(
+        document_path=document,
+        workspace_root=tmp_path,
+        text="other instance",
+        encoding="utf-8",
+        base_snapshot=_BASE_SNAPSHOT,
+    )
+
+    with pytest.raises(RecoveryError, match="appeared after cleanup was requested"):
+        journal.delete_expected(document, fingerprint=None)
+
+    assert journal.load(document) is not None
+
+
 def test_different_documents_use_different_journals(tmp_path: Path) -> None:
     journal = RecoveryJournal(tmp_path / "state")
 
