@@ -4,6 +4,8 @@ from pathlib import Path
 
 from markdown_it.token import Token
 from textual.app import App, ComposeResult
+from textual.content import Content
+from textual.widgets import Button
 from textual.widgets.markdown import MarkdownBlock
 
 from termwriter.services.markdown_preview import (
@@ -322,3 +324,89 @@ async def test_footnote_links_scroll_within_preview_and_never_open_urls() -> Non
         await origin.action_link("https://example.com")
         await pilot.pause()
         assert app.opened_urls == []
+
+
+async def test_keyboard_selects_and_activates_footnote_links() -> None:
+    source = (
+        "Start with a reference[^note].\n\n"
+        + "\n\n".join(f"Filler paragraph {number}." for number in range(30))
+        + "\n\n[^note]: The internal definition.\n"
+    )
+
+    class PreviewApp(App[None]):
+        CSS = "MarkdownPreview { height: 8; overflow-y: auto; }"
+
+        def compose(self) -> ComposeResult:
+            yield MarkdownPreview()
+
+    app = PreviewApp()
+    async with app.run_test(size=(60, 12)) as pilot:
+        preview = app.query_one(MarkdownPreview)
+        await preview.render_source(source)
+        preview.focus()
+        await pilot.pause()
+
+        await pilot.press("tab")
+        selected = preview.query_one(".keyboard-link-selected", MarkdownBlock)
+        selected_content = selected.render()
+        assert isinstance(selected_content, Content)
+        assert "Start with a reference" in selected_content.plain
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert preview.scroll_y > 0
+        selected = preview.query_one(".keyboard-link-selected", MarkdownBlock)
+        assert selected.id == f"{FOOTNOTE_DEFINITION_PREFIX}1"
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert preview.scroll_y == 0
+        selected = preview.query_one(".keyboard-link-selected", MarkdownBlock)
+        selected_content = selected.render()
+        assert isinstance(selected_content, Content)
+        assert "Start with a reference" in selected_content.plain
+
+
+async def test_keyboard_link_navigation_leaves_preview_at_each_boundary() -> None:
+    class PreviewApp(App[None]):
+        def __init__(self) -> None:
+            super().__init__()
+            self.opened_urls: list[str] = []
+
+        def compose(self) -> ComposeResult:
+            yield Button("Before", id="before")
+            yield MarkdownPreview()
+            yield Button("After", id="after")
+
+        def open_url(self, url: str, *, new_tab: bool = True) -> None:
+            self.opened_urls.append(url)
+
+    app = PreviewApp()
+    async with app.run_test(size=(60, 16)) as pilot:
+        preview = app.query_one(MarkdownPreview)
+        await preview.render_source(
+            "[First](https://one.example) and [second](https://two.example).\n"
+        )
+        preview.focus()
+        await pilot.pause()
+
+        await pilot.press("tab")
+        assert preview.query_one(".keyboard-link-selected", MarkdownBlock)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.opened_urls == []
+
+        await pilot.press("tab")
+        assert preview.query_one(".keyboard-link-selected", MarkdownBlock)
+        await pilot.press("tab")
+        assert app.focused is app.query_one("#after", Button)
+        assert not preview.query(".keyboard-link-selected")
+
+        preview.focus()
+        await pilot.press("shift+tab")
+        assert preview.query_one(".keyboard-link-selected", MarkdownBlock)
+        await pilot.press("shift+tab")
+        assert preview.query_one(".keyboard-link-selected", MarkdownBlock)
+        await pilot.press("shift+tab")
+        assert app.focused is app.query_one("#before", Button)
+        assert not preview.query(".keyboard-link-selected")
