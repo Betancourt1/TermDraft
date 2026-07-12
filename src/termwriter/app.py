@@ -69,6 +69,12 @@ from termwriter.services.recovery import (
     RecoveryRecord,
     RecoveryScan,
 )
+from termwriter.services.session import (
+    DocumentViewState,
+    SessionError,
+    SessionState,
+    SessionStore,
+)
 from termwriter.services.text_search import TextSearchMatch, TextSearchOverride
 from termwriter.widgets.editor import MarkdownEditor
 from termwriter.widgets.file_tree import FileExplorer
@@ -143,6 +149,7 @@ class TermWriterApp(App[None]):
         external_poll_interval: float = 2.0,
         recovery_debounce: float = 0.5,
         recovery_journal: RecoveryJournal | None = None,
+        session_store: SessionStore | None = None,
         config: TermWriterConfig | None = None,
     ) -> None:
         self.config = config or TermWriterConfig(root=Path.home() / ".termwriter")
@@ -160,6 +167,16 @@ class TermWriterApp(App[None]):
         self.external_poll_interval = external_poll_interval
         self.recovery_debounce = recovery_debounce
         self.recovery_journal = recovery_journal or RecoveryJournal()
+        if session_store is None and recovery_journal is not None:
+            session_store = SessionStore(recovery_journal.state_root.parent / "sessions")
+        self.session_store = session_store or SessionStore()
+        session_result = self.session_store.load(workspace.root)
+        session = session_result.state
+        self._session_warning = session_result.warning
+        self._session_views = {
+            view.path: view for view in (() if session is None else session.documents)
+        }
+        self._session_active_path = None if session is None else session.active_path
         self.workspace_files: tuple[Path, ...] = ()
         self._preview_timer: Timer | None = None
         self._external_watch_timer: Timer | None = None
@@ -212,8 +229,24 @@ class TermWriterApp(App[None]):
         )
         self._narrow = self.size.width < 100
         self._apply_panel_visibility()
-        if self.workspace.initial_file is not None:
-            worker = self._open_file_now(self.workspace.initial_file)
+        if self._session_warning is not None:
+            self.notify(
+                escape(self._session_warning),
+                severity="warning",
+                title="Session state ignored",
+            )
+        initial_file = self.workspace.initial_file
+        if initial_file is None and self._session_active_path is not None:
+            try:
+                initial_file = self.workspace.validate_document_path(self._session_active_path)
+            except WorkspaceError as error:
+                self.notify(
+                    escape(str(error)),
+                    severity="warning",
+                    title="Previous session document unavailable",
+                )
+        if initial_file is not None:
+            worker = self._open_file_now(initial_file)
             if worker is not None:
                 await worker.wait()
         else:
@@ -357,6 +390,40 @@ class TermWriterApp(App[None]):
             scroll_x=float(self.editor.scroll_offset.x),
             scroll_y=float(self.editor.scroll_offset.y),
         )
+
+    def _remember_document_view(self, document: Document) -> None:
+        """Cache one document's content-free view coordinates."""
+        cursor = document.cursor
+        self._session_views[document.path] = DocumentViewState(
+            document.path,
+            line=cursor.line,
+            column=cursor.column,
+            scroll_x=cursor.scroll_x,
+            scroll_y=cursor.scroll_y,
+        )
+
+    def _persist_session(self) -> None:
+        """Best-effort persistence for view state; Markdown is never included."""
+        document = self.document
+        if document is None:
+            return
+        self._remember_document_view(document)
+        state = SessionState(
+            workspace_root=self.workspace.root,
+            active_path=document.path,
+            documents=tuple(
+                self._session_views[path]
+                for path in sorted(self._session_views, key=lambda item: item.as_posix())
+            ),
+        )
+        try:
+            self.session_store.save(state)
+        except SessionError as error:
+            self.notify(
+                escape(str(error)),
+                severity="warning",
+                title="Session position not saved",
+            )
 
     @on(TextArea.Changed, "#markdown-editor")
     def editor_changed(self, event: TextArea.Changed) -> None:
@@ -849,6 +916,9 @@ class TermWriterApp(App[None]):
         self._refresh_status()
 
     def _install_document(self, document: Document) -> None:
+        previous = self.document
+        if previous is not None:
+            self._remember_document_view(previous)
         self._recovery_revision += 1
         if self._recovery_timer is not None:
             self._recovery_timer.stop()
@@ -860,7 +930,6 @@ class TermWriterApp(App[None]):
         self._editor_baseline_text = self.editor.text
         self._editor_baseline_source_text = document.text
         self.editor.read_only = False
-        self.editor.scroll_to(0, 0, animate=False, immediate=True)
         self.explorer.set_active(document.path)
         self._narrow_pane = "editor"
         self._apply_panel_visibility()
@@ -869,7 +938,33 @@ class TermWriterApp(App[None]):
         self._pending_open_location = None
         if target is not None and target[0] == document.path:
             self.editor.move_cursor((target[1], target[2]), center=True)
+        else:
+            view = self._session_views.get(document.path)
+            if view is not None:
+                document.update_cursor(
+                    view.line,
+                    view.column,
+                    scroll_x=view.scroll_x,
+                    scroll_y=view.scroll_y,
+                )
+                self.editor.move_cursor((view.line, view.column))
+                self.editor.scroll_to(
+                    view.scroll_x,
+                    view.scroll_y,
+                    animate=False,
+                    immediate=True,
+                )
+                line, column = self.editor.cursor_location
+                document.update_cursor(
+                    line,
+                    column,
+                    scroll_x=float(self.editor.scroll_offset.x),
+                    scroll_y=float(self.editor.scroll_offset.y),
+                )
+            else:
+                self.editor.scroll_to(0, 0, animate=False, immediate=True)
         self.editor.focus()
+        self._persist_session()
         self._refresh_status()
 
     def _schedule_preview(self, *, immediate: bool = False) -> None:
@@ -1329,8 +1424,17 @@ class TermWriterApp(App[None]):
 
         document = ticket.document
         previous_path = document.path
+        previous_view = self._session_views.pop(previous_path, None)
         self._clear_recovery(previous_path)
         document.retarget(outcome.target)
+        if previous_view is not None:
+            self._session_views[outcome.target] = DocumentViewState(
+                outcome.target,
+                line=previous_view.line,
+                column=previous_view.column,
+                scroll_x=previous_view.scroll_x,
+                scroll_y=previous_view.scroll_y,
+            )
         timestamp = datetime.now().astimezone().strftime("Saved %H:%M:%S")
         document.mark_saved(outcome.saved.snapshot, timestamp)
         self._document_generation += 1
@@ -1340,6 +1444,7 @@ class TermWriterApp(App[None]):
         self._refresh_workspace_index()
         self.explorer.directory_tree.reload()
         self._finish_critical_io(restore_status=False)
+        self._persist_session()
         if outcome.saved.warning:
             self.notify(outcome.saved.warning, severity="warning")
         else:
@@ -1597,7 +1702,12 @@ class TermWriterApp(App[None]):
     def action_request_quit(self) -> None:
         if self._has_modal:
             return
-        self._request_transition(self.exit)
+        self._request_transition(self._exit_with_session)
+
+    def _exit_with_session(self) -> None:
+        self._sync_editor_state()
+        self._persist_session()
+        self.exit()
 
     async def action_quit(self) -> None:
         """Defensively route Textual's inherited quit action through the safety gate."""

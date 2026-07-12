@@ -28,6 +28,7 @@ from termwriter.services.persistence import (
     load_file,
 )
 from termwriter.services.recovery import RecoveryJournal
+from termwriter.services.session import DocumentViewState, SessionState, SessionStore
 
 
 def app_for_file(
@@ -37,6 +38,7 @@ def app_for_file(
     external_poll_interval: float = 2.0,
     recovery_debounce: float = 0.5,
     recovery_journal: RecoveryJournal | None = None,
+    session_store: SessionStore | None = None,
 ) -> TermWriterApp:
     return TermWriterApp(
         Workspace.from_target(path),
@@ -44,6 +46,7 @@ def app_for_file(
         external_poll_interval=external_poll_interval,
         recovery_debounce=recovery_debounce,
         recovery_journal=recovery_journal or RecoveryJournal(path.parent / ".test-recovery"),
+        session_store=session_store,
     )
 
 
@@ -60,6 +63,107 @@ async def test_app_starts_and_opens_an_explicit_file(tmp_path: Path) -> None:
         assert app.editor.text == "# Hello\n"
         assert app.preview.source_text == "# Hello\n"
         assert not app.document.dirty
+
+
+async def test_directory_session_reopens_last_document_and_view(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    first = workspace_root / "first.md"
+    second = workspace_root / "second.md"
+    first.write_text("\n".join(f"first {index}" for index in range(40)), encoding="utf-8")
+    second.write_text("\n".join(f"second {index}" for index in range(40)), encoding="utf-8")
+    store = SessionStore(tmp_path / "sessions")
+    store.save(
+        SessionState(
+            workspace_root,
+            second,
+            (
+                DocumentViewState(first, line=3, column=2, scroll_y=2),
+                DocumentViewState(second, line=20, column=3, scroll_y=9),
+            ),
+        )
+    )
+    app = TermWriterApp(
+        Workspace.from_target(workspace_root),
+        preview_debounce=0.01,
+        recovery_journal=RecoveryJournal(tmp_path / "recovery"),
+        session_store=store,
+    )
+
+    async with app.run_test(size=(100, 16)) as pilot:
+        await pilot.pause(0.03)
+
+        assert app.document is not None
+        assert app.document.path == second
+        assert app.editor.cursor_location == (20, 3)
+        assert app.editor.scroll_offset.y == 9
+
+
+async def test_explicit_file_overrides_session_active_path_but_restores_its_view(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("\n".join(f"first {index}" for index in range(20)), encoding="utf-8")
+    second.write_text("\n".join(f"second {index}" for index in range(20)), encoding="utf-8")
+    store = SessionStore(tmp_path / "sessions")
+    store.save(
+        SessionState(
+            tmp_path,
+            second,
+            (
+                DocumentViewState(first, line=7, column=2, scroll_y=4),
+                DocumentViewState(second, line=9, column=1, scroll_y=6),
+            ),
+        )
+    )
+    app = app_for_file(first, session_store=store)
+
+    async with app.run_test(size=(100, 16)) as pilot:
+        await pilot.pause(0.03)
+
+        assert app.document is not None
+        assert app.document.path == first
+        assert app.editor.cursor_location == (7, 2)
+        assert app.editor.scroll_offset.y == 4
+
+
+async def test_switch_and_clean_quit_persist_multiple_document_views(tmp_path: Path) -> None:
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("\n".join(f"first {index}" for index in range(30)), encoding="utf-8")
+    second.write_text("\n".join(f"second {index}" for index in range(30)), encoding="utf-8")
+    store = SessionStore(tmp_path / "sessions")
+    app = app_for_file(first, session_store=store)
+
+    async with app.run_test(size=(100, 16)) as pilot:
+        app.editor.move_cursor((12, 3))
+        app.editor.scroll_to(y=8, animate=False, immediate=True)
+        await pilot.press("ctrl+p")
+        await pilot.press("s", "e", "c", "o", "n", "d", "enter")
+        await pilot.pause(0.03)
+
+        assert app.document is not None
+        assert app.document.path == second
+        app.editor.move_cursor((15, 2))
+        app.editor.scroll_to(y=10, animate=False, immediate=True)
+        await pilot.press("ctrl+q")
+
+    state = store.load(tmp_path).state
+    assert state is not None
+    assert state.active_path == second
+    assert state.view_for(first) == DocumentViewState(first, 12, 3, 0, 8)
+    assert state.view_for(second) == DocumentViewState(second, 15, 2, 0, 10)
+
+    restored = app_for_file(
+        first,
+        session_store=store,
+        recovery_journal=RecoveryJournal(tmp_path / "restored-recovery"),
+    )
+    async with restored.run_test(size=(100, 16)) as pilot:
+        await pilot.pause(0.03)
+        assert restored.editor.cursor_location == (12, 3)
+        assert restored.editor.scroll_offset.y == 8
 
 
 async def test_edit_marks_dirty_updates_preview_and_save_updates_file(tmp_path: Path) -> None:
