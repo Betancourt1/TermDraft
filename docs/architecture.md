@@ -14,6 +14,8 @@ CLI target
    │
    ▼
 Workspace ───── validated paths / scan index ───── File explorer + file search
+   │                                  ▲
+   │                     config.toml / theme.tcss
    │
    ▼
 TermWriterApp coordinator
@@ -25,6 +27,7 @@ Document  ───────── source text ─────────►
    │
 TextArea source edits
    │
+   ├──── Enter prefix ───────────────── Markdown continuation rules
    ├──── load / fingerprint ───────────── Persistence
    ├──── scheduled dirty source ───────── Recovery journal
    └──── save / periodic poll ─────────── External-change classifier
@@ -74,13 +77,46 @@ Opening a file is transactional at the application level:
 
 If loading fails, the previously active document remains in memory.
 
+`MarkdownEditor` intercepts Enter only for an empty selection and delegates the source/cursor
+calculation to the pure `services/markdown_continuation.py` function. It continues bullets, ordered
+markers, tasks, and blockquotes, terminates empty markers, and leaves fenced code or unsupported
+contexts to TextArea. The replacement is one TextArea edit, so undo removes the inserted marker and
+newline together. Disabling `editor.auto_continue_lists` restores TextArea's ordinary Enter behavior.
+
 Each source edit increments a preview revision and stops the previous debounce timer. The async
 callback verifies its revision before awaiting `Markdown.update`. A stale callback rechecks the
 revision, so an old file's render cannot become the final preview for a newer file. Rendering errors
 are reported in the UI and never mutate `Document`.
 
-The preview is constructed with `open_links=False`. Markdown links are rendered but do not launch a
-browser or another external application.
+The preview is constructed with `open_links=False` and a dedicated `markdown-it-py` parser factory.
+The `gfm-like2` preset provides tables, task metadata, and single/double-tilde strikethrough; alerts
+and HTML parsing are disabled because Textual does not safely render those token types. A small core
+rule turns task metadata into visible `☐` / `☑` text without changing source. Markdown links render
+but do not launch a browser or another external application. Unsupported extensions remain literal
+text or ordinary blocks rather than introducing renderer-specific document state.
+
+## User configuration
+
+The CLI resolves the configuration root in this order: explicit `--config-dir`,
+`TERMWRITER_CONFIG_HOME`, then `~/.termwriter`. Configuration is intentionally user-level rather
+than workspace-level, so merely opening a repository cannot install key behavior or visual rules.
+
+`config.toml` is parsed with the standard-library `tomllib`. Only three editor booleans and a closed
+set of binding IDs are accepted. Values map binding IDs to key strings, never to Textual action
+names; unknown sections, options, IDs, empty values, and duplicate effective keys fail closed. The
+initializer uses exclusive creation, does not replace existing files, and creates new directories
+and files with mode 0700/0600 where POSIX permissions apply.
+
+Bindings keep stable IDs and are remapped through Textual's public `App.set_keymap`. Undo and redo
+are defined on the Markdown editor subclass with IDs so remapping removes their original TextArea
+keys rather than leaving hidden aliases. F1 and CLI help are generated from the effective keymap.
+The command palette exposes fixed application callbacks; configuration cannot add callbacks.
+
+Bundled layout rules live in `default.tcss`. When an existing user `theme.tcss` is present, the App
+loads `[default.tcss, theme.tcss]` in that order and enables Textual's CSS file watcher. Inline widget
+CSS is avoided so the user file can override normal selectors. Runtime reload reparses TOML and
+updates keybindings and editor properties; an existing theme is independently reloaded by Textual
+when saved. Creating the theme after application startup requires one restart.
 
 ## Workspace boundary
 
@@ -216,6 +252,7 @@ user may save that copy under a new name, explicitly continue without it, or can
 - `Document` and `Workspace` contain state/invariants without Textual imports.
 - Persistence and external-change modules perform filesystem work without UI calls.
 - File search ranks only the scanner's validated in-process index and has no `ripgrep` dependency.
+- Configuration contains data only; document/workspace contents never define commands or CSS.
 
 Synchronous hashing and writes may briefly block the UI for very large Markdown files. Moving I/O to
 a worker is a future performance improvement, but it must preserve ordered callbacks and all current
@@ -227,6 +264,9 @@ The implementation targets Textual 8.2.8 and relies on documented APIs:
 
 - [`TextArea`](https://textual.textualize.io/widgets/text_area/)
 - [`Markdown`](https://textual.textualize.io/widgets/markdown/)
+- [`App.set_keymap`](https://textual.textualize.io/api/app/#textual.app.App.set_keymap)
+- [command palette](https://textual.textualize.io/guide/command_palette/)
+- [Textual CSS](https://textual.textualize.io/guide/CSS/)
 - [`DirectoryTree`](https://textual.textualize.io/widgets/directory_tree/)
 - [screens and typed results](https://textual.textualize.io/guide/screens/)
 - [`MessagePump.set_interval`](https://textual.textualize.io/api/message_pump/#textual.message_pump.MessagePump.set_interval)

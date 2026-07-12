@@ -6,9 +6,11 @@ TermWriter is a local-first Markdown editor for the terminal. It edits ordinary 
 The current release is a functional MVP focused on a dependable writing loop:
 
 - browse a Markdown workspace;
-- edit source with soft wrapping, Unicode, syntax highlighting, undo, and redo;
-- read a rendered preview without leaving the terminal;
+- edit source with soft wrapping, Unicode, syntax highlighting, undo, redo, and list continuation;
+- read a safe GFM-style rendered preview without leaving the terminal;
 - find files quickly;
+- search commands from a palette;
+- customize editor options, keybindings, and Textual CSS without reinstalling;
 - save through a same-directory temporary file;
 - keep an atomic per-user crash-recovery journal for dirty source;
 - poll the active file for external changes while the application is running;
@@ -42,7 +44,8 @@ both panes into an unusable layout. Ctrl+B can reclaim the explorer width at any
 - a terminal supported by [Textual](https://textual.textualize.io/);
 - a filesystem on which the selected workspace is readable and its files are writable when saving.
 
-TermWriter currently targets Textual 8.x and installs its Markdown syntax-highlighting extra.
+TermWriter currently targets Textual 8.x, installs its Markdown syntax-highlighting extra, and uses
+`markdown-it-py` for the preview parser.
 
 ## Installation
 
@@ -81,6 +84,88 @@ Markdown files remain available in the explorer and search.
 The CLI rejects missing paths, non-Markdown file targets, and Markdown file symlinks before the TUI
 starts. The explorer omits `.git`, `.venv`, `node_modules`, `__pycache__`, and all symlinks.
 
+Show every CLI option or the effective in-app commands without starting the TUI:
+
+```bash
+termwriter --help
+termwriter --commands
+```
+
+## Markdown support
+
+The preview supports headings H1-H6, paragraphs, emphasis, bold, strikethrough, blockquotes,
+horizontal rules, links, image placeholders, inline and fenced code, nested ordered/unordered lists,
+tables, and task lists. Task state is rendered as `☐` or `☑`; the Markdown source remains unchanged.
+Raw HTML is displayed literally and is never executed.
+
+Nested ordered items use an indented normal marker:
+
+```markdown
+1. First
+   1. Nested
+   2. Nested
+2. Second
+```
+
+`1.1. Nested` is ordinary text in CommonMark, not a nested-list marker. Likewise, `__text__` means
+bold; portable Markdown has no underline syntax. F1 opens the effective shortcut list, and the
+command palette includes a compact Markdown syntax reference.
+
+Footnotes, definition lists, GFM alerts, math, underline, subscript, superscript, and rendered raw
+HTML are not supported yet. Preview rendering never writes back to the source editor.
+
+## Configuration
+
+Create editable, no-clobber templates:
+
+```bash
+termwriter --init-config
+termwriter --config-path
+```
+
+The default files are `~/.termwriter/config.toml` and `~/.termwriter/theme.tcss`. Override the
+directory with `TERMWRITER_CONFIG_HOME` or `--config-dir PATH`. The TOML file accepts only the
+documented editor booleans and known binding IDs; it cannot define actions, commands, or executable
+hooks.
+
+```toml
+[editor]
+auto_continue_lists = true
+soft_wrap = true
+show_line_numbers = true
+
+[keybindings]
+save = "ctrl+s"
+quit = "ctrl+q"
+toggle_explorer = "ctrl+b"
+find_file = "ctrl+p"
+toggle_preview = "ctrl+e"
+undo = "ctrl+z,super+z"
+redo = "ctrl+y,super+y,ctrl+shift+z"
+show_help = "f1"
+command_palette = "ctrl+backslash"
+```
+
+Use **Reload configuration** from the command palette after editing `config.toml`. Help is generated
+from the effective map, so it reflects remapped keys. Duplicate keys, unknown IDs/options, invalid
+TOML, and non-boolean editor options are rejected with a clear error.
+
+`theme.tcss` is [Textual CSS](https://textual.textualize.io/guide/CSS/), not browser CSS. It loads
+after TermWriter's bundled stylesheet, so matching selectors override the defaults:
+
+```css
+#title-bar {
+    background: $primary-darken-2;
+}
+
+#markdown-preview {
+    padding: 1 4;
+}
+```
+
+An existing `theme.tcss` is watched and reapplied when saved. If the theme file is created while
+TermWriter is already running, restart once so it can be added to the watched stylesheet list.
+
 ## Shortcuts
 
 | Key | Action |
@@ -92,11 +177,13 @@ starts. The explorer omits `.git`, `.venv`, `node_modules`, `__pycache__`, and a
 | Ctrl+E | Show/hide preview, or switch editor/preview when narrow |
 | Ctrl+Z | Undo |
 | Ctrl+Y or Ctrl+Shift+Z | Redo |
+| Ctrl+\ | Open the searchable command palette |
 | F1 | Shortcut help |
 
 Tab and Shift+Tab move focus where the focused control does not use Tab for indentation. F1 is the
 help key so a literal `?` remains editable Markdown. Some terminals do not distinguish
-Ctrl+Shift+Z from Ctrl+Z; Ctrl+Y remains the portable redo binding.
+Ctrl+Shift+Z from Ctrl+Z; Ctrl+Y remains the portable redo binding. On a bullet, numbered item,
+task, or blockquote, Enter inserts the next marker; Enter on an empty marker ends that structure.
 
 ## Data-safety behavior
 
@@ -169,6 +256,8 @@ The suite covers the document model, UTF-8/BOM/LF/CRLF preservation, mixed-endin
 files, missing final newlines, recovery round trips and failures, restart recovery, atomic-save
 failures, metadata and permission bits, watcher reload/conflict/deletion behavior, workspace
 filtering, symlinks, file search, CLI validation, and Textual Pilot workflows.
+Customization tests also exercise remapped keys, runtime TOML reload, user-TCSS precedence, command
+discovery, task continuation, termination, and undo grouping.
 
 ## Known limitations
 
@@ -204,12 +293,19 @@ filtering, symlinks, file search, CLI validation, and Textual Pilot workflows.
   cache or restart restoration yet.
 - Preview links are deliberately non-opening. Raw document HTML, JavaScript, and shell text are not
   executed.
+- Preview intentionally omits footnotes, definition lists, alerts, math, underline, subscript, and
+  superscript. Images do not render terminal graphics.
+- Smart Enter handles common single-line list/task/blockquote prefixes and fenced-code exclusions;
+  it is not a full Markdown incremental parser.
+- A malformed `theme.tcss` can prevent startup until the file is corrected. Only a theme present at
+  launch is watched; create the templates with `--init-config` before opening the TUI.
 - Global full-text search is not part of this MVP.
 
 ## Near-term roadmap
 
-1. Add recovery-entry management for renamed files and manual cleanup of corrupt/stale entries.
-2. Preserve more filesystem metadata where the host platform exposes a safe, testable mechanism.
+1. Add a syntax-help fixture/gallery and broaden preview support only where Textual can render tokens
+   safely.
+2. Add recovery-entry management for renamed files and manual cleanup of corrupt/stale entries.
 3. Add optional in-process workspace text search.
 4. Add a multi-document cache and restart restoration for cursor/scroll state.
 5. Prototype read-only semantic block mapping before attempting hybrid block editing.
