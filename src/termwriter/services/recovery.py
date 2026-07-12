@@ -59,6 +59,7 @@ class RecoveryRecord:
     entry: RecoveryEntry | None = None
     error: str | None = None
     quarantined: bool = False
+    has_content_fingerprint: bool = False
 
     @property
     def is_corrupt(self) -> bool:
@@ -368,7 +369,11 @@ class RecoveryJournal:
         if not record.quarantined:
             raise RecoveryError("Recovery entry is not quarantined")
         with self._journal_locks(record.journal_path):
-            self._verify_record(record)
+            current = self._verify_record(record)
+            if not record.has_content_fingerprint or not current.has_content_fingerprint:
+                raise RecoveryError(
+                    "Cannot permanently delete recovery bytes that could not be fingerprinted"
+                )
             self._unlink_record(record)
 
     def delete(self, document_path: Path) -> None:
@@ -423,6 +428,7 @@ class RecoveryJournal:
                 fingerprint,
                 entry=entry,
                 quarantined=quarantined,
+                has_content_fingerprint=True,
             )
         except RecoveryError as error:
             return RecoveryRecord(
@@ -430,6 +436,7 @@ class RecoveryJournal:
                 fingerprint,
                 error=str(error),
                 quarantined=quarantined,
+                has_content_fingerprint=True,
             )
 
     def _verify_record(self, record: RecoveryRecord) -> RecoveryRecord:

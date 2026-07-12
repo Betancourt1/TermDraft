@@ -779,6 +779,35 @@ def test_permanent_delete_refuses_quarantine_changed_after_listing(tmp_path: Pat
     assert corrupt_path.read_bytes() == b"newer bytes"
 
 
+def test_permanent_delete_fails_closed_when_bytes_could_not_be_fingerprinted(
+    tmp_path: Path,
+) -> None:
+    journal = RecoveryJournal(tmp_path / "state")
+    quarantine_root = journal.state_root / "quarantine"
+    quarantine_root.mkdir(parents=True)
+    quarantine_path = quarantine_root / f"{'c' * 64}.json"
+    quarantine_path.write_bytes(b"old bytes")
+    try:
+        quarantine_path.chmod(0)
+        (record,) = journal.list_quarantined()
+        if record.has_content_fingerprint:
+            pytest.skip("Filesystem permissions did not prevent reading the quarantine")
+
+        quarantine_path.chmod(0o600)
+        quarantine_path.write_bytes(b"new bytes")
+        quarantine_path.chmod(0)
+
+        with pytest.raises(RecoveryError, match="could not be fingerprinted"):
+            journal.delete_quarantined(record)
+
+        assert quarantine_path.exists()
+        quarantine_path.chmod(0o600)
+        assert quarantine_path.read_bytes() == b"new bytes"
+    finally:
+        if quarantine_path.exists():
+            quarantine_path.chmod(0o600)
+
+
 def test_quarantine_operations_reject_wrong_record_location(tmp_path: Path) -> None:
     journal = RecoveryJournal(tmp_path / "state")
     outside = tmp_path / "do-not-delete.json"
