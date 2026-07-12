@@ -216,7 +216,10 @@ async def test_recovery_manager_actions_fit_and_scroll_into_a_narrow_terminal(
             "#recovery-manager-close",
         ):
             button = dialog.query_one(selector, Button).focus()
-            await pilot.pause()
+            for _ in range(20):
+                await pilot.pause(0.01)
+                if button.region.y >= 0 and button.region.bottom <= app.size.height:
+                    break
             assert button.region.x >= 0
             assert button.region.right <= app.size.width
             assert button.region.y >= 0
