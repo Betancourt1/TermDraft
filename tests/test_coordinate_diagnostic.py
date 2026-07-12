@@ -151,3 +151,26 @@ async def test_command_opens_read_only_coordinate_snapshot(tmp_path: Path) -> No
         assert app.document is not None
         assert app.document.text == "a🙂\n"
         assert not app.document.dirty
+
+
+async def test_command_uses_exact_mixed_ending_source_offsets(tmp_path: Path) -> None:
+    path = tmp_path / "mixed.md"
+    source = "a\r\nb\nc\rd"
+    path.write_bytes(source.encode("utf-8"))
+    app = TermWriterApp(
+        Workspace.from_target(path),
+        recovery_journal=RecoveryJournal(tmp_path / "recovery"),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.click("#mixed-normalize")
+        app.editor.move_cursor((3, 1))
+        app.action_inspect_cursor_coordinates()
+        await pilot.pause()
+
+        dialog = app.screen
+        assert isinstance(dialog, CoordinateInspectorDialog)
+        assert dialog.diagnostic.source_offset == len(source)
+        assert app.document is not None
+        assert app.document.text == source
+        assert not app.document.dirty

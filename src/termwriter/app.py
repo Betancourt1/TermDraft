@@ -3127,7 +3127,7 @@ class TermWriterApp(App[None]):
             return
         editor = self.editor
         diagnostic = diagnose_coordinate(
-            editor.text,
+            self.document.text,
             editor.cursor_location,
             wrap_width=editor.wrap_width,
             tab_width=editor.indent_width,
