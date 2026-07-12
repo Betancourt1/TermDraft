@@ -1866,7 +1866,11 @@ async def test_recovery_manager_rechecks_active_dirty_draft_before_archive(
     path = tmp_path / "active.md"
     path.write_text("base", encoding="utf-8")
     journal = RecoveryJournal(tmp_path / "state")
-    app = app_for_file(path, recovery_journal=journal)
+    app = app_for_file(
+        path,
+        recovery_debounce=60.0,
+        recovery_journal=journal,
+    )
 
     async with app.run_test(size=(100, 32)) as pilot:
         assert app.document is not None
