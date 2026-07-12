@@ -1499,6 +1499,7 @@ async def test_recovery_manager_retargets_a_renamed_draft_and_opens_it(
                 break
             await pilot.pause(0.01)
         assert isinstance(app.screen, RecoveryManagerDialog)
+        await pilot.pause()
         await pilot.click("#recovery-manager-open")
         for _ in range(150):
             if isinstance(app.screen, RecoveryDialog):
@@ -1610,6 +1611,7 @@ async def test_recovery_manager_restores_quarantine_into_guarded_open_flow(
                 break
             await pilot.pause(0.01)
         assert isinstance(app.screen, RecoveryManagerDialog)
+        await pilot.pause()
         await pilot.click("#recovery-manager-open")
 
         for _ in range(200):
