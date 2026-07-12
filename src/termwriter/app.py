@@ -14,7 +14,7 @@ from textual.app import App, ComposeResult, SystemCommand
 from textual.containers import Horizontal
 from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
-from textual.widgets import DirectoryTree, Static, Tab, Tabs, TextArea
+from textual.widgets import ContentSwitcher, DirectoryTree, Static, Tab, Tabs, TextArea
 from textual.worker import Worker, get_current_worker
 
 from termwriter.bindings import (
@@ -175,6 +175,9 @@ class _RecoveryMutationResult:
 class _OpenDocument:
     tab_id: str
     document: Document
+    editor: MarkdownEditor
+    baseline_text: str
+    baseline_source_text: str
 
 
 class TermWriterApp(App[None]):
@@ -241,8 +244,7 @@ class TermWriterApp(App[None]):
         self._preview_visible = True
         self._narrow = False
         self._narrow_pane = "editor"
-        self._editor_baseline_text = ""
-        self._editor_baseline_source_text = ""
+        self._empty_editor: MarkdownEditor | None = None
         self._pending_open_document: Document | None = None
         self._pending_recovery_entry: RecoveryEntry | None = None
         self._pending_recovery_record: RecoveryRecord | None = None
@@ -269,10 +271,15 @@ class TermWriterApp(App[None]):
         with Horizontal(id="workspace"):
             yield FileExplorer(self.workspace)
             with Horizontal(id="workbench"):
-                yield MarkdownEditor(
-                    auto_continue_lists=self.config.editor.auto_continue_lists,
-                    soft_wrap=self.config.editor.soft_wrap,
-                    show_line_numbers=self.config.editor.show_line_numbers,
+                self._empty_editor = self._new_editor(
+                    "",
+                    editor_id="empty-editor-buffer",
+                    read_only=True,
+                )
+                yield ContentSwitcher(
+                    self._empty_editor,
+                    initial="empty-editor-buffer",
+                    id="markdown-editor",
                 )
                 yield MarkdownPreview()
         yield TermWriterStatusBar()
@@ -367,7 +374,18 @@ class TermWriterApp(App[None]):
 
     @property
     def editor(self) -> MarkdownEditor:
-        return self.query_one(MarkdownEditor)
+        document = self.document
+        if document is not None:
+            opened = self._open_entry_for_document(document)
+            if opened is not None:
+                return opened.editor
+        if self._empty_editor is None:
+            return self.query_one(MarkdownEditor)
+        return self._empty_editor
+
+    @property
+    def editor_switcher(self) -> ContentSwitcher:
+        return self.query_one("#markdown-editor", ContentSwitcher)
 
     @property
     def preview(self) -> MarkdownPreview:
@@ -462,9 +480,11 @@ class TermWriterApp(App[None]):
         self.explorer.display = self._explorer_visible
         if self._narrow:
             show_preview = self._preview_visible and self._narrow_pane == "preview"
+            self.editor_switcher.display = not show_preview
             self.editor.display = not show_preview
             self.preview.display = show_preview
         else:
+            self.editor_switcher.display = True
             self.editor.display = True
             self.preview.display = self._preview_visible
         self._refresh_status()
@@ -473,20 +493,23 @@ class TermWriterApp(App[None]):
         document = self.document
         if document is None:
             return
+        opened = self._open_entry_for_document(document)
+        if opened is None:
+            return
         previous_text = document.text
-        editor_text = self.editor.text
-        if editor_text != self._editor_baseline_text:
+        editor_text = opened.editor.text
+        if editor_text != opened.baseline_text:
             document.update_text(editor_text)
         else:
-            document.update_text(self._editor_baseline_source_text)
+            document.update_text(opened.baseline_source_text)
         if document.text != previous_text:
             self._schedule_recovery()
-        line, column = self.editor.cursor_location
+        line, column = opened.editor.cursor_location
         document.update_cursor(
             line,
             column,
-            scroll_x=float(self.editor.scroll_offset.x),
-            scroll_y=float(self.editor.scroll_offset.y),
+            scroll_x=float(opened.editor.scroll_offset.x),
+            scroll_y=float(opened.editor.scroll_offset.y),
         )
 
     def _remember_document_view(self, document: Document, *, mark_recent: bool = True) -> None:
@@ -585,24 +608,28 @@ class TermWriterApp(App[None]):
             return
         self._maybe_finish_exit()
 
-    @on(TextArea.Changed, "#markdown-editor")
+    @on(TextArea.Changed, ".markdown-editor-buffer")
     def editor_changed(self, event: TextArea.Changed) -> None:
-        document = self.document
-        if document is None:
+        opened = self._open_entry_for_editor(event.text_area)
+        if opened is None:
             return
-        if event.text_area.text == self._editor_baseline_text:
-            document.update_text(self._editor_baseline_source_text)
+        document = opened.document
+        if event.text_area.text == opened.baseline_text:
+            document.update_text(opened.baseline_source_text)
         else:
             document.update_text(event.text_area.text)
+        if document is not self.document:
+            return
         self._schedule_preview()
         self._schedule_recovery()
         self._refresh_status()
 
-    @on(TextArea.SelectionChanged, "#markdown-editor")
+    @on(TextArea.SelectionChanged, ".markdown-editor-buffer")
     def cursor_changed(self, event: TextArea.SelectionChanged) -> None:
-        document = self.document
-        if document is None:
+        opened = self._open_entry_for_editor(event.text_area)
+        if opened is None:
             return
+        document = opened.document
         line, column = event.selection.end
         document.update_cursor(
             line,
@@ -610,7 +637,8 @@ class TermWriterApp(App[None]):
             scroll_x=float(event.text_area.scroll_offset.x),
             scroll_y=float(event.text_area.scroll_offset.y),
         )
-        self._refresh_status()
+        if document is self.document:
+            self._refresh_status()
 
     @on(DirectoryTree.FileSelected)
     def file_selected(self, event: DirectoryTree.FileSelected) -> None:
@@ -641,6 +669,36 @@ class TermWriterApp(App[None]):
             None,
         )
 
+    def _open_entry_for_editor(self, editor: TextArea) -> _OpenDocument | None:
+        return next(
+            (opened for opened in self._open_documents if opened.editor is editor),
+            None,
+        )
+
+    def _new_editor(
+        self,
+        text: str,
+        *,
+        editor_id: str,
+        read_only: bool,
+    ) -> MarkdownEditor:
+        return MarkdownEditor(
+            text,
+            auto_continue_lists=self.config.editor.auto_continue_lists,
+            soft_wrap=self.config.editor.soft_wrap,
+            show_line_numbers=self.config.editor.show_line_numbers,
+            read_only=read_only,
+            id=editor_id,
+            classes="markdown-editor-buffer",
+        )
+
+    def _set_editor_baseline(self, document: Document) -> None:
+        opened = self._open_entry_for_document(document)
+        if opened is None:
+            return
+        opened.baseline_text = opened.editor.text
+        opened.baseline_source_text = document.text
+
     def _tab_label(self, document: Document) -> str:
         relative = document.path.relative_to(self.workspace.root).as_posix()
         state = "!" if document.conflict else "●" if document.dirty else ""
@@ -650,8 +708,20 @@ class TermWriterApp(App[None]):
         if self._open_entry_for_document(document) is not None:
             return False
         self._next_tab_id += 1
-        opened = _OpenDocument(f"document-tab-{self._next_tab_id}", document)
+        editor = self._new_editor(
+            document.text,
+            editor_id=f"editor-buffer-{self._next_tab_id}",
+            read_only=document.read_only,
+        )
+        opened = _OpenDocument(
+            f"document-tab-{self._next_tab_id}",
+            document,
+            editor,
+            editor.text,
+            document.text,
+        )
         self._open_documents.append(opened)
+        self.editor_switcher.mount(editor)
         self.document_tabs.add_tab(Tab(self._tab_label(document), id=opened.tab_id))
         self.call_after_refresh(self._refresh_document_tabs)
         return True
@@ -749,6 +819,27 @@ class TermWriterApp(App[None]):
         self.editor.move_cursor((line, column), center=True)
         self.editor.focus()
 
+    def _restore_editor_view(
+        self,
+        document: Document,
+        line: int,
+        column: int,
+        scroll_x: float,
+        scroll_y: float,
+    ) -> None:
+        """Restore a newly mounted editor after Textual has measured it."""
+        if self.document is not document:
+            return
+        self.editor.move_cursor((line, column))
+        self.editor.scroll_to(scroll_x, scroll_y, animate=False, immediate=True)
+        actual_line, actual_column = self.editor.cursor_location
+        document.update_cursor(
+            actual_line,
+            actual_column,
+            scroll_x=float(self.editor.scroll_offset.x),
+            scroll_y=float(self.editor.scroll_offset.y),
+        )
+
     def _is_current_document(self, path: Path) -> bool:
         document = self.document
         if document is None:
@@ -814,8 +905,7 @@ class TermWriterApp(App[None]):
         document.discard_changes()
         with self.editor.prevent(TextArea.Changed):
             self.editor.load_text(document.text)
-        self._editor_baseline_text = self.editor.text
-        self._editor_baseline_source_text = document.text
+        self._set_editor_baseline(document)
         self._schedule_preview(immediate=True)
         self._finish_critical_io(restore_status=False)
         self._complete_pending_transition()
@@ -1369,6 +1459,11 @@ class TermWriterApp(App[None]):
             opened = self._open_entry_for_document(existing)
             if opened is not None:
                 opened.document = document
+                with opened.editor.prevent(TextArea.Changed):
+                    opened.editor.load_text(document.text)
+                opened.editor.read_only = document.read_only
+                opened.baseline_text = opened.editor.text
+                opened.baseline_source_text = document.text
             newly_opened = False
         else:
             newly_opened = self._register_open_document(document)
@@ -1404,10 +1499,10 @@ class TermWriterApp(App[None]):
                 self._flush_recovery_before_switch(previous)
         self.document = document
         self._document_generation += 1
-        with self.editor.prevent(TextArea.Changed):
-            self.editor.load_text(document.text)
-        self._editor_baseline_text = self.editor.text
-        self._editor_baseline_source_text = document.text
+        opened = self._open_entry_for_document(document)
+        if opened is None:
+            raise RuntimeError("Cannot activate an unregistered document")
+        self.editor_switcher.current = opened.editor.id
         self.editor.read_only = document.read_only
         self.explorer.set_active(document.path)
         self._narrow_pane = "editor"
@@ -1439,6 +1534,14 @@ class TermWriterApp(App[None]):
                     view.scroll_y,
                     animate=False,
                     immediate=True,
+                )
+                self.call_after_refresh(
+                    self._restore_editor_view,
+                    document,
+                    view.line,
+                    view.column,
+                    view.scroll_x,
+                    view.scroll_y,
                 )
                 line, column = self.editor.cursor_location
                 document.update_cursor(
@@ -1919,8 +2022,7 @@ class TermWriterApp(App[None]):
         timestamp = datetime.now().astimezone().strftime("Saved %H:%M:%S")
         document.mark_saved(outcome.saved.snapshot, timestamp)
         self._document_generation += 1
-        self._editor_baseline_text = self.editor.text
-        self._editor_baseline_source_text = document.text
+        self._set_editor_baseline(document)
         self._save_continuation = None
         if outcome.saved.warning:
             self.notify(outcome.saved.warning, severity="warning")
@@ -2082,8 +2184,7 @@ class TermWriterApp(App[None]):
         timestamp = datetime.now().astimezone().strftime("Saved %H:%M:%S")
         document.mark_saved(outcome.saved.snapshot, timestamp)
         self._document_generation += 1
-        self._editor_baseline_text = self.editor.text
-        self._editor_baseline_source_text = document.text
+        self._set_editor_baseline(document)
         self.explorer.set_active(outcome.target)
         self._refresh_workspace_index()
         self.explorer.directory_tree.reload()
@@ -2246,8 +2347,7 @@ class TermWriterApp(App[None]):
         self._document_generation += 1
         with self.editor.prevent(TextArea.Changed):
             self.editor.load_text(document.text)
-        self._editor_baseline_text = self.editor.text
-        self._editor_baseline_source_text = document.text
+        self._set_editor_baseline(document)
         self._schedule_preview(immediate=True)
         if automatic:
             document.last_save_status = "Reloaded externally"
@@ -2469,13 +2569,15 @@ class TermWriterApp(App[None]):
         if opened is None:
             return
         index = self._open_documents.index(opened)
-        self._open_documents.remove(opened)
-        self.document_tabs.remove_tab(opened.tab_id)
-        if self._open_documents:
-            target = self._open_documents[min(index, len(self._open_documents) - 1)]
+        remaining = [candidate for candidate in self._open_documents if candidate is not opened]
+        if remaining:
+            target = remaining[min(index, len(remaining) - 1)]
             self._activate_document(target.document, flush_previous_recovery=False)
         else:
             self._clear_active_document(flush_recovery=False)
+        self._open_documents.remove(opened)
+        self.document_tabs.remove_tab(opened.tab_id)
+        opened.editor.remove()
         self.call_after_refresh(self._refresh_document_tabs)
 
     def _clear_active_document(self, *, flush_recovery: bool = True) -> None:
@@ -2490,12 +2592,8 @@ class TermWriterApp(App[None]):
         self._preview_revision += 1
         if self._preview_timer is not None:
             self._preview_timer.stop()
-            self._preview_timer = None
-        with self.editor.prevent(TextArea.Changed):
-            self.editor.load_text("")
-        self._editor_baseline_text = ""
-        self._editor_baseline_source_text = ""
-        self.editor.read_only = True
+        self._preview_timer = None
+        self.editor_switcher.current = "empty-editor-buffer"
         self.explorer.set_active(None)
         self.run_worker(
             self.preview.render_source("Select a Markdown file to begin."),
@@ -2634,9 +2732,10 @@ class TermWriterApp(App[None]):
 
         self.config = config
         self.set_keymap(dict(config.keybindings))
-        self.editor.auto_continue_lists = config.editor.auto_continue_lists
-        self.editor.soft_wrap = config.editor.soft_wrap
-        self.editor.show_line_numbers = config.editor.show_line_numbers
+        for editor in self.query(MarkdownEditor):
+            editor.auto_continue_lists = config.editor.auto_continue_lists
+            editor.soft_wrap = config.editor.soft_wrap
+            editor.show_line_numbers = config.editor.show_line_numbers
         self._refresh_status()
         self.notify("Reloaded config.toml; existing theme.tcss files reload when saved")
 

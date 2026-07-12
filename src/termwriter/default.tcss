@@ -50,6 +50,11 @@ Screen {
 #markdown-editor {
     width: 1fr;
     height: 1fr;
+}
+
+.markdown-editor-buffer {
+    width: 1fr;
+    height: 1fr;
     border: none;
 }
 

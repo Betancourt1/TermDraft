@@ -83,7 +83,7 @@ async def test_tabs_preserve_independent_dirty_sources_and_view_positions(
         assert sum("●" in label for label in labels) == 2
 
 
-async def test_switching_tabs_clears_shared_editor_undo_without_cross_buffer_edit(
+async def test_tabs_keep_independent_editor_undo_histories(
     tmp_path: Path,
 ) -> None:
     first = tmp_path / "first.md"
@@ -99,10 +99,14 @@ async def test_switching_tabs_clears_shared_editor_undo_without_cross_buffer_edi
 
         assert app.document is not None
         assert app.document.path == first
-        assert app.document.text == "xfirst"
+        assert app.document.text == "first"
         second_buffer = app._open_document_for_path(second)
         assert second_buffer is not None
         assert second_buffer.text == "ysecond"
+
+        await pilot.press("ctrl+pagedown", "ctrl+z")
+        assert app.document.path == second
+        assert app.document.text == "second"
 
 
 async def test_saving_active_tab_does_not_write_or_clean_another_buffer(

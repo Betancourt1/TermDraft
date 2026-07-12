@@ -17,22 +17,28 @@ class MarkdownEditor(TextArea):
 
     def __init__(
         self,
+        text: str = "",
         *,
         auto_continue_lists: bool = True,
         soft_wrap: bool = True,
         show_line_numbers: bool = True,
+        read_only: bool = True,
+        id: str | None = "markdown-editor",
+        classes: str | None = None,
     ) -> None:
         self.auto_continue_lists = auto_continue_lists
         super().__init__(
+            text,
             language="markdown",
             soft_wrap=soft_wrap,
             tab_behavior="indent",
             show_line_numbers=show_line_numbers,
             max_checkpoints=100,
-            id="markdown-editor",
+            id=id,
+            classes=classes,
             placeholder="Select a Markdown file from the explorer or press Ctrl+P.",
         )
-        self.read_only = True
+        self.read_only = read_only
 
     def undo(self) -> None:
         """Keep history immutable while a background writer owns the source."""
