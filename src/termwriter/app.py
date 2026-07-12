@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path, PurePath
@@ -102,6 +102,11 @@ class _LoadPurpose(Enum):
     RELOAD_MANUAL = auto()
 
 
+class _RecoveryMutationKind(Enum):
+    SAVE = auto()
+    DELETE = auto()
+
+
 @dataclass(frozen=True, slots=True)
 class _DocumentTicket:
     document: Document
@@ -145,6 +150,24 @@ class _RecoveryManagementResult:
 @dataclass(frozen=True, slots=True)
 class _RecoveryCleanupWorkerResult:
     result: RecoveryRetentionResult | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _RecoveryMutation:
+    sequence: int
+    kind: _RecoveryMutationKind
+    path: Path
+    document: Document | None = None
+    text: str | None = None
+    encoding: str | None = None
+    base_snapshot: FileSnapshot | None = None
+    fingerprint: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _RecoveryMutationResult:
+    record: RecoveryRecord | None = None
     error: str | None = None
 
 
@@ -196,6 +219,11 @@ class TermWriterApp(App[None]):
         self._external_watch_timer: Timer | None = None
         self._recovery_timer: Timer | None = None
         self._recovery_revision = 0
+        self._recovery_mutation_sequence = 0
+        self._recovery_mutation_queue: list[_RecoveryMutation] = []
+        self._recovery_mutation_in_flight: _RecoveryMutation | None = None
+        self._recovery_delete_waiters: dict[Path, list[Callable[[], None]]] = {}
+        self._known_recovery_fingerprints: dict[Path, str] = {}
         self._preview_revision = 0
         self._pending_transition: Callable[[], object] | None = None
         self._save_continuation: Callable[[], None] | None = None
@@ -207,6 +235,7 @@ class TermWriterApp(App[None]):
         self._editor_baseline_source_text = ""
         self._pending_open_document: Document | None = None
         self._pending_recovery_entry: RecoveryEntry | None = None
+        self._pending_recovery_record: RecoveryRecord | None = None
         self._pending_recovery_is_orphan = False
         self._orphan_recoveries: list[RecoveryEntry] = []
         self._scan_orphans_after_session_open = False
@@ -664,8 +693,12 @@ class TermWriterApp(App[None]):
             self._save_current(after=self._complete_pending_transition)
         elif decision is UnsavedDecision.DISCARD:
             if self.document is not None:
-                self._clear_recovery(self.document.path)
-            self._complete_pending_transition()
+                self._clear_recovery(
+                    self.document.path,
+                    after=self._complete_pending_transition,
+                )
+            else:
+                self._complete_pending_transition()
         else:
             self._cancel_pending_transition()
 
@@ -710,13 +743,18 @@ class TermWriterApp(App[None]):
         self._pending_open_document = document
         self._pending_recovery_is_orphan = False
         try:
-            recovery = self.recovery_journal.load(document.path)
+            recovery_record = self.recovery_journal.record_for(document.path)
         except RecoveryError as error:
             self.notify(escape(str(error)), severity="error", title="Recovery draft unavailable")
-            recovery = None
+            recovery_record = None
+        recovery = None if recovery_record is None else recovery_record.entry
+        self._pending_recovery_record = recovery_record
+        if recovery_record is not None:
+            self._known_recovery_fingerprints[document.path] = recovery_record.fingerprint
         if recovery is not None and recovery.text == document.text:
-            self._clear_recovery(document.path)
-            recovery = None
+            self._pending_recovery_entry = None
+            self._clear_recovery(document.path, after=self._continue_pending_open)
+            return
         if recovery is not None:
             self._pending_recovery_entry = recovery
             updated_at = recovery.updated_at.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
@@ -740,6 +778,7 @@ class TermWriterApp(App[None]):
         is_orphan = self._pending_recovery_is_orphan
         self._pending_recovery_is_orphan = False
         self._pending_recovery_entry = None
+        self._pending_recovery_record = None
         if document is None or recovery is None:
             self._cancel_pending_open()
             return
@@ -751,16 +790,18 @@ class TermWriterApp(App[None]):
             )
             self._continue_pending_open()
         elif decision is RecoveryDecision.DISCARD:
-            self._clear_recovery(document.path)
             if is_orphan:
-                self._cancel_pending_open()
-                self.call_after_refresh(self._offer_next_orphan_recovery)
+                self._clear_recovery(document.path, after=self._finish_discarded_orphan)
             else:
-                self._continue_pending_open()
+                self._clear_recovery(document.path, after=self._continue_pending_open)
         else:
             if is_orphan:
                 self._orphan_recoveries.clear()
             self._cancel_pending_open()
+
+    def _finish_discarded_orphan(self) -> None:
+        self._cancel_pending_open()
+        self.call_after_refresh(self._offer_next_orphan_recovery)
 
     def _scan_orphan_recoveries(self) -> Worker[None]:
         return self._scan_orphan_recoveries_worker()
@@ -1116,6 +1157,13 @@ class TermWriterApp(App[None]):
         if self._has_modal or not self._orphan_recoveries:
             return
         recovery = self._orphan_recoveries.pop(0)
+        try:
+            recovery_record = self.recovery_journal.record_for(recovery.document_path)
+        except RecoveryError as error:
+            self.notify(escape(str(error)), severity="warning", title="Recovery draft changed")
+            recovery_record = None
+        if recovery_record is not None:
+            self._known_recovery_fingerprints[recovery.document_path] = recovery_record.fingerprint
         document = Document(
             path=recovery.document_path,
             text=recovery.text,
@@ -1130,6 +1178,7 @@ class TermWriterApp(App[None]):
         )
         self._pending_open_document = document
         self._pending_recovery_entry = recovery
+        self._pending_recovery_record = recovery_record
         self._pending_recovery_is_orphan = True
         updated_at = recovery.updated_at.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
         self.push_screen(
@@ -1172,6 +1221,7 @@ class TermWriterApp(App[None]):
     def _cancel_pending_open(self) -> None:
         self._pending_open_document = None
         self._pending_recovery_entry = None
+        self._pending_recovery_record = None
         self._pending_recovery_is_orphan = False
         self._pending_open_location = None
         if self.document is not None:
@@ -1278,35 +1328,151 @@ class TermWriterApp(App[None]):
         self._recovery_timer = None
         if document is None or not document.dirty:
             return
-        try:
-            self.recovery_journal.save(
-                document_path=document.path,
-                workspace_root=self.workspace.root,
-                text=document.text,
-                encoding=document.encoding,
-                base_snapshot=document.recovery_base_snapshot or document.snapshot,
-            )
-        except RecoveryError as error:
-            document.recovery_saved = False
-            self.notify(escape(str(error)), severity="error", title="Recovery draft failed")
-        else:
-            document.recovery_saved = True
-        self._refresh_status()
+        self._queue_recovery_save(document)
 
-    def _clear_recovery(self, path: Path) -> None:
+    def _queue_recovery_save(self, document: Document) -> None:
+        document.recovery_saved = False
+        self._recovery_mutation_sequence += 1
+        mutation = _RecoveryMutation(
+            sequence=self._recovery_mutation_sequence,
+            kind=_RecoveryMutationKind.SAVE,
+            path=document.path,
+            document=document,
+            text=document.text,
+            encoding=document.encoding,
+            base_snapshot=document.recovery_base_snapshot or document.snapshot,
+        )
+        for index in range(len(self._recovery_mutation_queue) - 1, -1, -1):
+            queued = self._recovery_mutation_queue[index]
+            if queued.path != mutation.path:
+                continue
+            if queued.kind is _RecoveryMutationKind.DELETE:
+                break
+            self._recovery_mutation_queue[index] = mutation
+            self._start_recovery_mutation()
+            return
+        self._recovery_mutation_queue.append(mutation)
+        self._start_recovery_mutation()
+
+    def _clear_recovery(
+        self,
+        path: Path,
+        *,
+        after: Callable[[], None] | None = None,
+    ) -> None:
         document = self.document
         if document is not None and document.path == path:
             self._recovery_revision += 1
             if self._recovery_timer is not None:
                 self._recovery_timer.stop()
                 self._recovery_timer = None
-        try:
-            self.recovery_journal.delete(path)
-        except RecoveryError as error:
-            self.notify(escape(str(error)), severity="warning", title="Recovery cleanup failed")
-            return
-        if document is not None and document.path == path:
             document.recovery_saved = False
+        if after is not None:
+            self._recovery_delete_waiters.setdefault(path, []).append(after)
+        self._recovery_mutation_queue = [
+            mutation
+            for mutation in self._recovery_mutation_queue
+            if mutation.path != path or mutation.kind is not _RecoveryMutationKind.SAVE
+        ]
+        if (
+            self._recovery_mutation_in_flight is not None
+            and self._recovery_mutation_in_flight.path == path
+            and self._recovery_mutation_in_flight.kind is _RecoveryMutationKind.DELETE
+        ) or any(
+            mutation.path == path and mutation.kind is _RecoveryMutationKind.DELETE
+            for mutation in self._recovery_mutation_queue
+        ):
+            return
+        self._recovery_mutation_sequence += 1
+        self._recovery_mutation_queue.append(
+            _RecoveryMutation(
+                sequence=self._recovery_mutation_sequence,
+                kind=_RecoveryMutationKind.DELETE,
+                path=path,
+            )
+        )
+        self._start_recovery_mutation()
+
+    def _start_recovery_mutation(self) -> None:
+        if self._recovery_mutation_in_flight is not None or not self._recovery_mutation_queue:
+            return
+        mutation = self._recovery_mutation_queue.pop(0)
+        if mutation.kind is _RecoveryMutationKind.DELETE:
+            mutation = replace(
+                mutation,
+                fingerprint=self._known_recovery_fingerprints.get(mutation.path),
+            )
+        self._recovery_mutation_in_flight = mutation
+        self._recovery_mutation_worker(mutation)
+
+    @work(group="recovery-mutation", thread=True, exit_on_error=False)
+    def _recovery_mutation_worker(self, mutation: _RecoveryMutation) -> None:
+        try:
+            if mutation.kind is _RecoveryMutationKind.SAVE:
+                assert mutation.text is not None
+                assert mutation.encoding is not None
+                assert mutation.base_snapshot is not None
+                record = self.recovery_journal.publish(
+                    document_path=mutation.path,
+                    workspace_root=self.workspace.root,
+                    text=mutation.text,
+                    encoding=mutation.encoding,
+                    base_snapshot=mutation.base_snapshot,
+                )
+            else:
+                self.recovery_journal.delete_expected(
+                    mutation.path,
+                    fingerprint=mutation.fingerprint,
+                )
+                record = None
+            result = _RecoveryMutationResult(record=record)
+        except Exception as error:
+            result = _RecoveryMutationResult(error=str(error))
+        self.call_from_thread(self._handle_recovery_mutation_result, mutation, result)
+
+    def _handle_recovery_mutation_result(
+        self,
+        mutation: _RecoveryMutation,
+        result: _RecoveryMutationResult,
+    ) -> None:
+        if self._recovery_mutation_in_flight != mutation:
+            return
+        self._recovery_mutation_in_flight = None
+        if mutation.kind is _RecoveryMutationKind.SAVE:
+            document = mutation.document
+            if result.record is not None:
+                self._known_recovery_fingerprints[mutation.path] = result.record.fingerprint
+            if document is not None:
+                document.recovery_saved = bool(
+                    result.record is not None
+                    and document.path == mutation.path
+                    and document.text == mutation.text
+                    and document.encoding == mutation.encoding
+                    and (document.recovery_base_snapshot or document.snapshot)
+                    == mutation.base_snapshot
+                    and document.dirty
+                )
+            if result.error is not None:
+                self.notify(
+                    escape(result.error),
+                    severity="error",
+                    title="Recovery draft failed",
+                )
+        else:
+            if result.error is None:
+                self._known_recovery_fingerprints.pop(mutation.path, None)
+            else:
+                self.notify(
+                    escape(result.error),
+                    severity="warning",
+                    title="Recovery cleanup failed",
+                )
+            waiters = self._recovery_delete_waiters.pop(mutation.path, [])
+            for continuation in waiters:
+                continuation()
+        self._start_recovery_mutation()
+        self._refresh_status()
+        self._maybe_finish_exit()
 
     async def _render_preview(self, revision: int) -> None:
         if revision != self._preview_revision or self.document is None:
@@ -1480,10 +1646,8 @@ class TermWriterApp(App[None]):
             self._accept_unchanged_snapshot(document, change.snapshot)
             document.last_save_status = "No changes"
             self._save_continuation = None
-            self._clear_recovery(document.path)
             self._finish_critical_io(restore_status=False)
-            if continuation is not None:
-                continuation()
+            self._clear_recovery(document.path, after=continuation)
             return
         if change.kind is ExternalChangeKind.MODIFIED:
             self._finish_critical_io()
@@ -1574,15 +1738,13 @@ class TermWriterApp(App[None]):
         self._document_generation += 1
         self._editor_baseline_text = self.editor.text
         self._editor_baseline_source_text = document.text
-        self._clear_recovery(document.path)
         self._save_continuation = None
         self._finish_critical_io(restore_status=False)
         if outcome.saved.warning:
             self.notify(outcome.saved.warning, severity="warning")
         else:
             self.notify(f"Saved {escape(document.path.name)}")
-        if continuation is not None:
-            continuation()
+        self._clear_recovery(document.path, after=continuation)
 
     def _show_conflict(
         self,
@@ -1706,7 +1868,10 @@ class TermWriterApp(App[None]):
         previous_path = document.path
         previous_view = self._session_views.pop(previous_path, None)
         self._recent_paths = [path for path in self._recent_paths if path != previous_path]
-        self._clear_recovery(previous_path)
+        self._clear_recovery(
+            previous_path,
+            after=lambda: self._finish_save_as_recovery_cleanup(dialog),
+        )
         document.retarget(outcome.target)
         if previous_view is not None:
             self._session_views[outcome.target] = DocumentViewState(
@@ -1730,6 +1895,8 @@ class TermWriterApp(App[None]):
             self.notify(outcome.saved.warning, severity="warning")
         else:
             self.notify(f"Saved local version as {escape(outcome.target.name)}")
+
+    def _finish_save_as_recovery_cleanup(self, dialog: SaveAsDialog) -> None:
         dialog.set_busy(False)
         dialog.dismiss(True)
 
@@ -1884,7 +2051,6 @@ class TermWriterApp(App[None]):
             self.editor.load_text(document.text)
         self._editor_baseline_text = self.editor.text
         self._editor_baseline_source_text = document.text
-        self._clear_recovery(previous_path)
         self._schedule_preview(immediate=True)
         if automatic:
             document.last_save_status = "Reloaded externally"
@@ -1893,6 +2059,16 @@ class TermWriterApp(App[None]):
             self.notify(f"Reloaded externally changed {escape(document.path.name)}")
         continuation = self._save_continuation
         self._save_continuation = None
+        self._clear_recovery(
+            previous_path,
+            after=lambda: self._finish_reload_recovery_cleanup(document, continuation),
+        )
+
+    def _finish_reload_recovery_cleanup(
+        self,
+        document: Document,
+        continuation: Callable[[], None] | None,
+    ) -> None:
         if document.has_mixed_line_endings:
             self.editor.read_only = True
             self._mixed_reload_continuation = continuation
@@ -1998,6 +2174,8 @@ class TermWriterApp(App[None]):
             self._exit_requested
             and not self._session_save_in_flight
             and self._pending_session_state is None
+            and self._recovery_mutation_in_flight is None
+            and not self._recovery_mutation_queue
         ):
             self.exit()
 

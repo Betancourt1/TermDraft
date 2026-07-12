@@ -441,7 +441,12 @@ async def test_save_as_replaces_pending_recovery_timer_for_future_edits(
         new_timer.stop()
         app._write_recovery(new_revision)
 
-        recovered = journal.load(local_copy)
+        recovered = None
+        for _ in range(100):
+            recovered = journal.load(local_copy)
+            if recovered is not None:
+                break
+            await pilot.pause(0.01)
         assert recovered is not None
         assert recovered.text == "xybase"
 
@@ -1094,7 +1099,12 @@ async def test_continuous_edits_do_not_postpone_the_recovery_deadline(
         assert app._recovery_revision == pending_revision
         pending_timer.stop()
         app._write_recovery(pending_revision)
-        recovered = journal.load(path)
+        recovered = None
+        for _ in range(100):
+            recovered = journal.load(path)
+            if recovered is not None:
+                break
+            await pilot.pause(0.01)
         assert recovered is not None
         assert recovered.text == "xyzbase"
 

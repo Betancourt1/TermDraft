@@ -150,6 +150,116 @@ async def test_session_saves_are_serialized_and_coalesce_to_latest_state(
         assert store.load(tmp_path).state == states[2]
 
 
+async def test_recovery_publication_runs_off_ui_and_keeps_latest_edit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    journal = RecoveryJournal(tmp_path / "recovery")
+    app = TermWriterApp(
+        Workspace.from_target(path),
+        preview_debounce=0.01,
+        recovery_debounce=10,
+        recovery_journal=journal,
+    )
+    started = Event()
+    release = Event()
+    publication_threads: list[int] = []
+    real_publish = journal.publish
+
+    def blocked_publish(**kwargs):
+        publication_threads.append(get_ident())
+        if not started.is_set():
+            started.set()
+            assert release.wait(2)
+        return real_publish(**kwargs)
+
+    monkeypatch.setattr(journal, "publish", blocked_publish)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("x")
+        assert app._recovery_timer is not None
+        app._recovery_timer.stop()
+        app._write_recovery(app._recovery_revision)
+        await _wait_until(pilot, started.is_set)
+
+        assert not app.editor.read_only
+        await pilot.press("y")
+        assert app.document is not None
+        assert app.document.text == "xybase"
+        assert app._recovery_timer is not None
+        app._recovery_timer.stop()
+        app._write_recovery(app._recovery_revision)
+
+        release.set()
+        await _wait_until(
+            pilot,
+            lambda: bool(
+                app.document
+                and app.document.recovery_saved
+                and app._recovery_mutation_in_flight is None
+                and not app._recovery_mutation_queue
+            ),
+        )
+
+        recovered = journal.load(path)
+        assert recovered is not None
+        assert recovered.text == "xybase"
+        assert publication_threads
+        assert all(thread != get_ident() for thread in publication_threads)
+
+
+async def test_discard_waits_for_recovery_save_then_delete_without_resurrection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    journal = RecoveryJournal(tmp_path / "recovery")
+    app = TermWriterApp(
+        Workspace.from_target(first),
+        preview_debounce=0.01,
+        recovery_debounce=10,
+        recovery_journal=journal,
+    )
+    started = Event()
+    release = Event()
+    real_publish = journal.publish
+
+    def blocked_publish(**kwargs):
+        started.set()
+        assert release.wait(2)
+        return real_publish(**kwargs)
+
+    monkeypatch.setattr(journal, "publish", blocked_publish)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("x")
+        assert app._recovery_timer is not None
+        app._recovery_timer.stop()
+        app._write_recovery(app._recovery_revision)
+        await _wait_until(pilot, started.is_set)
+
+        app._request_open(second)
+        await _wait_until(pilot, lambda: isinstance(app.screen, UnsavedChangesDialog))
+        await pilot.pause()
+        await pilot.click("#unsaved-discard")
+        assert app.document is not None
+        assert app.document.path == first
+
+        release.set()
+        await _wait_until(
+            pilot,
+            lambda: bool(app.document and app.document.path == second),
+        )
+
+        assert journal.load(first) is None
+        assert first.read_text(encoding="utf-8") == "first"
+
+
 async def test_watcher_probe_allows_edit_and_classifies_result_against_latest_dirty_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
