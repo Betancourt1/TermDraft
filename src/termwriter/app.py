@@ -223,6 +223,10 @@ class TermWriterApp(App[None]):
         self._session_warning: str | None = None
         self._session_views: dict[Path, DocumentViewState] = {}
         self._session_active_path: Path | None = None
+        self._session_open_paths: tuple[Path, ...] = ()
+        self._session_restore_paths: list[Path] = []
+        self._session_restore_active_path: Path | None = None
+        self._restoring_session_tabs = False
         self._recent_paths: list[Path] = []
         self._session_save_in_flight = False
         self._pending_session_state: SessionState | None = None
@@ -301,39 +305,25 @@ class TermWriterApp(App[None]):
                 title="Session state ignored",
             )
         initial_file = self.workspace.initial_file
-        restoring_session = initial_file is None and self._session_active_path is not None
-        if initial_file is None and self._session_active_path is not None:
-            try:
-                initial_file = self.workspace.validate_document_path(self._session_active_path)
-            except WorkspaceNotFoundError as error:
-                missing_path = self._session_active_path
-                self._session_active_path = None
-                self._forget_session_path(missing_path)
-                self._persist_session()
-                self.notify(
-                    escape(str(error)),
-                    severity="warning",
-                    title="Previous session document unavailable",
-                )
-            except WorkspaceError as error:
-                self.notify(
-                    escape(str(error)),
-                    severity="warning",
-                    title="Previous session document unavailable",
-                )
         if initial_file is not None:
             worker = self._open_file_now(initial_file)
             if worker is not None:
                 await worker.wait()
-            if restoring_session:
-                if self._has_modal:
-                    self._scan_orphans_after_session_open = True
-                else:
-                    await self._scan_orphan_recoveries().wait()
-        else:
-            self.explorer.directory_tree.focus()
-            self._refresh_status()
-            await self._scan_orphan_recoveries().wait()
+            return
+
+        if self._session_open_paths:
+            self._session_restore_paths = list(self._session_open_paths)
+            self._session_restore_active_path = self._session_active_path
+            self._restoring_session_tabs = True
+            self._scan_orphans_after_session_open = True
+            worker = self._restore_next_session_tab()
+            if worker is not None:
+                await worker.wait()
+            return
+
+        self.explorer.directory_tree.focus()
+        self._refresh_status()
+        await self._scan_orphan_recoveries().wait()
 
     @work(group="session-load", thread=True, exit_on_error=False)
     def _load_session_worker(self) -> None:
@@ -351,6 +341,7 @@ class TermWriterApp(App[None]):
             view.path: view for view in (() if session is None else session.documents)
         }
         self._session_active_path = None if session is None else session.active_path
+        self._session_open_paths = () if session is None else session.open_paths
         self._recent_paths = [view.path for view in (() if session is None else session.documents)]
         if self._session_active_path is not None:
             self._mark_document_recent(self._session_active_path)
@@ -572,6 +563,11 @@ class TermWriterApp(App[None]):
                 self._session_views[path]
                 for path in self._recent_paths
                 if path in self._session_views
+            ),
+            open_paths=tuple(
+                opened.document.path
+                for opened in self._open_documents
+                if opened.document.path in self._session_views
             ),
         )
         self._queue_session_save(state)
@@ -1467,7 +1463,11 @@ class TermWriterApp(App[None]):
             newly_opened = False
         else:
             newly_opened = self._register_open_document(document)
-        self._activate_document(document, newly_opened=newly_opened)
+        self._activate_document(
+            document,
+            newly_opened=newly_opened,
+            record_session=not self._restoring_session_tabs,
+        )
 
     def _flush_recovery_before_switch(self, document: Document) -> None:
         self._recovery_revision += 1
@@ -1578,9 +1578,60 @@ class TermWriterApp(App[None]):
             self.call_after_refresh(self._check_external_in_background)
 
     def _continue_session_orphan_scan(self) -> None:
+        if self._restoring_session_tabs:
+            self.call_after_refresh(self._restore_next_session_tab)
+            return
         if self._scan_orphans_after_session_open:
             self._scan_orphans_after_session_open = False
             self.call_after_refresh(self._scan_orphan_recoveries)
+
+    def _restore_next_session_tab(self) -> Worker[None] | None:
+        """Restore stored tabs sequentially so recovery prompts cannot overlap."""
+        if not self._restoring_session_tabs:
+            return None
+        while self._session_restore_paths:
+            path = self._session_restore_paths.pop(0)
+            try:
+                safe_path = self.workspace.validate_document_path(path)
+            except WorkspaceNotFoundError as error:
+                self._forget_session_path(path)
+                self.notify(
+                    escape(str(error)),
+                    severity="warning",
+                    title="Previous session document unavailable",
+                )
+                continue
+            except WorkspaceError as error:
+                self.notify(
+                    escape(str(error)),
+                    severity="warning",
+                    title="Previous session document unavailable",
+                )
+                continue
+            if self._open_document_for_path(safe_path) is not None:
+                continue
+            return self._open_file_now(safe_path)
+
+        self._restoring_session_tabs = False
+        active_path = self._session_restore_active_path
+        self._session_restore_active_path = None
+        target = None if active_path is None else self._open_document_for_path(active_path)
+        if target is None and self._open_documents:
+            target = self._open_documents[0].document
+        if target is not None and target is not self.document:
+            self._activate_document(
+                target,
+                flush_previous_recovery=False,
+                record_session=False,
+            )
+        self._persist_session()
+        if self._scan_orphans_after_session_open:
+            self._scan_orphans_after_session_open = False
+            self.call_after_refresh(self._scan_orphan_recoveries)
+        elif self.document is None:
+            self.explorer.directory_tree.focus()
+            self._refresh_status()
+        return None
 
     def _schedule_preview(self, *, immediate: bool = False) -> None:
         self._preview_revision += 1
@@ -2572,15 +2623,25 @@ class TermWriterApp(App[None]):
         remaining = [candidate for candidate in self._open_documents if candidate is not opened]
         if remaining:
             target = remaining[min(index, len(remaining) - 1)]
-            self._activate_document(target.document, flush_previous_recovery=False)
+            self._activate_document(
+                target.document,
+                flush_previous_recovery=False,
+                record_session=False,
+            )
         else:
-            self._clear_active_document(flush_recovery=False)
+            self._clear_active_document(flush_recovery=False, record_session=False)
         self._open_documents.remove(opened)
         self.document_tabs.remove_tab(opened.tab_id)
         opened.editor.remove()
+        self._persist_session()
         self.call_after_refresh(self._refresh_document_tabs)
 
-    def _clear_active_document(self, *, flush_recovery: bool = True) -> None:
+    def _clear_active_document(
+        self,
+        *,
+        flush_recovery: bool = True,
+        record_session: bool = True,
+    ) -> None:
         document = self.document
         if document is not None:
             self._sync_editor_state()
@@ -2601,7 +2662,8 @@ class TermWriterApp(App[None]):
             exclusive=True,
             exit_on_error=False,
         )
-        self._persist_session()
+        if record_session:
+            self._persist_session()
         self.explorer.directory_tree.focus()
         self._refresh_status()
 

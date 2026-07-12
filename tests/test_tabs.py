@@ -16,6 +16,7 @@ from termwriter.screens.dialogs import (
     UnsavedChangesDialog,
 )
 from termwriter.services.recovery import RecoveryJournal
+from termwriter.services.session import DocumentViewState, SessionState, SessionStore
 
 
 def _app(
@@ -368,3 +369,108 @@ async def test_tab_bindings_are_remappable_and_commands_are_discoverable(
         await pilot.press("alt+h")
         await pilot.pause()
         assert app.document.path == first
+
+
+async def test_directory_restart_restores_tab_order_and_active_tab(tmp_path: Path) -> None:
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    store = SessionStore(tmp_path / "sessions")
+    store.save(
+        SessionState(
+            tmp_path,
+            first,
+            (
+                DocumentViewState(first, line=0, column=3),
+                DocumentViewState(second, line=0, column=4),
+            ),
+            (first, second),
+        )
+    )
+    app = TermWriterApp(
+        Workspace.from_target(tmp_path),
+        preview_debounce=0.01,
+        recovery_journal=RecoveryJournal(tmp_path / "recovery"),
+        session_store=store,
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        for _ in range(200):
+            if len(app._open_documents) == 2 and not app._restoring_session_tabs:
+                break
+            await pilot.pause(0.01)
+
+        assert [opened.document.path for opened in app._open_documents] == [first, second]
+        assert app.document is not None and app.document.path == first
+        assert app.editor.cursor_location == (0, 3)
+        assert app.editor.history.undo_stack == []
+
+
+async def test_explicit_file_launch_does_not_restore_other_session_tabs(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    store = SessionStore(tmp_path / "sessions")
+    store.save(
+        SessionState(
+            tmp_path,
+            second,
+            (DocumentViewState(first), DocumentViewState(second)),
+            (first, second),
+        )
+    )
+    app = TermWriterApp(
+        Workspace.from_target(first),
+        preview_debounce=0.01,
+        recovery_journal=RecoveryJournal(tmp_path / "recovery"),
+        session_store=store,
+    )
+
+    async with app.run_test(size=(100, 30)):
+        assert app.document is not None and app.document.path == first
+        assert [opened.document.path for opened in app._open_documents] == [first]
+
+
+async def test_missing_restored_tab_is_pruned_and_survivor_opens(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.md"
+    survivor = tmp_path / "survivor.md"
+    survivor.write_text("survivor", encoding="utf-8")
+    store = SessionStore(tmp_path / "sessions")
+    store.save(
+        SessionState(
+            tmp_path,
+            missing,
+            (DocumentViewState(missing), DocumentViewState(survivor)),
+            (missing, survivor),
+        )
+    )
+    app = TermWriterApp(
+        Workspace.from_target(tmp_path),
+        preview_debounce=0.01,
+        recovery_journal=RecoveryJournal(tmp_path / "recovery"),
+        session_store=store,
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        for _ in range(200):
+            if app.document is not None and not app._restoring_session_tabs:
+                break
+            await pilot.pause(0.01)
+        await _wait_until_session_saved(app, pilot)
+
+        assert app.document is not None and app.document.path == survivor
+        restored = store.load(tmp_path).state
+        assert restored is not None
+        assert restored.open_paths == (survivor,)
+
+
+async def _wait_until_session_saved(app: TermWriterApp, pilot: Pilot[None]) -> None:
+    for _ in range(200):
+        if not app._session_save_in_flight and app._pending_session_state is None:
+            return
+        await pilot.pause(0.01)
+    raise AssertionError("session save did not finish")
