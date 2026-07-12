@@ -7,6 +7,8 @@ import os
 import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event, Thread
+from unittest.mock import patch
 
 import pytest
 
@@ -421,6 +423,61 @@ def test_quarantine_refuses_corrupt_entry_changed_after_listing(tmp_path: Path) 
     assert not (journal.state_root / "quarantine").exists()
 
 
+def test_quarantine_lock_preserves_replacement_started_after_final_verification(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    document = workspace / "draft.md"
+    journal = RecoveryJournal(tmp_path / "state")
+    writer = RecoveryJournal(journal.state_root)
+    journal.save(
+        document_path=document,
+        workspace_root=workspace,
+        text="older unsaved draft",
+        encoding="utf-8",
+        base_snapshot=FileSnapshot.missing(),
+    )
+    (record,) = journal.list_entries(workspace)
+    replacement_started = Event()
+    replacement_finished = Event()
+
+    def replace_journal() -> None:
+        replacement_started.set()
+        writer.save(
+            document_path=document,
+            workspace_root=workspace,
+            text="newer unsaved draft",
+            encoding="utf-8",
+            base_snapshot=FileSnapshot.missing(),
+        )
+        replacement_finished.set()
+
+    replacement = Thread(target=replace_journal)
+    original_verify = journal._verify_record
+    verification_count = 0
+
+    def verify_then_replace(item: RecoveryRecord) -> RecoveryRecord:
+        nonlocal verification_count
+        current = original_verify(item)
+        verification_count += 1
+        if verification_count == 2:
+            replacement.start()
+            assert replacement_started.wait(1)
+            assert not replacement_finished.wait(0.05)
+        return current
+
+    with patch.object(journal, "_verify_record", side_effect=verify_then_replace):
+        destination = journal.quarantine(record)
+
+    replacement.join(timeout=2)
+    assert not replacement.is_alive()
+    active = journal.load(document)
+    assert active is not None
+    assert active.text == "newer unsaved draft"
+    assert json.loads(destination.read_text(encoding="utf-8"))["text"] == "older unsaved draft"
+
+
 def test_retarget_preserves_draft_and_timestamp(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -446,6 +503,67 @@ def test_retarget_preserves_draft_and_timestamp(tmp_path: Path) -> None:
     assert moved.text == saved.text
     assert moved.updated_at == saved.updated_at
     assert journal.load(old_path) is None
+    assert journal.load(new_path) == moved
+
+
+def test_retarget_lock_preserves_source_replacement_started_after_verification(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    old_path = workspace / "old.md"
+    new_path = workspace / "renamed.md"
+    journal = RecoveryJournal(tmp_path / "state")
+    writer = RecoveryJournal(journal.state_root)
+    journal.save(
+        document_path=old_path,
+        workspace_root=workspace,
+        text="older unsaved draft",
+        encoding="utf-8",
+        base_snapshot=FileSnapshot.missing(),
+    )
+    (record,) = journal.list_entries(workspace)
+    replacement_started = Event()
+    replacement_finished = Event()
+
+    def replace_source() -> None:
+        replacement_started.set()
+        writer.save(
+            document_path=old_path,
+            workspace_root=workspace,
+            text="newer unsaved draft",
+            encoding="utf-8",
+            base_snapshot=FileSnapshot.missing(),
+        )
+        replacement_finished.set()
+
+    replacement = Thread(target=replace_source)
+    original_verify = journal._verify_record
+    verification_count = 0
+
+    def verify_then_replace(item: RecoveryRecord) -> RecoveryRecord:
+        nonlocal verification_count
+        current = original_verify(item)
+        verification_count += 1
+        if verification_count == 2:
+            replacement.start()
+            assert replacement_started.wait(1)
+            assert not replacement_finished.wait(0.05)
+        return current
+
+    with patch.object(journal, "_verify_record", side_effect=verify_then_replace):
+        moved = journal.retarget(
+            record,
+            document_path=new_path,
+            workspace_root=workspace,
+        )
+
+    replacement.join(timeout=2)
+    assert not replacement.is_alive()
+    active_source = journal.load(old_path)
+    assert active_source is not None
+    assert active_source.text == "newer unsaved draft"
+    assert moved.text == "older unsaved draft"
     assert journal.load(new_path) == moved
 
 
@@ -584,6 +702,56 @@ def test_guarded_delete_refuses_entry_changed_after_listing(tmp_path: Path) -> N
     assert journal.load(document).text == "newer draft"  # type: ignore[union-attr]
 
 
+def test_guarded_delete_lock_preserves_replacement_started_after_verification(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    document = workspace / "note.md"
+    journal = RecoveryJournal(tmp_path / "state")
+    writer = RecoveryJournal(journal.state_root)
+    journal.save(
+        document_path=document,
+        workspace_root=workspace,
+        text="older draft",
+        encoding="utf-8",
+        base_snapshot=FileSnapshot.missing(),
+    )
+    (record,) = journal.list_entries(workspace)
+    replacement_started = Event()
+    replacement_finished = Event()
+
+    def replace_journal() -> None:
+        replacement_started.set()
+        writer.save(
+            document_path=document,
+            workspace_root=workspace,
+            text="newer draft",
+            encoding="utf-8",
+            base_snapshot=FileSnapshot.missing(),
+        )
+        replacement_finished.set()
+
+    replacement = Thread(target=replace_journal)
+    original_verify = journal._verify_record
+
+    def verify_then_replace(item: RecoveryRecord) -> RecoveryRecord:
+        current = original_verify(item)
+        replacement.start()
+        assert replacement_started.wait(1)
+        assert not replacement_finished.wait(0.05)
+        return current
+
+    with patch.object(journal, "_verify_record", side_effect=verify_then_replace):
+        journal.delete_record(record)
+
+    replacement.join(timeout=2)
+    assert not replacement.is_alive()
+    active = journal.load(document)
+    assert active is not None
+    assert active.text == "newer draft"
+
+
 def test_recovery_paths_cannot_escape_workspace(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -615,6 +783,36 @@ def test_recovery_rejects_path_through_symlink_outside_workspace(tmp_path: Path)
             encoding="utf-8",
             base_snapshot=_BASE_SNAPSHOT,
         )
+
+
+def test_loading_rejects_document_path_that_now_resolves_outside_workspace(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    notes = workspace / "notes"
+    notes.mkdir()
+    document = notes / "draft.md"
+    journal = RecoveryJournal(tmp_path / "state")
+    journal.save(
+        document_path=document,
+        workspace_root=workspace,
+        text="unsaved draft",
+        encoding="utf-8",
+        base_snapshot=FileSnapshot.missing(),
+    )
+    notes.rename(workspace / "old-notes")
+    notes.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RecoveryError, match="resolves outside its workspace"):
+        journal.load(document)
+
+    (record,) = journal.list_entries(workspace)
+    assert record.is_corrupt
+    assert record.entry is None
+    assert "resolves outside its workspace" in (record.error or "")
 
 
 def test_delete_record_rejects_path_outside_recovery_root(tmp_path: Path) -> None:

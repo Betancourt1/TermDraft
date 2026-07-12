@@ -7,10 +7,18 @@ import json
 import os
 import sys
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from stat import S_ISREG
 from typing import Any
+
+if sys.platform == "win32":  # pragma: no cover - exercised on Windows
+    import msvcrt
+else:  # pragma: no cover - the branch is platform-specific
+    import fcntl
 
 from termwriter.models.document import FileSnapshot
 
@@ -100,52 +108,44 @@ class RecoveryJournal:
             updated_at=datetime.now(UTC),
         )
         _validate_entry(entry)
-        _validate_target_path(entry.document_path, entry.workspace_root)
         data = _serialize(entry)
-
-        try:
-            self.state_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        except OSError as error:
-            raise RecoveryError(
-                f"Cannot create recovery directory {self.state_root}: {error}"
-            ) from error
-
         destination = self.path_for(entry.document_path)
-        temporary: Path | None = None
-        descriptor = -1
-        try:
-            descriptor, temporary_name = tempfile.mkstemp(
-                prefix=f".{destination.stem}.",
-                suffix=".tmp",
-                dir=self.state_root,
-            )
-            temporary = Path(temporary_name)
-            os.fchmod(descriptor, 0o600)
-            with os.fdopen(descriptor, "wb") as stream:
-                descriptor = -1
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, destination)
-            temporary = None
-            _sync_directory(self.state_root)
-        except OSError as error:
-            raise RecoveryError(
-                f"Cannot save recovery journal for {entry.document_path}: {error}"
-            ) from error
-        finally:
-            if descriptor >= 0:
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
-            if temporary is not None:
-                try:
-                    temporary.unlink()
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    pass
+        with self._journal_locks(destination):
+            temporary: Path | None = None
+            descriptor = -1
+            try:
+                descriptor, temporary_name = tempfile.mkstemp(
+                    prefix=f".{destination.stem}.",
+                    suffix=".tmp",
+                    dir=self.state_root,
+                )
+                temporary = Path(temporary_name)
+                os.fchmod(descriptor, 0o600)
+                with os.fdopen(descriptor, "wb") as stream:
+                    descriptor = -1
+                    stream.write(data)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, destination)
+                temporary = None
+                _sync_directory(self.state_root)
+            except OSError as error:
+                raise RecoveryError(
+                    f"Cannot save recovery journal for {entry.document_path}: {error}"
+                ) from error
+            finally:
+                if descriptor >= 0:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+                if temporary is not None:
+                    try:
+                        temporary.unlink()
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        pass
         return entry
 
     def load(self, document_path: Path) -> RecoveryEntry | None:
@@ -227,8 +227,9 @@ class RecoveryJournal:
 
     def delete_record(self, record: RecoveryRecord) -> None:
         """Delete exactly the journal version represented by ``record``."""
-        self._verify_record(record)
-        self._unlink_record(record)
+        with self._journal_locks(record.journal_path):
+            self._verify_record(record)
+            self._unlink_record(record)
 
     def retarget(
         self,
@@ -238,63 +239,66 @@ class RecoveryJournal:
         workspace_root: Path,
     ) -> RecoveryEntry:
         """Move a trusted draft to a new Markdown path without replacing another draft."""
-        current = self._verify_record(record)
-        if current.entry is None:
-            raise RecoveryError("Cannot retarget a corrupt recovery entry")
+        target_path = _absolute_path(document_path)
+        target_root = _absolute_path(workspace_root)
+        destination = self.path_for(target_path)
+        with self._journal_locks(record.journal_path, destination):
+            current = self._verify_record(record)
+            if current.entry is None:
+                raise RecoveryError("Cannot retarget a corrupt recovery entry")
 
-        entry = RecoveryEntry(
-            document_path=_absolute_path(document_path),
-            workspace_root=_absolute_path(workspace_root),
-            text=current.entry.text,
-            encoding=current.entry.encoding,
-            base_snapshot=current.entry.base_snapshot,
-            updated_at=current.entry.updated_at,
-        )
-        _validate_entry(entry)
-        _validate_target_path(entry.document_path, entry.workspace_root)
-        destination = self.path_for(entry.document_path)
-        if destination == record.journal_path:
-            if entry.workspace_root == current.entry.workspace_root:
-                return current.entry
-            raise RecoveryError("Retarget destination already contains this recovery entry")
+            entry = RecoveryEntry(
+                document_path=target_path,
+                workspace_root=target_root,
+                text=current.entry.text,
+                encoding=current.entry.encoding,
+                base_snapshot=current.entry.base_snapshot,
+                updated_at=current.entry.updated_at,
+            )
+            _validate_entry(entry)
+            if destination == record.journal_path:
+                if entry.workspace_root == current.entry.workspace_root:
+                    return current.entry
+                raise RecoveryError("Retarget destination already contains this recovery entry")
 
-        self._publish_new(destination, _serialize(entry))
-        self._verify_record(record)
-        self._unlink_record(record)
-        return entry
+            self._publish_new(destination, _serialize(entry))
+            self._verify_record(record)
+            self._unlink_record(record)
+            return entry
 
     def quarantine(self, record: RecoveryRecord) -> Path:
         """Move an unchanged journal aside while preserving its exact bytes."""
-        self._verify_record(record)
-        quarantine_root = self.state_root / "quarantine"
-        try:
-            quarantine_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        except OSError as error:
-            raise RecoveryError(f"Cannot create recovery quarantine: {error}") from error
-        destination = quarantine_root / record.journal_path.name
-        try:
-            os.link(record.journal_path, destination, follow_symlinks=False)
-        except FileExistsError as error:
-            raise RecoveryError(
-                f"Recovery quarantine already contains {destination.name}"
-            ) from error
-        except OSError as error:
-            raise RecoveryError(
-                f"Cannot quarantine recovery entry {record.journal_path.name}: {error}"
-            ) from error
-
-        try:
+        with self._journal_locks(record.journal_path):
             self._verify_record(record)
-            record.journal_path.unlink()
-            _sync_directory(quarantine_root)
-            _sync_directory(self.state_root)
-        except (OSError, RecoveryError) as error:
-            if isinstance(error, RecoveryError):
-                raise
-            raise RecoveryError(
-                f"Cannot finish quarantining {record.journal_path.name}: {error}"
-            ) from error
-        return destination
+            quarantine_root = self.state_root / "quarantine"
+            try:
+                quarantine_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            except OSError as error:
+                raise RecoveryError(f"Cannot create recovery quarantine: {error}") from error
+            destination = quarantine_root / record.journal_path.name
+            try:
+                os.link(record.journal_path, destination, follow_symlinks=False)
+            except FileExistsError as error:
+                raise RecoveryError(
+                    f"Recovery quarantine already contains {destination.name}"
+                ) from error
+            except OSError as error:
+                raise RecoveryError(
+                    f"Cannot quarantine recovery entry {record.journal_path.name}: {error}"
+                ) from error
+
+            try:
+                self._verify_record(record)
+                record.journal_path.unlink()
+                _sync_directory(quarantine_root)
+                _sync_directory(self.state_root)
+            except (OSError, RecoveryError) as error:
+                if isinstance(error, RecoveryError):
+                    raise
+                raise RecoveryError(
+                    f"Cannot finish quarantining {record.journal_path.name}: {error}"
+                ) from error
+            return destination
 
     def delete(self, document_path: Path) -> None:
         """Delete a recovery journal after a successful save or explicit discard."""
@@ -399,6 +403,45 @@ class RecoveryJournal:
                 except OSError:
                     pass
 
+    @contextmanager
+    def _journal_locks(self, *journal_paths: Path) -> Iterator[None]:
+        """Lock journal identities across threads and cooperating processes."""
+        try:
+            self.state_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as error:
+            raise RecoveryError(
+                f"Cannot create recovery directory {self.state_root}: {error}"
+            ) from error
+
+        ordered_paths = sorted({_absolute_path(path) for path in journal_paths}, key=os.fsencode)
+        descriptors: list[int] = []
+        try:
+            for journal_path in ordered_paths:
+                lock_path = self.state_root / f".{journal_path.name}.lock"
+                descriptor = -1
+                try:
+                    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+                    descriptor = os.open(lock_path, flags, 0o600)
+                    if not S_ISREG(os.fstat(descriptor).st_mode):
+                        raise OSError(f"Lock path is not a regular file: {lock_path}")
+                    _acquire_file_lock(descriptor)
+                except OSError as error:
+                    if descriptor >= 0:
+                        os.close(descriptor)
+                    raise RecoveryError(
+                        f"Cannot lock recovery journal {journal_path.name}: {error}"
+                    ) from error
+                descriptors.append(descriptor)
+            yield
+        finally:
+            for descriptor in reversed(descriptors):
+                try:
+                    _release_file_lock(descriptor)
+                except OSError:
+                    pass
+                finally:
+                    os.close(descriptor)
+
 
 def _absolute_path(path: Path) -> Path:
     return path.expanduser().absolute()
@@ -493,6 +536,7 @@ def _validate_entry(entry: RecoveryEntry) -> None:
     if entry.encoding not in _SUPPORTED_ENCODINGS:
         raise RecoveryError(f"Unsupported recovery encoding: {entry.encoding}")
     _validate_workspace_path(entry.document_path, entry.workspace_root)
+    _validate_target_path(entry.document_path, entry.workspace_root)
     _validate_snapshot(entry.base_snapshot)
     if entry.updated_at.tzinfo is None or entry.updated_at.utcoffset() is None:
         raise RecoveryError("Recovery updated timestamp must include a timezone")
@@ -585,6 +629,24 @@ def _path_fingerprint(path: Path) -> str:
     except OSError as error:
         data = f"unreadable\0{type(error).__name__}\0{error}".encode()
     return _fingerprint(data)
+
+
+def _acquire_file_lock(descriptor: int) -> None:
+    if sys.platform == "win32":  # pragma: no cover - exercised on Windows
+        if os.fstat(descriptor).st_size == 0:
+            os.write(descriptor, b"\0")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+    else:  # pragma: no branch - exactly one platform branch runs
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+
+
+def _release_file_lock(descriptor: int) -> None:
+    if sys.platform == "win32":  # pragma: no cover - exercised on Windows
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+    else:  # pragma: no branch - exactly one platform branch runs
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
 
 
 def _sync_directory(directory: Path) -> None:
