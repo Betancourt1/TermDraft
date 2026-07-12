@@ -879,7 +879,8 @@ async def test_orphan_source_validation_loads_off_the_ui_thread(
         recovery_journal=journal,
     )
 
-    async with app.run_test(size=(100, 30)):
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _wait_until(pilot, lambda: isinstance(app.screen, RecoveryDialog))
         assert isinstance(app.screen, RecoveryDialog)
         assert load_threads
         assert all(thread != ui_thread for thread in load_threads)

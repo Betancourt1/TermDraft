@@ -1349,6 +1349,10 @@ async def test_workspace_startup_recovers_a_deleted_source_via_save_as(
     )
 
     async with app.run_test(size=(100, 30)) as pilot:
+        for _ in range(200):
+            if isinstance(app.screen, RecoveryDialog):
+                break
+            await pilot.pause(0.01)
         assert isinstance(app.screen, RecoveryDialog)
         assert app.screen.source_missing
         await pilot.click("#recovery-restore")
@@ -1394,6 +1398,10 @@ async def test_workspace_startup_recovers_when_source_is_invalid_utf8(
     )
 
     async with app.run_test(size=(100, 30)) as pilot:
+        for _ in range(200):
+            if isinstance(app.screen, RecoveryDialog):
+                break
+            await pilot.pause(0.01)
         assert isinstance(app.screen, RecoveryDialog)
         assert app.screen.source_missing
         await pilot.click("#recovery-restore")
@@ -1429,15 +1437,29 @@ async def test_discarding_one_orphan_defers_the_next_recovery_dialog(
     )
 
     async with app.run_test(size=(100, 30)) as pilot:
+        for _ in range(200):
+            if isinstance(app.screen, RecoveryDialog):
+                break
+            await pilot.pause(0.01)
         assert isinstance(app.screen, RecoveryDialog)
         first_offered = app.screen.path
         await pilot.click("#recovery-discard")
-        await pilot.pause()
+        for _ in range(200):
+            if isinstance(app.screen, RecoveryDialog):
+                break
+            await pilot.pause(0.01)
 
         assert isinstance(app.screen, RecoveryDialog)
         assert app.screen.path != first_offered
         await pilot.click("#recovery-discard")
-        await pilot.pause()
+        for _ in range(200):
+            if (
+                not isinstance(app.screen, RecoveryDialog)
+                and app._recovery_mutation_in_flight is None
+                and not app._recovery_mutation_queue
+            ):
+                break
+            await pilot.pause(0.01)
 
         assert app.document is None
         assert all(journal.load(path) is None for path in paths)
