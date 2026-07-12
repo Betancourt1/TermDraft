@@ -464,6 +464,13 @@ revisions, document tickets, immutable mutation payloads, and critical-operation
 callback ordering and conflict checks. An individual operating-system read cannot be interrupted,
 so stale-result rejection remains authoritative.
 
+`termwriter-benchmark` is intentionally repository-specific instrumentation rather than runtime
+abstraction. It calls the real semantic mapper, mounts the real application and tab editors through
+`App.run_test`, and invokes the real bounded active-plus-inactive watcher worker. Its JSON timings,
+`tracemalloc` heap values, and process peak-RSS high-water values are comparative observations,
+never correctness gates. The benchmark writes only deterministic Markdown and state into its own
+temporary directory.
+
 ## Textual API baseline
 
 The implementation targets Textual 8.2.8 and relies on documented APIs:

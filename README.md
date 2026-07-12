@@ -387,6 +387,41 @@ parsing, and Save As publication to verify UI
 responsiveness, ordered cleanup, stale-result rejection, conflict preservation, and non-cancellable
 writer locking.
 
+## Development benchmarks
+
+The installed `termwriter-benchmark` command measures the real semantic mapper, real mounted editor
+tabs under Textual's headless application driver, and one real watcher pass over the active plus one
+inactive document. It emits JSON so results can be retained and compared without adding a benchmark
+framework:
+
+```bash
+termwriter-benchmark
+
+termwriter-benchmark \
+  --semantic-kib 1024 \
+  --tab-kib 64 \
+  --tabs 20 \
+  --watch-kib 1024 \
+  --iterations 10 \
+  --warmup 2
+```
+
+The second command produced this single-run baseline for commit `3be05a1` on macOS 26.5.2 arm64,
+Python 3.12.13, and Textual 8.2.8:
+
+| Path | Workload | Median | p95 / memory result |
+|---|---:|---:|---:|
+| Semantic map | 1,048,800 bytes | 886.47 ms | 944.31 ms; 1.13 MiB/s |
+| Mount tabs | 20 × 65,740 bytes | 33.54 s total | 289,738,826 added traced bytes |
+| Watcher pass | 2 files / 2,097,600 bytes | 453.19 ms | 1,251.51 ms |
+
+The tab run measured 523,264,118 traced bytes for all tabs, about 15,249,412 traced bytes per added
+tab, and a 1,006,174,208-byte increase between the process peak-RSS high-water marks taken before and
+after mounting. `tracemalloc` observes Python allocations; peak RSS is order-dependent process
+history, not current resident memory. These figures are comparative, machine-specific diagnostics,
+not CI thresholds. For a meaningful comparison, run three fresh processes under the same power
+mode, Python environment, dependency versions, and workload, then compare the median run.
+
 ## Known limitations
 
 - Each tab's undo/redo history survives runtime tab switching but is intentionally not serialized;
@@ -402,6 +437,9 @@ writer locking.
   links and footnotes may not resolve like the full-document preview. Their definitions and every
   unsupported block stay visible as exact source. The mode is a modal snapshot, not a persistent
   reading layout or an editor.
+- The cursor-coordinate inspector builds a wrapped document on demand, so invoking it is linear in
+  document size and may briefly pause the UI on unusually large files. It exposes narrow grapheme
+  splits but does not model IME composition, bidirectional text, or terminal/font width differences.
 - Recovery has a nominal 500 ms first-write delay. Cooperative `SIGTERM` and `SIGHUP` requests are
   polled every 50 ms and drain exact dirty-tab journals before exit; a failed shutdown publication
   cancels exit and restores editing. `SIGKILL`, power loss, native crashes, a blocked event loop, or
@@ -471,10 +509,12 @@ writer locking.
 
 ## Near-term roadmap
 
-1. Validate cursor and viewport mapping under wrapping, combining characters, CJK, and emoji before
-   exposing any active-block editing.
-2. Benchmark semantic parsing and mounted-tab memory on large documents and workspaces before
-   expanding the supported block set.
+1. Turn the experimental modal reader into an opt-in persistent reading pane and measure scroll
+   stability while retaining immediate full-source fallback.
+2. Design editing-grade block identities and range reconciliation as read-only diagnostics before
+   permitting any source splice.
+3. Prototype lighter inactive-tab storage to address the measured mounted-editor memory cost without
+   weakening dirty source, undo, recovery, or conflict guarantees.
 
 Implementation boundaries and tradeoffs are documented in
 [`docs/architecture.md`](docs/architecture.md).

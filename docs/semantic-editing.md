@@ -126,6 +126,11 @@ reconcile ranges, fall back immediately to the full-source editor with the edite
 Add lists, quotes, code fences, tables, and extension syntax one verified family at a time. Introduce
 incremental parsing only after correctness is established with full reparsing.
 
+Status: `termwriter-benchmark` now provides a repeatable full-map throughput workload plus real
+mounted-tab heap and active/inactive watcher measurements. The first large-workload baseline makes
+mounted editor cost the clearest constraint; it does not justify incremental parsing or hybrid
+editing by itself.
+
 ## Undo, conflicts, and persistence
 
 Undo must operate on source transformations, not widget replacement. Current full-source tabs each
