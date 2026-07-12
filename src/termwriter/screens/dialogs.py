@@ -338,6 +338,9 @@ class RecoveryDeleteDialog(ModalScreen[bool]):
                 )
                 yield Button("Cancel", id="recovery-delete-cancel")
 
+    def on_mount(self) -> None:
+        self.query_one("#recovery-delete-cancel", Button).focus()
+
     @on(Button.Pressed, "#recovery-delete-confirm")
     def confirm(self) -> None:
         self.dismiss(True)

@@ -8,6 +8,7 @@ from textual.widgets import Button, Input, OptionList, Static
 
 from termwriter.models.document import FileSnapshot
 from termwriter.screens.dialogs import (
+    RecoveryDeleteDialog,
     RecoveryManagerAction,
     RecoveryManagerDialog,
     RecoveryManagerRequest,
@@ -45,6 +46,25 @@ class RecoveryManagerHarness(App[None]):
 
     def _store_result(self, result: RecoveryManagerRequest | None) -> None:
         self.result = result
+
+
+class RecoveryDeleteFlowHarness(App[None]):
+    """Exercise the inventory-to-deletion-confirmation keyboard flow."""
+
+    def __init__(self, dialog: RecoveryManagerDialog) -> None:
+        self.dialog = dialog
+        self.confirmed: bool | None = None
+        super().__init__(css_path=Path(__file__).parents[1] / "src" / "termwriter" / "default.tcss")
+
+    def on_mount(self) -> None:
+        self.push_screen(self.dialog, self._show_confirmation)
+
+    def _show_confirmation(self, request: RecoveryManagerRequest | None) -> None:
+        if request is not None:
+            self.push_screen(RecoveryDeleteDialog(request.record), self._store_confirmation)
+
+    def _store_confirmation(self, confirmed: bool | None) -> None:
+        self.confirmed = confirmed
 
 
 async def test_save_as_busy_state_blocks_edit_submit_cancel_and_escape() -> None:
@@ -263,3 +283,23 @@ async def test_recovery_manager_returns_explicit_permanent_delete_request(
         await pilot.pause()
         assert app.result is not None
         assert app.result.action is RecoveryManagerAction.DELETE_QUARANTINED
+
+
+async def test_permanent_delete_double_enter_defaults_to_cancel(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    journal = RecoveryJournal(tmp_path / "state")
+    quarantine_root = journal.state_root / "quarantine"
+    quarantine_root.mkdir(parents=True)
+    (quarantine_root / f"{'f' * 64}.json").write_bytes(b"corrupt archive")
+    dialog = RecoveryManagerDialog(journal.list_quarantined(workspace), workspace)
+    app = RecoveryDeleteFlowHarness(dialog)
+
+    async with app.run_test(size=(90, 36)) as pilot:
+        await pilot.pause()
+        dialog.query_one("#recovery-manager-retarget", Button).focus()
+
+        await pilot.press("enter", "enter")
+        await pilot.pause()
+
+        assert app.confirmed is False
