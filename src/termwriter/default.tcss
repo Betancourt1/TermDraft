@@ -100,17 +100,23 @@ ModalScreen {
     margin-left: 1;
 }
 
-#search-dialog {
+#search-dialog, #text-search-dialog {
     height: 24;
 }
 
-#search-input {
+#search-input, #text-search-input {
     margin-bottom: 1;
 }
 
-#search-results {
+#search-results, #text-search-results {
     height: 1fr;
     border: round $panel-lighten-2;
+}
+
+#text-search-status {
+    height: 1;
+    color: $text-muted;
+    margin-bottom: 1;
 }
 
 #save-as-error {

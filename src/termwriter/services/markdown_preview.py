@@ -45,13 +45,13 @@ def _retag(
 
 
 def _label(meta: dict[Any, Any]) -> str:
-    """Return a stable visible label for named and inline footnotes."""
-    label = meta.get("label")
-    if isinstance(label, str) and label:
-        return label
+    """Return the parser's unique sequential label for every footnote."""
     identifier = meta.get("id")
     if isinstance(identifier, int):
         return str(identifier + 1)
+    label = meta.get("label")
+    if isinstance(label, str) and label:
+        return label
     return "?"
 
 

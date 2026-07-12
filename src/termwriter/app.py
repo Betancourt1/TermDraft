@@ -31,6 +31,7 @@ from termwriter.screens.dialogs import (
     RecoveryDecision,
     RecoveryDialog,
     SaveAsDialog,
+    TextSearchDialog,
     UnsavedChangesDialog,
     UnsavedDecision,
 )
@@ -47,6 +48,7 @@ from termwriter.services.persistence import (
     snapshot_file,
 )
 from termwriter.services.recovery import RecoveryEntry, RecoveryError, RecoveryJournal
+from termwriter.services.text_search import TextSearchMatch, TextSearchOverride
 from termwriter.widgets.editor import MarkdownEditor
 from termwriter.widgets.file_tree import FileExplorer
 from termwriter.widgets.preview import MarkdownPreview
@@ -104,6 +106,7 @@ class TermWriterApp(App[None]):
         self._pending_recovery_is_orphan = False
         self._orphan_recoveries: list[RecoveryEntry] = []
         self._mixed_reload_continuation: Callable[[], None] | None = None
+        self._pending_open_location: tuple[Path, int, int] | None = None
 
     def compose(self) -> ComposeResult:
         yield Static(f"TermWriter  ·  {self.workspace.root}", id="title-bar", markup=False)
@@ -249,6 +252,43 @@ class TermWriterApp(App[None]):
             return
         self._request_transition(lambda: self._open_file_now(safe_path))
 
+    def _request_open_at(self, path: Path, line: int, column: int) -> None:
+        """Open a validated search result through the normal transition guard."""
+        if self.document is not None and self._is_current_document(path):
+            self._sync_editor_state()
+            if not self.document.dirty:
+                change = detect_external_change(self.document)
+                if change.kind is ExternalChangeKind.MODIFIED:
+                    self._save_continuation = lambda: self._focus_editor_at(line, column)
+                    self._reload_current_from_disk(automatic=True, failure_dialog=True)
+                    return
+            self._focus_editor_at(line, column)
+            return
+        try:
+            safe_path = self.workspace.validate_document_path(path)
+        except WorkspaceError as error:
+            self.notify(escape(str(error)), severity="error", title="Cannot open search result")
+            return
+        self._pending_open_location = (safe_path, line, column)
+        self._request_transition(lambda: self._open_file_now(safe_path))
+
+    def _focus_editor_at(self, line: int, column: int) -> None:
+        self._narrow_pane = "editor"
+        self._apply_panel_visibility()
+        self.editor.move_cursor((line, column), center=True)
+        self.editor.focus()
+
+    def _is_current_document(self, path: Path) -> bool:
+        document = self.document
+        if document is None:
+            return False
+        if path == document.path:
+            return True
+        try:
+            return path.samefile(document.path)
+        except OSError:
+            return False
+
     def _request_transition(self, continuation: Callable[[], None]) -> None:
         self._sync_editor_state()
         document = self.document
@@ -294,6 +334,7 @@ class TermWriterApp(App[None]):
     def _cancel_pending_transition(self) -> None:
         self._pending_transition = None
         self._save_continuation = None
+        self._pending_open_location = None
         self._refresh_status()
 
     def _open_file_now(self, path: Path) -> None:
@@ -449,6 +490,7 @@ class TermWriterApp(App[None]):
         self._pending_open_document = None
         self._pending_recovery_entry = None
         self._pending_recovery_is_orphan = False
+        self._pending_open_location = None
         if self.document is not None:
             self.editor.focus()
             if self.document.dirty:
@@ -471,6 +513,10 @@ class TermWriterApp(App[None]):
         self._narrow_pane = "editor"
         self._apply_panel_visibility()
         self._schedule_preview(immediate=True)
+        target = self._pending_open_location
+        self._pending_open_location = None
+        if target is not None and target[0] == document.path:
+            self.editor.move_cursor((target[1], target[2]), center=True)
         self.editor.focus()
         self._refresh_status()
 
@@ -923,6 +969,30 @@ class TermWriterApp(App[None]):
         if path is not None:
             self._request_open(path)
 
+    def action_search_text(self) -> None:
+        if self._has_modal:
+            return
+        self._sync_editor_state()
+        active_override = None
+        document = self.document
+        if document is not None:
+            active_override = TextSearchOverride(
+                document.path,
+                document.text,
+                prefer_disk=not (document.dirty or document.conflict),
+            )
+        self.push_screen(
+            TextSearchDialog(
+                self.workspace,
+                active_override=active_override,
+            ),
+            self._handle_text_search_result,
+        )
+
+    def _handle_text_search_result(self, result: TextSearchMatch | None) -> None:
+        if result is not None:
+            self._request_open_at(result.path, result.line, result.column)
+
     def action_editor_undo(self) -> None:
         if not self._has_modal and self.document is not None:
             self.editor.undo()
@@ -974,6 +1044,11 @@ class TermWriterApp(App[None]):
         yield SystemCommand("Save document", "Save the open Markdown source", self.action_save)
         yield SystemCommand(
             "Find file", "Search Markdown paths in the workspace", self.action_find_file
+        )
+        yield SystemCommand(
+            "Search workspace text",
+            "Find literal text in Markdown source",
+            self.action_search_text,
         )
         yield SystemCommand(
             "Toggle file explorer",

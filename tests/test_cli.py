@@ -78,6 +78,7 @@ def test_cli_commands_show_effective_remapped_keys(
     assert "TermWriter commands" in output
     assert "Ctrl+G" in output
     assert "Open the command palette" in output
+    assert "Search text across the workspace" in output
     assert "Enter in a list" not in output
 
 

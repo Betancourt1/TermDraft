@@ -85,8 +85,8 @@ def test_footnotes_become_visible_references_and_supported_list_blocks() -> None
     )
 
     _assert_extensions_are_normalized(tokens)
-    assert "See the named note[details] and an inline note.[2]" in _inline_text(tokens)
-    assert "[details]" in _inline_text(tokens)
+    assert "See the named note[1] and an inline note.[2]" in _inline_text(tokens)
+    assert "[1]" in _inline_text(tokens)
     assert "[2]" in _inline_text(tokens)
     assert any(token.content == "First paragraph with `code`." for token in tokens)
     assert "Second paragraph." in _inline_text(tokens)
@@ -170,8 +170,17 @@ def test_footnote_references_nested_in_image_alt_text_are_normalized() -> None:
     assert image.children is not None
     assert [(child.type, child.content) for child in image.children] == [
         ("text", "Diagram"),
-        ("text", "[source]"),
+        ("text", "[1]"),
     ]
+
+
+def test_named_and_inline_footnotes_receive_distinct_visible_numbers() -> None:
+    tokens = preview_parser().parse("Named[^2], inline^[second].\n\n[^2]: Named definition.\n")
+
+    inline_text = _inline_text(tokens)
+    assert "Named[1], inline[2]." in inline_text
+    assert inline_text.count("[1]") == 1
+    assert inline_text.count("[2]") == 1
 
 
 async def test_textual_mounts_normalized_extensions_without_unhandled_blocks() -> None:

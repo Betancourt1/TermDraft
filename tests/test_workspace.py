@@ -38,6 +38,23 @@ def test_workspace_accepts_unicode_filenames(tmp_path: Path) -> None:
     assert result.files == (path,)
 
 
+def test_workspace_scan_can_be_cancelled_between_entries(tmp_path: Path) -> None:
+    for name in ("a.md", "b.md", "c.md"):
+        (tmp_path / name).write_text(name, encoding="utf-8")
+    checks = 0
+
+    def cancel_after_first_entry() -> bool:
+        nonlocal checks
+        checks += 1
+        return checks > 2
+
+    result = Workspace.from_target(tmp_path).scan(
+        should_cancel=cancel_after_first_entry,
+    )
+
+    assert result.files == (tmp_path / "a.md",)
+
+
 def test_workspace_rejects_missing_target(tmp_path: Path) -> None:
     with pytest.raises(WorkspaceNotFoundError):
         Workspace.from_target(tmp_path / "missing")

@@ -12,6 +12,7 @@ from termwriter.config import (
     BINDING_ID_QUIT,
     BINDING_ID_REDO,
     BINDING_ID_SAVE,
+    BINDING_ID_SEARCH_TEXT,
     BINDING_ID_SHOW_HELP,
     BINDING_ID_TOGGLE_EXPLORER,
     BINDING_ID_TOGGLE_PREVIEW,
@@ -47,6 +48,13 @@ APP_BINDINGS: list[BindingType] = [
         "Find file",
         priority=True,
         id=BINDING_ID_FIND_FILE,
+    ),
+    Binding(
+        DEFAULT_KEYBINDINGS[BINDING_ID_SEARCH_TEXT],
+        "search_text",
+        "Search text",
+        priority=True,
+        id=BINDING_ID_SEARCH_TEXT,
     ),
     Binding(
         DEFAULT_KEYBINDINGS[BINDING_ID_TOGGLE_PREVIEW],
@@ -94,6 +102,7 @@ _SHORTCUTS = (
     (BINDING_ID_QUIT, "Quit safely"),
     (BINDING_ID_TOGGLE_EXPLORER, "Show or hide files"),
     (BINDING_ID_FIND_FILE, "Find a Markdown file"),
+    (BINDING_ID_SEARCH_TEXT, "Search text across the workspace"),
     (BINDING_ID_TOGGLE_PREVIEW, "Show or hide preview; switch pane when narrow"),
     (BINDING_ID_UNDO, "Undo"),
     (BINDING_ID_REDO, "Redo"),
@@ -113,14 +122,18 @@ Links              [label](https://example.com)
 Images             ![alt](path) (shown as a terminal placeholder)
 Code               `inline` or fenced ``` blocks
 Tables             | A | B | with a | --- | --- | separator row
+Footnote ref       Text[^note]
+Footnote body      [^note]: source (on its own later line)
+Definitions        Term followed on the next line by : Definition
 Rules              ---
 
 Enter continues bullets, numbered lists, tasks, and blockquotes. Press Enter on
-an empty marker to end the list. Raw HTML is displayed as text and never run.
+an empty marker to end the list. Footnote labels are visible but not clickable.
+Raw HTML is displayed as text and never run.
 
-Not rendered yet: footnotes, math, definition lists, underline, subscript,
-superscript, and GFM alerts. Markdown has no portable __underline__ syntax;
-double underscores mean bold. A nested ordered item is "   1. item", not "1.1.".
+Not rendered yet: math, underline, subscript, superscript, and GFM alerts.
+Markdown has no portable __underline__ syntax; double underscores mean bold.
+A nested ordered item is "   1. item", not "1.1.".
 """
 
 
@@ -156,7 +169,8 @@ def format_command_help(
         )
         + "\n\n"
         + f"Press {palette} in the TUI to search all commands, including:\n"
-        + "  Save, find file, toggle files, toggle preview, undo, redo,\n"
+        + "  Save, find file, search workspace text, toggle files, toggle preview,\n"
+        + "  undo, redo,\n"
         + "  reload configuration, shortcut help, Markdown syntax help, and safe quit."
     )
 

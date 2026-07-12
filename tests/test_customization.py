@@ -65,6 +65,28 @@ async def test_enter_after_thematic_break_does_not_start_a_list(tmp_path: Path) 
         assert app.editor.text == "* * *\n"
 
 
+async def test_enter_does_not_continue_indented_code_but_keeps_nested_lists(
+    tmp_path: Path,
+) -> None:
+    code_path = tmp_path / "code.md"
+    code_path.write_text("    - literal", encoding="utf-8")
+    code_app = _app(code_path)
+
+    async with code_app.run_test(size=(100, 30)) as pilot:
+        code_app.editor.move_cursor((0, len("    - literal")))
+        await pilot.press("enter")
+        assert code_app.editor.text == "    - literal\n"
+
+    list_path = tmp_path / "list.md"
+    list_path.write_text("- parent\n    - child", encoding="utf-8")
+    list_app = _app(list_path)
+
+    async with list_app.run_test(size=(100, 30)) as pilot:
+        list_app.editor.move_cursor((1, len("    - child")))
+        await pilot.press("enter")
+        assert list_app.editor.text == "- parent\n    - child\n    - "
+
+
 async def test_list_continuation_can_be_disabled(tmp_path: Path) -> None:
     path = tmp_path / "list.md"
     path.write_text("- item", encoding="utf-8")
@@ -175,6 +197,7 @@ async def test_command_palette_and_help_expose_product_actions(tmp_path: Path) -
         command_titles = {command.title for command in app.get_system_commands(app.screen)}
         assert {
             "Save document",
+            "Search workspace text",
             "Reload configuration",
             "Shortcut help",
             "Markdown syntax help",

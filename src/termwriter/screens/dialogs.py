@@ -6,7 +6,7 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import ClassVar
 
-from textual import on
+from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
@@ -14,8 +14,16 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, OptionList, Static
 from textual.widgets.option_list import Option
+from textual.worker import get_current_worker
 
+from termwriter.models.workspace import Workspace
 from termwriter.services.file_search import search_files
+from termwriter.services.text_search import (
+    TextSearchMatch,
+    TextSearchOverride,
+    TextSearchResult,
+    search_text,
+)
 
 
 class UnsavedDecision(Enum):
@@ -333,6 +341,124 @@ class FileSearchDialog(ModalScreen[Path | None]):
     def action_focus_results(self) -> None:
         if self.matches:
             self.query_one("#search-results", OptionList).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class TextSearchDialog(ModalScreen[TextSearchMatch | None]):
+    """Search source text without blocking Textual's UI thread."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("down", "focus_results", "Results", show=False),
+    ]
+
+    def __init__(
+        self,
+        workspace: Workspace,
+        *,
+        active_override: TextSearchOverride | None = None,
+    ) -> None:
+        self.workspace = workspace
+        self.root = workspace.root
+        self.active_override = active_override
+        self.matches: tuple[TextSearchMatch, ...] = ()
+        super().__init__(id="text-search-screen")
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog", id="text-search-dialog"):
+            yield Static("Search workspace text", classes="dialog-title", markup=False)
+            yield Input(
+                placeholder="Type literal text and press Enter…",
+                id="text-search-input",
+            )
+            yield Static("Enter a query to search Markdown source.", id="text-search-status")
+            yield OptionList(id="text-search-results", markup=False)
+
+    def on_mount(self) -> None:
+        self._set_placeholder("No search yet")
+        self.query_one("#text-search-input", Input).focus()
+
+    @on(Input.Submitted, "#text-search-input")
+    def submit_search(self, event: Input.Submitted) -> None:
+        query = event.value
+        if not query:
+            self.matches = ()
+            self.query_one("#text-search-status", Static).update("Enter a non-empty query.")
+            self._set_placeholder("No search yet")
+            return
+        self.query_one("#text-search-status", Static).update("Searching…")
+        self._set_placeholder("Searching…")
+        self._search_in_background(query)
+
+    @work(group="text-search", exclusive=True, thread=True, exit_on_error=False)
+    def _search_in_background(self, query: str) -> None:
+        worker = get_current_worker()
+        try:
+            scan = self.workspace.scan(should_cancel=lambda: worker.is_cancelled)
+            result = search_text(
+                scan.files,
+                query,
+                active_override=self.active_override,
+                should_cancel=lambda: worker.is_cancelled,
+            )
+            result = TextSearchResult(
+                result.matches,
+                (*scan.warnings, *result.warnings),
+            )
+        except Exception as error:
+            if not worker.is_cancelled:
+                self.app.call_from_thread(self._show_error, query, str(error))
+            return
+        if not worker.is_cancelled:
+            self.app.call_from_thread(self._show_results, query, result)
+
+    def _show_results(self, query: str, result: TextSearchResult) -> None:
+        if not self.is_mounted or self.query_one("#text-search-input", Input).value != query:
+            return
+        self.matches = result.matches
+        options = [
+            Option(
+                f"{match.path.relative_to(self.root).as_posix()}:{match.line + 1}:"
+                f"{match.column + 1}  {match.preview}",
+                id=str(index),
+            )
+            for index, match in enumerate(self.matches)
+        ]
+        results = self.query_one("#text-search-results", OptionList)
+        if options:
+            results.set_options(options)
+            results.highlighted = 0
+            results.focus()
+        else:
+            self._set_placeholder("No matching source lines")
+        match_word = "match" if len(self.matches) == 1 else "matches"
+        status = f"{len(self.matches)} {match_word}"
+        if result.warnings:
+            status += f" · skipped {len(result.warnings)} unreadable path(s)"
+        self.query_one("#text-search-status", Static).update(status)
+
+    def _show_error(self, query: str, error: str) -> None:
+        if not self.is_mounted or self.query_one("#text-search-input", Input).value != query:
+            return
+        self.matches = ()
+        self._set_placeholder("Search failed")
+        self.query_one("#text-search-status", Static).update(f"Search failed: {error}")
+
+    def _set_placeholder(self, message: str) -> None:
+        results = self.query_one("#text-search-results", OptionList)
+        results.set_options([Option(message, disabled=True)])
+        results.highlighted = None
+
+    @on(OptionList.OptionSelected, "#text-search-results")
+    def open_selected(self, event: OptionList.OptionSelected) -> None:
+        if 0 <= event.option_index < len(self.matches):
+            self.dismiss(self.matches[event.option_index])
+
+    def action_focus_results(self) -> None:
+        if self.matches:
+            self.query_one("#text-search-results", OptionList).focus()
 
     def action_cancel(self) -> None:
         self.dismiss(None)

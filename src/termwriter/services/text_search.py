@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,10 +24,11 @@ class TextSearchMatch:
 
 @dataclass(frozen=True, slots=True)
 class TextSearchOverride:
-    """Unsaved source that replaces disk content for one active document."""
+    """Active source and whether current disk content should take precedence."""
 
     path: Path
     text: str
+    prefer_disk: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +45,7 @@ def search_text(
     *,
     limit: int = DEFAULT_RESULT_LIMIT,
     active_override: TextSearchOverride | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> TextSearchResult:
     """Search validated Markdown paths without invoking external commands.
 
@@ -54,6 +57,7 @@ def search_text(
     if not needle or limit <= 0:
         return TextSearchResult((), ())
 
+    active_override = _canonical_override(files, active_override)
     candidates = set(files)
     if active_override is not None:
         candidates.add(active_override.path)
@@ -62,18 +66,33 @@ def search_text(
     matches: list[TextSearchMatch] = []
     warnings: list[str] = []
     for path in ordered_paths:
-        if active_override is not None and path == active_override.path:
-            text = active_override.text
+        if should_cancel is not None and should_cancel():
+            break
+        if len(matches) >= limit:
+            break
+        override = (
+            active_override
+            if active_override is not None and path == active_override.path
+            else None
+        )
+        if override is not None and not override.prefer_disk:
+            text = override.text
         else:
             try:
                 text = load_file(path).text
             except (OSError, PersistenceError) as error:
-                warnings.append(f"Cannot search {path}: {error}")
-                continue
+                if override is not None:
+                    text = override.text
+                else:
+                    warnings.append(f"Cannot search {path}: {error}")
+                    continue
 
-        if len(matches) >= limit:
-            continue
+        if should_cancel is not None and should_cancel():
+            break
+
         for line_number, line in enumerate(text.splitlines()):
+            if should_cancel is not None and should_cancel():
+                break
             column = _casefolded_column(line, needle)
             if column is None:
                 continue
@@ -89,6 +108,27 @@ def search_text(
                 break
 
     return TextSearchResult(tuple(matches), tuple(warnings))
+
+
+def _canonical_override(
+    files: tuple[Path, ...],
+    override: TextSearchOverride | None,
+) -> TextSearchOverride | None:
+    """Use the workspace path spelling for an existing case-insensitive alias."""
+    if override is None:
+        return None
+    override_key = override.path.as_posix().casefold()
+    for candidate in files:
+        if candidate == override.path:
+            return override
+        if candidate.as_posix().casefold() != override_key:
+            continue
+        try:
+            if candidate.samefile(override.path):
+                return TextSearchOverride(candidate, override.text, override.prefer_disk)
+        except OSError:
+            continue
+    return override
 
 
 def _path_sort_key(path: Path) -> tuple[str, str]:

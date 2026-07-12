@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -161,13 +162,19 @@ class Workspace:
                 raise UnsupportedFileError(f"Not a regular Markdown file: {candidate}")
         return candidate
 
-    def scan(self) -> ScanResult:
+    def scan(
+        self,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> ScanResult:
         """Find Markdown files while treating unreadable directories as warnings."""
         pending = [self.root]
         files: list[Path] = []
         warnings: list[str] = []
 
         while pending:
+            if should_cancel is not None and should_cancel():
+                break
             directory = pending.pop()
             try:
                 with os.scandir(directory) as iterator:
@@ -177,6 +184,8 @@ class Workspace:
                 continue
 
             for entry in entries:
+                if should_cancel is not None and should_cancel():
+                    break
                 path = Path(entry.path)
                 try:
                     if entry.is_symlink():

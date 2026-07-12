@@ -74,6 +74,7 @@ show_line_numbers = false
 
 [keybindings]
 save = "ctrl+shift+s"
+search_text = "ctrl+f"
 redo = "ctrl+r, ctrl+shift+r"
 """,
         encoding="utf-8",
@@ -87,6 +88,7 @@ redo = "ctrl+r, ctrl+shift+r"
         show_line_numbers=False,
     )
     assert config.keybindings["save"] == "ctrl+shift+s"
+    assert config.keybindings["search_text"] == "ctrl+f"
     assert config.keybindings["redo"] == "ctrl+r,ctrl+shift+r"
     assert config.keybindings["quit"] == "ctrl+q"
 

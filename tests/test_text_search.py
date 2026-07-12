@@ -137,6 +137,29 @@ def test_active_override_replaces_disk_text_and_can_include_a_missing_path(
     assert missing_result.warnings == ()
 
 
+def test_clean_active_override_prefers_disk_and_falls_back_if_missing(
+    tmp_path: Path,
+) -> None:
+    active = tmp_path / "active.md"
+    missing = tmp_path / "missing.md"
+    active.write_text("fresh disk needle\n", encoding="utf-8")
+
+    disk_result = search_text(
+        (active,),
+        "needle",
+        active_override=TextSearchOverride(active, "stale memory", prefer_disk=True),
+    )
+    fallback_result = search_text(
+        (),
+        "draft",
+        active_override=TextSearchOverride(missing, "local draft", prefer_disk=True),
+    )
+
+    assert [match.preview for match in disk_result.matches] == ["fresh disk needle"]
+    assert [match.path for match in fallback_result.matches] == [missing]
+    assert fallback_result.warnings == ()
+
+
 def test_long_preview_is_bounded_and_keeps_the_match_visible(tmp_path: Path) -> None:
     path = tmp_path / "long.md"
     path.write_text("a" * 300 + " needle " + "z" * 300, encoding="utf-8")
@@ -148,3 +171,45 @@ def test_long_preview_is_bounded_and_keeps_the_match_visible(tmp_path: Path) -> 
     assert "needle" in preview
     assert preview.startswith("…")
     assert preview.endswith("…")
+
+
+def test_cancelled_search_stops_before_loading_more_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("needle\n", encoding="utf-8")
+    second.write_text("needle\n", encoding="utf-8")
+    loaded_paths: list[Path] = []
+    safe_load = load_file
+
+    def tracked_load(path: Path) -> LoadedFile:
+        loaded_paths.append(path)
+        return safe_load(path)
+
+    monkeypatch.setattr("termwriter.services.text_search.load_file", tracked_load)
+
+    result = search_text(
+        (first, second),
+        "needle",
+        should_cancel=lambda: bool(loaded_paths),
+    )
+
+    assert loaded_paths == [first]
+    assert result.matches == ()
+
+
+def test_cancelled_search_stops_between_lines(tmp_path: Path) -> None:
+    path = tmp_path / "large.md"
+    path.write_text("no match\n" * 100, encoding="utf-8")
+    checks = 0
+
+    def cancel_during_matching() -> bool:
+        nonlocal checks
+        checks += 1
+        return checks > 5
+
+    search_text((path,), "needle", should_cancel=cancel_during_matching)
+
+    assert checks == 6
