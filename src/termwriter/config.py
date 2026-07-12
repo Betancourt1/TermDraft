@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import stat
 import tomllib
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,6 +41,15 @@ DEFAULT_KEYBINDINGS: Mapping[str, str] = MappingProxyType(
     }
 )
 KNOWN_BINDING_IDS = frozenset(DEFAULT_KEYBINDINGS)
+
+_CHARACTER_KEY_REPLACEMENTS = {
+    "solidus": "slash",
+    "reverse_solidus": "backslash",
+    "commercial_at": "at",
+    "hyphen_minus": "minus",
+    "plus_sign": "plus",
+    "low_line": "underscore",
+}
 
 CONFIG_TEMPLATE = """\
 # TermWriter configuration. Unknown options are rejected instead of ignored.
@@ -115,16 +125,16 @@ def get_config_root(
 ) -> Path:
     """Resolve the configuration root using explicit, environment, then home paths."""
     if explicit_root is not None:
-        return explicit_root.expanduser()
+        return explicit_root.expanduser().absolute()
 
     environment = os.environ if environ is None else environ
     environment_root = environment.get(CONFIG_HOME_ENV)
     if environment_root is not None:
         if not environment_root.strip():
             raise ConfigError(f"{CONFIG_HOME_ENV} must not be empty")
-        return Path(environment_root).expanduser()
+        return Path(environment_root).expanduser().absolute()
 
-    return Path.home() / CONFIG_DIRECTORY_NAME
+    return (Path.home() / CONFIG_DIRECTORY_NAME).absolute()
 
 
 def load_config(
@@ -213,14 +223,26 @@ def _parse_keybindings(raw_keybindings: object) -> Mapping[str, str]:
     used_tokens: dict[str, str] = {}
     for binding_id, binding in effective.items():
         for token in binding.split(","):
-            previous_id = used_tokens.get(token)
+            collision_token = _normalized_character_key(token)
+            previous_id = used_tokens.get(collision_token)
             if previous_id is not None:
                 raise ConfigError(
                     f"key {token!r} is assigned to both {previous_id!r} and {binding_id!r}"
                 )
-            used_tokens[token] = binding_id
+            used_tokens[collision_token] = binding_id
 
     return MappingProxyType(effective)
+
+
+def _normalized_character_key(token: str) -> str:
+    """Match Textual's canonical names for single printable character keys."""
+    if len(token) != 1 or token.isalnum():
+        return token
+    try:
+        name = unicodedata.name(token).lower().replace("-", "_").replace(" ", "_")
+    except ValueError:
+        return token
+    return _CHARACTER_KEY_REPLACEMENTS.get(name, name)
 
 
 def _as_table(value: object, name: str) -> dict[str, object]:

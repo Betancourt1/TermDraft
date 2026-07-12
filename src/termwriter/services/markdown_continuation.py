@@ -34,6 +34,7 @@ _LIST_PREFIX = re.compile(
 _QUOTE_PREFIX = re.compile(r"^(?P<prefix>[ \t]*(?:>[ \t]*)+)")
 _TASK_PREFIX = re.compile(r"(?P<marker>\[[ xX]\])(?P<gap>[ \t]*)(?P<body>.*)$")
 _FENCE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<rest>.*)$")
+_THEMATIC_BREAK = re.compile(r"^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")
 
 
 def continuation_edit(
@@ -54,6 +55,8 @@ def continuation_edit(
     if cursor_column < 0 or cursor_column > len(line):
         return None
     if _inside_fenced_code(lines, cursor_line):
+        return None
+    if _THEMATIC_BREAK.fullmatch(line):
         return None
 
     list_match = _LIST_PREFIX.match(line)
@@ -161,20 +164,30 @@ def _increment_ordered_marker(match: re.Match[str]) -> str:
 def _inside_fenced_code(lines: tuple[_LogicalLine, ...], line_number: int) -> bool:
     fence_character: str | None = None
     fence_length = 0
+    fence_quote_depth = 0
     for logical_line in lines[:line_number]:
-        match = _FENCE.match(logical_line.text)
+        quote_match = _QUOTE_PREFIX.match(logical_line.text)
+        quote_depth = 0
+        candidate = logical_line.text
+        if quote_match is not None:
+            quote_depth = quote_match.group("prefix").count(">")
+            candidate = logical_line.text[quote_match.end() :]
+        match = _FENCE.match(candidate)
         if match is None:
             continue
         fence = match.group("fence")
         if fence_character is None:
             fence_character = fence[0]
             fence_length = len(fence)
+            fence_quote_depth = quote_depth
             continue
         if (
-            fence[0] == fence_character
+            quote_depth == fence_quote_depth
+            and fence[0] == fence_character
             and len(fence) >= fence_length
             and not match.group("rest").strip()
         ):
             fence_character = None
             fence_length = 0
+            fence_quote_depth = 0
     return fence_character is not None

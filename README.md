@@ -42,7 +42,8 @@ both panes into an unusable layout. Ctrl+B can reclaim the explorer width at any
 - Python 3.12 or newer;
 - macOS or Linux with Python's POSIX directory-descriptor APIs;
 - a terminal supported by [Textual](https://textual.textualize.io/);
-- a filesystem on which the selected workspace is readable and its files are writable when saving.
+- a filesystem where workspace files are readable and their parent directories are writable and
+  searchable when saving.
 
 TermWriter currently targets Textual 8.x, installs its Markdown syntax-highlighting extra, and uses
 `markdown-it-py` for the preview parser.
@@ -295,8 +296,9 @@ discovery, task continuation, termination, and undo grouping.
   executed.
 - Preview intentionally omits footnotes, definition lists, alerts, math, underline, subscript, and
   superscript. Images do not render terminal graphics.
-- Smart Enter handles common single-line list/task/blockquote prefixes and fenced-code exclusions;
-  it is not a full Markdown incremental parser.
+- Smart Enter handles common single-line list/task/blockquote prefixes, thematic breaks, and fenced
+  code; it is not a full Markdown incremental parser. A root-level four-space-indented list-like
+  line can still be continued even though CommonMark treats it as indented code.
 - A malformed `theme.tcss` can prevent startup until the file is corrected. Only a theme present at
   launch is watched; create the templates with `--init-config` before opening the TUI.
 - Global full-text search is not part of this MVP.

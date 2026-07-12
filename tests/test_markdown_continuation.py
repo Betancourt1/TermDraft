@@ -110,6 +110,12 @@ def test_does_not_continue_inside_fenced_code(source: str, line: int) -> None:
     assert continuation_edit(source, line, len(current_line)) is None
 
 
+def test_does_not_continue_inside_blockquoted_fenced_code() -> None:
+    source = "> ```\n> - literal\n> ```"
+
+    assert continuation_edit(source, 1, len("> - literal")) is None
+
+
 def test_continues_after_fenced_code_closes() -> None:
     source = "```\n- code\n```\n- prose"
 
@@ -117,6 +123,11 @@ def test_continues_after_fenced_code_closes() -> None:
 
     assert edit is not None
     assert edit.text == "\n- "
+
+
+@pytest.mark.parametrize("source", ["* * *", "- - -", "***", "___", "  *  *  *  "])
+def test_thematic_breaks_are_not_treated_as_list_items(source: str) -> None:
+    assert continuation_edit(source, 0, len(source)) is None
 
 
 @pytest.mark.parametrize(

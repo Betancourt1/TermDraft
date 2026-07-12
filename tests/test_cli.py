@@ -67,7 +67,7 @@ def test_cli_commands_show_effective_remapped_keys(
     config_root = tmp_path / "config"
     config_root.mkdir()
     (config_root / "config.toml").write_text(
-        '[keybindings]\nsave = "ctrl+g"\n',
+        '[editor]\nauto_continue_lists = false\n\n[keybindings]\nsave = "ctrl+g"\n',
         encoding="utf-8",
     )
 
@@ -78,6 +78,7 @@ def test_cli_commands_show_effective_remapped_keys(
     assert "TermWriter commands" in output
     assert "Ctrl+G" in output
     assert "Open the command palette" in output
+    assert "Enter in a list" not in output
 
 
 def test_cli_rejects_invalid_configuration_before_launch(

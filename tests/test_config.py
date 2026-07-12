@@ -38,6 +38,16 @@ def test_config_root_honors_environment_and_explicit_path(tmp_path: Path) -> Non
     assert get_config_root(explicit_root, environ=environment) == explicit_root
 
 
+def test_relative_config_roots_become_absolute(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    assert get_config_root(Path("explicit"), environ={}) == tmp_path / "explicit"
+    assert get_config_root(environ={CONFIG_HOME_ENV: "environment"}) == tmp_path / "environment"
+
+
 def test_empty_environment_root_is_rejected() -> None:
     with pytest.raises(ConfigError, match="must not be empty"):
         get_config_root(environ={CONFIG_HOME_ENV: "  "})
@@ -122,6 +132,18 @@ def test_duplicate_tokens_across_effective_bindings_are_rejected(tmp_path: Path)
     root = tmp_path / ".termwriter"
     root.mkdir()
     (root / CONFIG_FILE_NAME).write_text('[keybindings]\nsave = "ctrl+q"\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="assigned to both 'save' and 'quit'"):
+        load_config(root)
+
+
+def test_duplicate_character_aliases_are_rejected(tmp_path: Path) -> None:
+    root = tmp_path / ".termwriter"
+    root.mkdir()
+    (root / CONFIG_FILE_NAME).write_text(
+        '[keybindings]\nsave = "?"\nquit = "question_mark"\n',
+        encoding="utf-8",
+    )
 
     with pytest.raises(ConfigError, match="assigned to both 'save' and 'quit'"):
         load_config(root)

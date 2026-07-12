@@ -53,6 +53,18 @@ async def test_enter_on_empty_marker_ends_the_list(tmp_path: Path) -> None:
         assert app.editor.cursor_location == (2, 0)
 
 
+async def test_enter_after_thematic_break_does_not_start_a_list(tmp_path: Path) -> None:
+    path = tmp_path / "rule.md"
+    path.write_text("* * *", encoding="utf-8")
+    app = _app(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        app.editor.move_cursor((0, len("* * *")))
+        await pilot.press("enter")
+
+        assert app.editor.text == "* * *\n"
+
+
 async def test_list_continuation_can_be_disabled(tmp_path: Path) -> None:
     path = tmp_path / "list.md"
     path.write_text("- item", encoding="utf-8")
@@ -135,15 +147,23 @@ async def test_user_theme_overrides_bundled_css(tmp_path: Path) -> None:
     path.write_text("base", encoding="utf-8")
     config_root = tmp_path / "config"
     config_root.mkdir()
-    (config_root / "theme.tcss").write_text(
+    theme_path = config_root / "theme.tcss"
+    theme_path.write_text(
         "#title-bar { background: #010203; }\n",
         encoding="utf-8",
     )
     app = _app(path, load_config(config_root))
 
-    async with app.run_test(size=(100, 30)):
+    async with app.run_test(size=(100, 30)) as pilot:
         title = app.query_one("#title-bar")
         assert title.styles.background == Color(1, 2, 3)
+
+        theme_path.write_text(
+            "#title-bar { background: #040506; }\n",
+            encoding="utf-8",
+        )
+        await pilot.pause(0.35)
+        assert title.styles.background == Color(4, 5, 6)
 
 
 async def test_command_palette_and_help_expose_product_actions(tmp_path: Path) -> None:

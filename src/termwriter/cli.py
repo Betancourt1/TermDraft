@@ -73,7 +73,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     if arguments.commands:
-        print(format_command_help(config.keybindings))
+        print(
+            format_command_help(
+                config.keybindings,
+                auto_continue_lists=config.editor.auto_continue_lists,
+            )
+        )
         return 0
 
     try:

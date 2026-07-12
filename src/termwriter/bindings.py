@@ -141,12 +141,19 @@ def format_shortcut_help(
     return "\n".join(f"{keys:<{width}}{description}" for keys, description in rows)
 
 
-def format_command_help(keybindings: Mapping[str, str]) -> str:
+def format_command_help(
+    keybindings: Mapping[str, str],
+    *,
+    auto_continue_lists: bool = True,
+) -> str:
     """Return terminal-friendly help for the CLI command listing."""
     palette = _display_keys(keybindings[BINDING_ID_COMMAND_PALETTE])
     return (
         "TermWriter commands\n\n"
-        + format_shortcut_help(keybindings)
+        + format_shortcut_help(
+            keybindings,
+            auto_continue_lists=auto_continue_lists,
+        )
         + "\n\n"
         + f"Press {palette} in the TUI to search all commands, including:\n"
         + "  Save, find file, toggle files, toggle preview, undo, redo,\n"
