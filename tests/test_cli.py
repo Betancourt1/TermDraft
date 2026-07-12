@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import signal
 from pathlib import Path
 
 import pytest
 
 from termwriter.app import TermWriterApp
-from termwriter.cli import main
+from termwriter.cli import SignalHandler, _run_with_shutdown_signals, main
+from termwriter.models.workspace import Workspace
 
 
 def test_cli_reports_missing_path(
@@ -35,6 +37,36 @@ def test_cli_launches_valid_workspace(
 
     assert result == 0
     assert launched == [tmp_path.resolve()]
+
+
+def test_cli_forwards_shutdown_signal_and_restores_handlers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = TermWriterApp(Workspace.from_target(tmp_path))
+    calls: list[tuple[int, SignalHandler]] = []
+
+    def fake_signal(signal_number: int, handler: SignalHandler) -> SignalHandler:
+        calls.append((signal_number, handler))
+        return signal.SIG_IGN
+
+    def failed_run(running_app: TermWriterApp) -> None:
+        installed_handler = calls[0][1]
+        assert callable(installed_handler)
+        installed_handler(signal.SIGTERM, None)
+        assert running_app is app
+        raise RuntimeError("run failed")
+
+    monkeypatch.setattr("termwriter.cli.signal.signal", fake_signal)
+    monkeypatch.setattr(TermWriterApp, "run", failed_run)
+
+    with pytest.raises(RuntimeError, match="run failed"):
+        _run_with_shutdown_signals(app)
+
+    signal_count = 1 + int(getattr(signal, "SIGHUP", None) is not None)
+    assert app._pending_shutdown_signal == signal.SIGTERM
+    assert len(calls) == signal_count * 2
+    assert all(handler == signal.SIG_IGN for _, handler in calls[signal_count:])
 
 
 def test_cli_initializes_and_prints_configuration_paths(

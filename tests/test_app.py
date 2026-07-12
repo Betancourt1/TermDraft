@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import signal
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event
 
 import pytest
 from textual.widgets import Input, Static
@@ -33,6 +35,7 @@ from termwriter.services.persistence import (
 )
 from termwriter.services.recovery import (
     RecoveryJournal,
+    RecoveryRecord,
     RecoveryRetentionOutcome,
     RecoveryRetentionResult,
 )
@@ -1179,6 +1182,145 @@ async def test_continuous_edits_do_not_postpone_the_recovery_deadline(
             await pilot.pause(0.01)
         assert recovered is not None
         assert recovered.text == "xyzbase"
+
+
+async def test_orderly_signal_flushes_pending_dirty_source_before_exit(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    journal = RecoveryJournal(tmp_path / "state")
+    app = app_for_file(
+        path,
+        recovery_debounce=60.0,
+        recovery_journal=journal,
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("x")
+        assert journal.load(path) is None
+
+        app.request_orderly_shutdown(signal.SIGTERM)
+        for _ in range(200):
+            if not app.is_running:
+                break
+            await pilot.pause(0.01)
+
+        assert not app.is_running
+
+    recovered = journal.load(path)
+    assert recovered is not None
+    assert recovered.text == "xbase"
+    assert path.read_text(encoding="utf-8") == "base"
+
+
+async def test_orderly_signal_waits_for_recovery_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    journal = RecoveryJournal(tmp_path / "state")
+    app = app_for_file(
+        path,
+        recovery_debounce=60.0,
+        recovery_journal=journal,
+    )
+    started = Event()
+    release = Event()
+    real_publish = journal.publish
+
+    def blocked_publish(
+        *,
+        document_path: Path,
+        workspace_root: Path,
+        text: str,
+        encoding: str,
+        base_snapshot: FileSnapshot,
+    ) -> RecoveryRecord:
+        started.set()
+        assert release.wait(2)
+        return real_publish(
+            document_path=document_path,
+            workspace_root=workspace_root,
+            text=text,
+            encoding=encoding,
+            base_snapshot=base_snapshot,
+        )
+
+    monkeypatch.setattr(journal, "publish", blocked_publish)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("x")
+        app.request_orderly_shutdown(signal.SIGTERM)
+        for _ in range(200):
+            if started.is_set():
+                break
+            await pilot.pause(0.01)
+
+        assert started.is_set()
+        assert app.is_running
+        assert app._exit_requested
+        assert app.editor.read_only
+
+        release.set()
+        for _ in range(200):
+            if not app.is_running:
+                break
+            await pilot.pause(0.01)
+
+        assert not app.is_running
+
+    recovered = journal.load(path)
+    assert recovered is not None
+    assert recovered.text == "xbase"
+
+
+async def test_orderly_signal_cancels_exit_when_recovery_publication_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    journal = RecoveryJournal(tmp_path / "state")
+    app = app_for_file(
+        path,
+        recovery_debounce=60.0,
+        recovery_journal=journal,
+    )
+    attempted = Event()
+
+    def failed_publish(
+        *,
+        document_path: Path,
+        workspace_root: Path,
+        text: str,
+        encoding: str,
+        base_snapshot: FileSnapshot,
+    ) -> RecoveryRecord:
+        del document_path, workspace_root, text, encoding, base_snapshot
+        attempted.set()
+        raise OSError("recovery storage unavailable")
+
+    monkeypatch.setattr(journal, "publish", failed_publish)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("x")
+        app.request_orderly_shutdown(signal.SIGTERM)
+        for _ in range(200):
+            if attempted.is_set() and not app._signal_shutdown_in_progress:
+                break
+            await pilot.pause(0.01)
+
+        assert attempted.is_set()
+        assert app.is_running
+        assert not app._exit_requested
+        assert not app.editor.read_only
+        assert app.document is not None
+        assert app.document.text == "xbase"
+        assert app.document.dirty
+        assert journal.load(path) is None
+        assert path.read_text(encoding="utf-8") == "base"
 
 
 async def test_startup_can_restore_a_recovery_draft(tmp_path: Path) -> None:

@@ -309,6 +309,10 @@ class TermWriterApp(App[None]):
         self._recovery_mutation_in_flight: _RecoveryMutation | None = None
         self._recovery_delete_waiters: dict[Path, list[Callable[[], None]]] = {}
         self._known_recovery_fingerprints: dict[Path, str] = {}
+        self._pending_shutdown_signal: int | None = None
+        self._signal_shutdown_in_progress = False
+        self._shutdown_recovery_sequences: set[int] = set()
+        self._shutdown_editor_states: tuple[tuple[MarkdownEditor, bool], ...] = ()
         self._preview_revision = 0
         self._pending_transition: Callable[[], object] | None = None
         self._save_continuation: Callable[[], None] | None = None
@@ -365,6 +369,11 @@ class TermWriterApp(App[None]):
             self.external_poll_interval,
             self._check_external_in_background,
             name="external-file-watch",
+        )
+        self.set_interval(
+            0.05,
+            self._process_orderly_shutdown_request,
+            name="orderly-shutdown-check",
         )
         self._narrow = self.size.width < 100
         self._apply_panel_visibility()
@@ -1855,7 +1864,7 @@ class TermWriterApp(App[None]):
             return
         self._queue_recovery_save(document)
 
-    def _queue_recovery_save(self, document: Document) -> None:
+    def _queue_recovery_save(self, document: Document) -> int:
         document.recovery_saved = False
         self._recovery_mutation_sequence += 1
         mutation = _RecoveryMutation(
@@ -1875,9 +1884,10 @@ class TermWriterApp(App[None]):
                 break
             self._recovery_mutation_queue[index] = mutation
             self._start_recovery_mutation()
-            return
+            return mutation.sequence
         self._recovery_mutation_queue.append(mutation)
         self._start_recovery_mutation()
+        return mutation.sequence
 
     def _clear_recovery(
         self,
@@ -1964,6 +1974,8 @@ class TermWriterApp(App[None]):
             return
         self._recovery_mutation_in_flight = None
         if mutation.kind is _RecoveryMutationKind.SAVE:
+            shutdown_mutation = mutation.sequence in self._shutdown_recovery_sequences
+            self._shutdown_recovery_sequences.discard(mutation.sequence)
             document = mutation.document
             if result.record is not None:
                 self._known_recovery_fingerprints[mutation.path] = result.record.fingerprint
@@ -1983,6 +1995,8 @@ class TermWriterApp(App[None]):
                     severity="error",
                     title="Recovery draft failed",
                 )
+                if shutdown_mutation:
+                    self._abort_orderly_shutdown()
         else:
             if result.error is None:
                 self._known_recovery_fingerprints.pop(mutation.path, None)
@@ -1998,6 +2012,62 @@ class TermWriterApp(App[None]):
         self._start_recovery_mutation()
         self._refresh_status()
         self._maybe_finish_exit()
+
+    def request_orderly_shutdown(self, signal_number: int) -> None:
+        """Record an OS shutdown request without performing I/O in its signal handler."""
+        if not self._exit_requested:
+            self._pending_shutdown_signal = signal_number
+
+    def _process_orderly_shutdown_request(self) -> None:
+        if self._pending_shutdown_signal is None or self._exit_requested or self._critical_io:
+            return
+        self._pending_shutdown_signal = None
+        self._sync_editor_state()
+        for opened in self._open_documents:
+            editor_text = opened.editor.text
+            source_text = (
+                opened.baseline_source_text if editor_text == opened.baseline_text else editor_text
+            )
+            opened.document.update_text(source_text)
+
+        self._recovery_revision += 1
+        if self._recovery_timer is not None:
+            self._recovery_timer.stop()
+            self._recovery_timer = None
+
+        self._signal_shutdown_in_progress = True
+        self._shutdown_editor_states = tuple(
+            (opened.editor, opened.editor.read_only) for opened in self._open_documents
+        )
+        for opened in self._open_documents:
+            opened.editor.read_only = True
+            if opened.document.dirty:
+                sequence = self._queue_recovery_save(opened.document)
+                self._shutdown_recovery_sequences.add(sequence)
+
+        self._pending_transition = None
+        self._save_continuation = None
+        self._quit_documents = None
+        self._quit_active_document = None
+        self._exit_requested = True
+        self._persist_session()
+        self._maybe_finish_exit()
+
+    def _abort_orderly_shutdown(self) -> None:
+        if not self._signal_shutdown_in_progress:
+            return
+        self._signal_shutdown_in_progress = False
+        self._exit_requested = False
+        self._shutdown_recovery_sequences.clear()
+        for editor, read_only in self._shutdown_editor_states:
+            editor.read_only = read_only
+        self._shutdown_editor_states = ()
+        self.notify(
+            "Orderly shutdown was cancelled because a dirty draft could not be stored",
+            severity="error",
+            title="Shutdown cancelled",
+        )
+        self._refresh_status()
 
     async def _render_preview(self, revision: int) -> None:
         if revision != self._preview_revision or self.document is None:
@@ -2831,6 +2901,7 @@ class TermWriterApp(App[None]):
     def _maybe_finish_exit(self) -> None:
         if (
             self._exit_requested
+            and not self._critical_io
             and not self._session_save_in_flight
             and self._pending_session_state is None
             and self._recovery_mutation_in_flight is None

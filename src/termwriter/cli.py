@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from types import FrameType
 
 from termwriter import __version__
 from termwriter.app import TermWriterApp
@@ -17,6 +19,36 @@ from termwriter.config import (
     load_config,
 )
 from termwriter.models.workspace import Workspace, WorkspaceError
+
+SignalHandler = Callable[[int, FrameType | None], object] | int | signal.Handlers | None
+
+
+def _run_with_shutdown_signals(app: TermWriterApp) -> None:
+    """Forward cooperative process shutdown requests and restore prior handlers."""
+    previous_handlers: list[tuple[int, SignalHandler]] = []
+
+    def request_shutdown(signal_number: int, frame: FrameType | None) -> None:
+        del frame
+        app.request_orderly_shutdown(signal_number)
+
+    shutdown_signals: list[int] = [signal.SIGTERM]
+    hangup_signal = getattr(signal, "SIGHUP", None)
+    if hangup_signal is not None:
+        shutdown_signals.append(hangup_signal)
+    try:
+        for shutdown_signal in shutdown_signals:
+            try:
+                previous = signal.signal(shutdown_signal, request_shutdown)
+            except (OSError, ValueError):
+                continue
+            previous_handlers.append((shutdown_signal, previous))
+        app.run()
+    finally:
+        for installed_signal, previous in previous_handlers:
+            try:
+                signal.signal(installed_signal, previous)
+            except (OSError, ValueError):
+                pass
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -87,5 +119,5 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"termwriter: error: {error}", file=sys.stderr)
         return 2
 
-    TermWriterApp(workspace, config=config).run()
+    _run_with_shutdown_signals(TermWriterApp(workspace, config=config))
     return 0

@@ -18,6 +18,7 @@ The current release is a functional MVP focused on a dependable writing loop:
 - traverse rendered headings from the keyboard with a visible level and position announcement;
 - save through a same-directory temporary file;
 - keep an atomic per-user crash-recovery journal for dirty source;
+- drain exact dirty-tab recovery drafts on cooperative `SIGTERM` and `SIGHUP` shutdown;
 - poll the active file and rotate through inactive tabs for external changes;
 - require consent before editing a file with mixed line endings;
 - require an explicit decision before closing, reloading, or replacing unsaved work.
@@ -387,10 +388,12 @@ writer locking.
   represented by their outer block, reference definitions may appear as explicit unmapped source,
   and the detail pane truncates very large block previews. It provides no inline delimiter offsets,
   stable block identity, visual-position map, incremental parsing, or hybrid editing.
-- Recovery has a nominal 500 ms first-write delay. Termination before the timer runs, a blocked event
-  loop, or a failed journal write can lose the latest unsaved keystrokes. It is not version history,
-  a backup, or an autosave of the Markdown path. Recovery entries contain the draft's plaintext
-  source in a private per-user state directory.
+- Recovery has a nominal 500 ms first-write delay. Cooperative `SIGTERM` and `SIGHUP` requests are
+  polled every 50 ms and drain exact dirty-tab journals before exit; a failed shutdown publication
+  cancels exit and restores editing. `SIGKILL`, power loss, native crashes, a blocked event loop, or
+  a supervisor's too-short TERM-to-KILL grace period can still lose newer in-memory keystrokes. The
+  journal is not version history, a backup, or an autosave of the Markdown path. Recovery entries
+  contain the draft's plaintext source in a private per-user state directory.
 - Recovery mutations use advisory per-journal locks between cooperating TermWriter processes. An
   unrelated program can ignore them, and lock behavior on unusual or network filesystems remains
   filesystem-dependent.
@@ -454,8 +457,7 @@ writer locking.
 
 ## Near-term roadmap
 
-1. Narrow the recovery timer's remaining pre-journal crash window during orderly shutdown signals.
-2. Validate nested semantic ranges and reference definitions against a larger lossless corpus before
+1. Validate nested semantic ranges and reference definitions against a larger lossless corpus before
    considering any rendered-block experiment.
 
 Implementation boundaries and tradeoffs are documented in

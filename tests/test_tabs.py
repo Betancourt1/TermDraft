@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import signal
 from pathlib import Path
 
 from textual.pilot import Pilot
@@ -229,6 +230,50 @@ async def test_quit_guards_each_dirty_tab_and_cancel_stops_exit(tmp_path: Path) 
         assert app.document.path == first
         assert app.document.dirty
         assert first.read_text(encoding="utf-8") == "first"
+
+
+async def test_orderly_signal_journals_every_dirty_tab_even_during_quit_dialog(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    journal = RecoveryJournal(tmp_path / "recovery")
+    app = TermWriterApp(
+        Workspace.from_target(first),
+        preview_debounce=0.01,
+        recovery_debounce=60.0,
+        recovery_journal=journal,
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _open(app, pilot, second)
+        first_buffer = app._open_document_for_path(first)
+        assert first_buffer is not None
+        first_entry = app._open_entry_for_document(first_buffer)
+        assert first_entry is not None
+        first_entry.editor.insert("x", (0, 0))
+        await pilot.press("y", "ctrl+q")
+
+        assert isinstance(app.screen, UnsavedChangesDialog)
+        assert journal.load(first) is None
+        assert journal.load(second) is None
+
+        app.request_orderly_shutdown(signal.SIGTERM)
+        for _ in range(200):
+            if not app.is_running:
+                break
+            await pilot.pause(0.01)
+
+        assert not app.is_running
+
+    first_recovery = journal.load(first)
+    second_recovery = journal.load(second)
+    assert first_recovery is not None and first_recovery.text == "xfirst"
+    assert second_recovery is not None and second_recovery.text == "ysecond"
+    assert first.read_text(encoding="utf-8") == "first"
+    assert second.read_text(encoding="utf-8") == "second"
 
 
 async def test_reactivating_dirty_tab_detects_external_conflict(tmp_path: Path) -> None:

@@ -331,6 +331,16 @@ cleanup before continuing. The status bar shows `RECOVERY STORED` only after a c
 succeeds. Destructive transitions keep the affected editor read-only across this cleanup barrier;
 Discard restores the model's saved source before its close or quit continuation runs.
 
+The CLI installs temporary `SIGTERM` and, where available, `SIGHUP` handlers around `App.run()` and
+restores the process's previous handlers afterward. A handler performs no I/O; it only records the
+signal number. A 50 ms Textual interval consumes that request once critical file I/O is idle, reads
+every mounted editor into its `Document`, stops the pending debounce timer, freezes all editors, and
+queues one exact recovery SAVE for every dirty tab. The existing session/recovery drain calls public
+`App.exit()` only when both pipelines are empty. If one of those required recovery publications
+fails, shutdown is cancelled and prior editor read-only states are restored. Ctrl+Q remains a
+separate interactive Save/Discard/Cancel path. `SIGKILL`, power loss, an unresponsive event loop, and
+external TERM-to-KILL deadlines remain outside this cooperative guarantee.
+
 On open, Restore draft keeps the freshly loaded Markdown source as `saved_text` and installs the
 journal source as current `text`, so dirty state remains derived rather than forced. If the journal's
 baseline content or file/parent identity differs from current disk, `recovery_conflict` prevents
