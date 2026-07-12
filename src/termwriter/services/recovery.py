@@ -21,6 +21,12 @@ else:  # pragma: no cover - the branch is platform-specific
     import fcntl
 
 from termwriter.models.document import FileSnapshot
+from termwriter.services.persistence import (
+    PersistenceError,
+    SaveResult,
+    atomic_save,
+    snapshot_file,
+)
 
 _SCHEMA_VERSION = 2
 _SUPPORTED_ENCODINGS = {"utf-8", "utf-8-sig"}
@@ -65,6 +71,40 @@ class RecoveryRecord:
     def is_corrupt(self) -> bool:
         """Return whether the journal could not be validated."""
         return self.entry is None
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryRetentionOutcome:
+    """The independently reported result of one retention deletion."""
+
+    journal_path: Path
+    document_path: Path
+    updated_at: datetime
+    deleted: bool
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryRetentionResult:
+    """Aggregate and per-entry results from an explicit retention cleanup."""
+
+    cutoff: datetime
+    outcomes: tuple[RecoveryRetentionOutcome, ...]
+
+    @property
+    def selected_count(self) -> int:
+        """Return the number of quarantined entries selected by the cutoff."""
+        return len(self.outcomes)
+
+    @property
+    def deleted_count(self) -> int:
+        """Return the number of entries deleted without an error."""
+        return sum(outcome.deleted for outcome in self.outcomes)
+
+    @property
+    def failed_count(self) -> int:
+        """Return the number of selected entries that could not be deleted."""
+        return self.selected_count - self.deleted_count
 
 
 def default_recovery_root() -> Path:
@@ -375,6 +415,78 @@ class RecoveryJournal:
                     "Cannot permanently delete recovery bytes that could not be fingerprinted"
                 )
             self._unlink_record(record)
+
+    def export_quarantined(
+        self,
+        record: RecoveryRecord,
+        *,
+        destination: Path,
+    ) -> SaveResult:
+        """Export a trusted quarantined draft without replacing files or removing the draft."""
+        if not record.quarantined:
+            raise RecoveryError("Recovery entry is not quarantined")
+        with self._journal_locks(record.journal_path):
+            current = self._verify_record(record)
+            if current.entry is None:
+                raise RecoveryError("Cannot export a corrupt recovery entry")
+
+            target = _absolute_path(destination)
+            workspace_root = current.entry.workspace_root
+            _validate_workspace_path(target, workspace_root)
+            _validate_target_path(target, workspace_root)
+            try:
+                expected = snapshot_file(target)
+                if expected.exists:
+                    raise RecoveryError(f"Recovery export destination already exists: {target}")
+                return atomic_save(
+                    target,
+                    current.entry.text,
+                    encoding=current.entry.encoding,
+                    expected=expected,
+                )
+            except (OSError, PersistenceError) as error:
+                raise RecoveryError(f"Cannot export recovery draft to {target}: {error}") from error
+
+    def cleanup_quarantined(
+        self,
+        *,
+        before: datetime,
+        workspace_root: Path | None = None,
+    ) -> RecoveryRetentionResult:
+        """Explicitly delete valid quarantined entries older than an aware cutoff."""
+        if before.tzinfo is None or before.utcoffset() is None:
+            raise RecoveryError("Recovery retention cutoff must include a timezone")
+
+        selected = tuple(
+            record
+            for record in self.list_quarantined(workspace_root)
+            if record.entry is not None and record.entry.updated_at < before
+        )
+        outcomes: list[RecoveryRetentionOutcome] = []
+        for record in selected:
+            assert record.entry is not None
+            try:
+                self.delete_quarantined(record)
+            except RecoveryError as error:
+                outcomes.append(
+                    RecoveryRetentionOutcome(
+                        journal_path=record.journal_path,
+                        document_path=record.entry.document_path,
+                        updated_at=record.entry.updated_at,
+                        deleted=False,
+                        error=str(error),
+                    )
+                )
+            else:
+                outcomes.append(
+                    RecoveryRetentionOutcome(
+                        journal_path=record.journal_path,
+                        document_path=record.entry.document_path,
+                        updated_at=record.entry.updated_at,
+                        deleted=True,
+                    )
+                )
+        return RecoveryRetentionResult(cutoff=before, outcomes=tuple(outcomes))
 
     def delete(self, document_path: Path) -> None:
         """Delete a recovery journal after a successful save or explicit discard."""

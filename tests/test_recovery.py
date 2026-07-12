@@ -34,6 +34,36 @@ _BASE_SNAPSHOT = FileSnapshot(
 )
 
 
+def _quarantine_draft(
+    journal: RecoveryJournal,
+    *,
+    document_path: Path,
+    workspace_root: Path,
+    text: str,
+    encoding: str = "utf-8",
+    updated_at: datetime | None = None,
+) -> RecoveryRecord:
+    journal.save(
+        document_path=document_path,
+        workspace_root=workspace_root,
+        text=text,
+        encoding=encoding,
+        base_snapshot=FileSnapshot.missing(),
+    )
+    active_path = journal.path_for(document_path)
+    if updated_at is not None:
+        payload = json.loads(active_path.read_text(encoding="utf-8"))
+        payload["updated_at"] = updated_at.isoformat()
+        active_path.write_text(json.dumps(payload), encoding="utf-8")
+    active_record = next(
+        record for record in journal.list_entries() if record.journal_path == active_path
+    )
+    quarantine_path = journal.quarantine(active_record)
+    return next(
+        record for record in journal.list_quarantined() if record.journal_path == quarantine_path
+    )
+
+
 def test_recovery_round_trip_preserves_exact_source(tmp_path: Path) -> None:
     state_root = tmp_path / "state"
     workspace = tmp_path / "notes"
@@ -834,6 +864,245 @@ def test_quarantine_inventory_rejects_symlinked_storage(tmp_path: Path) -> None:
 
     with pytest.raises(RecoveryError, match="not a real directory"):
         journal.list_quarantined()
+
+
+def test_export_quarantined_preserves_exact_source_and_archive(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    journal = RecoveryJournal(tmp_path / "state")
+    text = "# Café\r\n\r\n東京\nno final newline"
+    record = _quarantine_draft(
+        journal,
+        document_path=workspace / "original.md",
+        workspace_root=workspace,
+        text=text,
+        encoding="utf-8-sig",
+    )
+    archived_bytes = record.journal_path.read_bytes()
+    destination = workspace / "exports" / "recovered.markdown"
+    destination.parent.mkdir()
+
+    result = journal.export_quarantined(record, destination=destination)
+
+    assert destination.read_bytes() == text.encode("utf-8-sig")
+    assert result.snapshot.exists
+    assert result.snapshot.digest is not None
+    assert record.journal_path.read_bytes() == archived_bytes
+    assert journal.list_quarantined(workspace) == (record,)
+
+
+def test_export_quarantined_never_overwrites_an_existing_file(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    journal = RecoveryJournal(tmp_path / "state")
+    record = _quarantine_draft(
+        journal,
+        document_path=workspace / "original.md",
+        workspace_root=workspace,
+        text="archived draft",
+    )
+    archived_bytes = record.journal_path.read_bytes()
+    destination = workspace / "occupied.md"
+    destination.write_text("existing document", encoding="utf-8")
+
+    with pytest.raises(RecoveryError, match="destination already exists"):
+        journal.export_quarantined(record, destination=destination)
+
+    assert destination.read_text(encoding="utf-8") == "existing document"
+    assert record.journal_path.read_bytes() == archived_bytes
+
+
+def test_export_quarantined_refuses_entry_changed_after_listing(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    journal = RecoveryJournal(tmp_path / "state")
+    record = _quarantine_draft(
+        journal,
+        document_path=workspace / "original.md",
+        workspace_root=workspace,
+        text="listed draft",
+    )
+    replacement_bytes = record.journal_path.read_bytes().replace(b"listed", b"newest")
+    record.journal_path.write_bytes(replacement_bytes)
+    destination = workspace / "recovered.md"
+
+    with pytest.raises(RecoveryError, match="changed after it was listed"):
+        journal.export_quarantined(record, destination=destination)
+
+    assert not destination.exists()
+    assert record.journal_path.read_bytes() == replacement_bytes
+
+
+@pytest.mark.parametrize(
+    "destination_name, message",
+    [
+        ("../outside.md", "outside its workspace"),
+        ("recovered.txt", "not Markdown"),
+    ],
+)
+def test_export_quarantined_rejects_invalid_destination(
+    tmp_path: Path,
+    destination_name: str,
+    message: str,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    journal = RecoveryJournal(tmp_path / "state")
+    record = _quarantine_draft(
+        journal,
+        document_path=workspace / "original.md",
+        workspace_root=workspace,
+        text="keep archived",
+    )
+
+    with pytest.raises(RecoveryError, match=message):
+        journal.export_quarantined(
+            record,
+            destination=workspace / destination_name,
+        )
+
+    assert record.journal_path.exists()
+
+
+def test_export_quarantined_rejects_a_symlink_escape(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (workspace / "linked").symlink_to(outside, target_is_directory=True)
+    journal = RecoveryJournal(tmp_path / "state")
+    record = _quarantine_draft(
+        journal,
+        document_path=workspace / "original.md",
+        workspace_root=workspace,
+        text="keep archived",
+    )
+
+    with pytest.raises(RecoveryError, match="resolves outside its workspace"):
+        journal.export_quarantined(
+            record,
+            destination=workspace / "linked" / "escaped.md",
+        )
+
+    assert not (outside / "escaped.md").exists()
+    assert record.journal_path.exists()
+
+
+def test_export_quarantined_rejects_corrupt_record(tmp_path: Path) -> None:
+    journal = RecoveryJournal(tmp_path / "state")
+    quarantine_root = journal.state_root / "quarantine"
+    quarantine_root.mkdir(parents=True)
+    corrupt_path = quarantine_root / f"{'d' * 64}.json"
+    corrupt_path.write_bytes(b"not JSON")
+    (record,) = journal.list_quarantined()
+
+    with pytest.raises(RecoveryError, match="Cannot export a corrupt recovery entry"):
+        journal.export_quarantined(record, destination=tmp_path / "recovered.md")
+
+    assert corrupt_path.read_bytes() == b"not JSON"
+
+
+def test_retention_cleanup_requires_a_timezone_aware_cutoff(tmp_path: Path) -> None:
+    journal = RecoveryJournal(tmp_path / "state")
+
+    with pytest.raises(RecoveryError, match="cutoff must include a timezone"):
+        journal.cleanup_quarantined(before=datetime(2026, 7, 12))
+
+
+def test_retention_cleanup_selects_only_valid_old_workspace_entries(
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(days=30)
+    workspace = tmp_path / "workspace"
+    other_workspace = tmp_path / "other"
+    workspace.mkdir()
+    other_workspace.mkdir()
+    journal = RecoveryJournal(tmp_path / "state")
+    old_record = _quarantine_draft(
+        journal,
+        document_path=workspace / "old.md",
+        workspace_root=workspace,
+        text="old",
+        updated_at=now - timedelta(days=90),
+    )
+    recent_record = _quarantine_draft(
+        journal,
+        document_path=workspace / "recent.md",
+        workspace_root=workspace,
+        text="recent",
+        updated_at=cutoff,
+    )
+    other_record = _quarantine_draft(
+        journal,
+        document_path=other_workspace / "other.md",
+        workspace_root=other_workspace,
+        text="other",
+        updated_at=now - timedelta(days=90),
+    )
+    corrupt_path = journal.state_root / "quarantine" / f"{'f' * 64}.json"
+    corrupt_path.write_bytes(b"corrupt quarantine")
+
+    result = journal.cleanup_quarantined(before=cutoff, workspace_root=workspace)
+
+    assert result.cutoff == cutoff
+    assert result.selected_count == 1
+    assert result.deleted_count == 1
+    assert result.failed_count == 0
+    assert len(result.outcomes) == 1
+    assert result.outcomes[0].document_path == workspace / "old.md"
+    assert result.outcomes[0].deleted
+    assert result.outcomes[0].error is None
+    assert not old_record.journal_path.exists()
+    assert recent_record.journal_path.exists()
+    assert other_record.journal_path.exists()
+    assert corrupt_path.read_bytes() == b"corrupt quarantine"
+
+
+def test_retention_cleanup_reports_partial_failures_and_continues(
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(UTC)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    journal = RecoveryJournal(tmp_path / "state")
+    first = _quarantine_draft(
+        journal,
+        document_path=workspace / "first.md",
+        workspace_root=workspace,
+        text="first",
+        updated_at=now - timedelta(days=90),
+    )
+    second = _quarantine_draft(
+        journal,
+        document_path=workspace / "second.md",
+        workspace_root=workspace,
+        text="second",
+        updated_at=now - timedelta(days=60),
+    )
+    original_delete = journal.delete_quarantined
+
+    def delete_with_one_failure(record: RecoveryRecord) -> None:
+        if record.journal_path == first.journal_path:
+            raise RecoveryError("injected retention failure")
+        original_delete(record)
+
+    with patch.object(journal, "delete_quarantined", side_effect=delete_with_one_failure):
+        result = journal.cleanup_quarantined(
+            before=now - timedelta(days=30),
+            workspace_root=workspace,
+        )
+
+    outcomes = {outcome.document_path: outcome for outcome in result.outcomes}
+    assert result.selected_count == 2
+    assert result.deleted_count == 1
+    assert result.failed_count == 1
+    assert not outcomes[workspace / "first.md"].deleted
+    assert outcomes[workspace / "first.md"].error == "injected retention failure"
+    assert outcomes[workspace / "second.md"].deleted
+    assert outcomes[workspace / "second.md"].error is None
+    assert first.journal_path.exists()
+    assert not second.journal_path.exists()
 
 
 def test_retarget_preserves_draft_and_timestamp(tmp_path: Path) -> None:
