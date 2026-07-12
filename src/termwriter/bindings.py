@@ -10,6 +10,7 @@ from termwriter.config import (
     BINDING_ID_COMMAND_PALETTE,
     BINDING_ID_FIND_FILE,
     BINDING_ID_QUIT,
+    BINDING_ID_RECENT_DOCUMENTS,
     BINDING_ID_REDO,
     BINDING_ID_SAVE,
     BINDING_ID_SEARCH_TEXT,
@@ -48,6 +49,13 @@ APP_BINDINGS: list[BindingType] = [
         "Find file",
         priority=True,
         id=BINDING_ID_FIND_FILE,
+    ),
+    Binding(
+        DEFAULT_KEYBINDINGS[BINDING_ID_RECENT_DOCUMENTS],
+        "open_recent",
+        "Recent",
+        priority=True,
+        id=BINDING_ID_RECENT_DOCUMENTS,
     ),
     Binding(
         DEFAULT_KEYBINDINGS[BINDING_ID_SEARCH_TEXT],
@@ -102,6 +110,7 @@ _SHORTCUTS = (
     (BINDING_ID_QUIT, "Quit safely"),
     (BINDING_ID_TOGGLE_EXPLORER, "Show or hide files"),
     (BINDING_ID_FIND_FILE, "Find a Markdown file"),
+    (BINDING_ID_RECENT_DOCUMENTS, "Open a recent document"),
     (BINDING_ID_SEARCH_TEXT, "Search workspace text (literal / fuzzy / word / regex)"),
     (BINDING_ID_TOGGLE_PREVIEW, "Show or hide preview; switch pane when narrow"),
     (BINDING_ID_UNDO, "Undo"),
@@ -174,7 +183,7 @@ def format_command_help(
         )
         + "\n\n"
         + f"Press {palette} in the TUI to search all commands, including:\n"
-        + "  Save, find file, search workspace text, toggle files, toggle preview,\n"
+        + "  Save, find file, open recent, search workspace text, toggle files, toggle preview,\n"
         + "  undo, redo,\n"
         + "  reload configuration, manage recovery drafts, shortcut help,\n"
         + "  Markdown syntax help, and safe quit."

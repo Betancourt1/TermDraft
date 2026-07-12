@@ -21,6 +21,7 @@ BINDING_ID_SAVE = "save"
 BINDING_ID_QUIT = "quit"
 BINDING_ID_TOGGLE_EXPLORER = "toggle_explorer"
 BINDING_ID_FIND_FILE = "find_file"
+BINDING_ID_RECENT_DOCUMENTS = "recent_documents"
 BINDING_ID_SEARCH_TEXT = "search_text"
 BINDING_ID_TOGGLE_PREVIEW = "toggle_preview"
 BINDING_ID_UNDO = "undo"
@@ -34,6 +35,7 @@ DEFAULT_KEYBINDINGS: Mapping[str, str] = MappingProxyType(
         BINDING_ID_QUIT: "ctrl+q",
         BINDING_ID_TOGGLE_EXPLORER: "ctrl+b",
         BINDING_ID_FIND_FILE: "ctrl+p",
+        BINDING_ID_RECENT_DOCUMENTS: "ctrl+o",
         BINDING_ID_SEARCH_TEXT: "ctrl+shift+f",
         BINDING_ID_TOGGLE_PREVIEW: "ctrl+e",
         BINDING_ID_UNDO: "ctrl+z,super+z",
@@ -67,6 +69,7 @@ show_line_numbers = true
 # quit = "ctrl+q"
 # toggle_explorer = "ctrl+b"
 # find_file = "ctrl+p"
+# recent_documents = "ctrl+o"
 # search_text = "ctrl+shift+f"
 # toggle_preview = "ctrl+e"
 # undo = "ctrl+z,super+z"

@@ -47,6 +47,7 @@ from termwriter.screens.dialogs import (
     UnsavedChangesDialog,
     UnsavedDecision,
 )
+from termwriter.screens.recent_documents import RecentDocumentsDialog
 from termwriter.services.external_changes import (
     DiskProbe,
     ExternalChange,
@@ -178,6 +179,9 @@ class TermWriterApp(App[None]):
             view.path: view for view in (() if session is None else session.documents)
         }
         self._session_active_path = None if session is None else session.active_path
+        self._recent_paths = [view.path for view in (() if session is None else session.documents)]
+        if self._session_active_path is not None:
+            self._mark_document_recent(self._session_active_path)
         self.workspace_files: tuple[Path, ...] = ()
         self._preview_timer: Timer | None = None
         self._external_watch_timer: Timer | None = None
@@ -409,6 +413,26 @@ class TermWriterApp(App[None]):
             scroll_x=cursor.scroll_x,
             scroll_y=cursor.scroll_y,
         )
+        self._mark_document_recent(document.path)
+
+    def _mark_document_recent(self, path: Path) -> None:
+        """Move one exact workspace path to the front of the MRU order."""
+        self._recent_paths = [
+            path,
+            *(candidate for candidate in self._recent_paths if candidate != path),
+        ]
+
+    def _recent_document_paths(self) -> tuple[Path, ...]:
+        """Return still-valid MRU entries without surfacing stale session paths."""
+        available: list[Path] = []
+        for path in self._recent_paths:
+            try:
+                safe_path = self.workspace.validate_document_path(path)
+            except WorkspaceError:
+                continue
+            if safe_path not in available:
+                available.append(safe_path)
+        return tuple(available)
 
     def _persist_session(self) -> None:
         """Best-effort persistence for view state; Markdown is never included."""
@@ -421,7 +445,8 @@ class TermWriterApp(App[None]):
             active_path=document.path,
             documents=tuple(
                 self._session_views[path]
-                for path in sorted(self._session_views, key=lambda item: item.as_posix())
+                for path in self._recent_paths
+                if path in self._session_views
             ),
         )
         try:
@@ -1504,6 +1529,7 @@ class TermWriterApp(App[None]):
         document = ticket.document
         previous_path = document.path
         previous_view = self._session_views.pop(previous_path, None)
+        self._recent_paths = [path for path in self._recent_paths if path != previous_path]
         self._clear_recovery(previous_path)
         document.retarget(outcome.target)
         if previous_view is not None:
@@ -1825,6 +1851,24 @@ class TermWriterApp(App[None]):
             self._handle_search_result,
         )
 
+    def action_open_recent(self) -> None:
+        if self._has_modal:
+            return
+        self._sync_editor_state()
+        paths = self._recent_document_paths()
+        if not paths:
+            self.notify("No recent Markdown documents are available", severity="warning")
+            return
+        active_path = None if self.document is None else self.document.path
+        self.push_screen(
+            RecentDocumentsDialog(paths, self.workspace.root, active_path),
+            self._handle_recent_document,
+        )
+
+    def _handle_recent_document(self, path: Path | None) -> None:
+        if path is not None:
+            self._request_open(path)
+
     def _handle_search_result(self, path: Path | None) -> None:
         if path is not None:
             self._request_open(path)
@@ -1910,6 +1954,11 @@ class TermWriterApp(App[None]):
         yield SystemCommand("Save document", "Save the open Markdown source", self.action_save)
         yield SystemCommand(
             "Find file", "Search Markdown paths in the workspace", self.action_find_file
+        )
+        yield SystemCommand(
+            "Open recent document",
+            "Switch to a recently used Markdown document",
+            self.action_open_recent,
         )
         yield SystemCommand(
             "Search workspace text",

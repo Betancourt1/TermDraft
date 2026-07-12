@@ -35,7 +35,7 @@ class DocumentViewState:
 
 @dataclass(frozen=True, slots=True)
 class SessionState:
-    """The last active document and known views for one workspace."""
+    """The active document and views in most-recently-used order."""
 
     workspace_root: Path
     active_path: Path | None
