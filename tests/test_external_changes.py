@@ -56,6 +56,23 @@ def test_same_content_replacement_is_detected_by_identity(tmp_path: Path) -> Non
     assert change.kind is ExternalChangeKind.MODIFIED
 
 
+def test_metadata_only_touch_refreshes_snapshot_without_a_content_conflict(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("same", encoding="utf-8")
+    document = open_document(path)
+    original_mtime = document.snapshot.mtime_ns
+    assert original_mtime is not None
+    os.utime(path, ns=(path.stat().st_atime_ns, original_mtime + 1_000_000))
+
+    change = detect_external_change(document)
+
+    assert change.kind is ExternalChangeKind.UNCHANGED
+    assert change.snapshot is not None
+    assert change.snapshot.mtime_ns != original_mtime
+
+
 def test_local_and_external_modifications_are_a_conflict(tmp_path: Path) -> None:
     path = tmp_path / "note.md"
     path.write_text("base", encoding="utf-8")

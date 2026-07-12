@@ -12,7 +12,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 1
+from termwriter.models.document import FileSnapshot
+
+_SCHEMA_VERSION = 2
 _SUPPORTED_ENCODINGS = {"utf-8", "utf-8-sig"}
 
 
@@ -28,8 +30,16 @@ class RecoveryEntry:
     workspace_root: Path
     text: str
     encoding: str
-    base_digest: str | None
+    base_snapshot: FileSnapshot
     updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryScan:
+    """Validated workspace entries plus journals that could not be trusted."""
+
+    entries: tuple[RecoveryEntry, ...]
+    warnings: tuple[str, ...]
 
 
 def default_recovery_root() -> Path:
@@ -63,7 +73,7 @@ class RecoveryJournal:
         workspace_root: Path,
         text: str,
         encoding: str,
-        base_digest: str | None,
+        base_snapshot: FileSnapshot,
     ) -> RecoveryEntry:
         """Atomically record the current source without touching the Markdown file."""
         entry = RecoveryEntry(
@@ -71,7 +81,7 @@ class RecoveryJournal:
             workspace_root=_absolute_path(workspace_root),
             text=text,
             encoding=encoding,
-            base_digest=base_digest,
+            base_snapshot=base_snapshot,
             updated_at=datetime.now(UTC),
         )
         _validate_entry(entry)
@@ -127,27 +137,48 @@ class RecoveryJournal:
         expected_path = _absolute_path(document_path)
         journal_path = self.path_for(expected_path)
         try:
-            data = journal_path.read_bytes()
+            entry = _read_entry(journal_path)
         except FileNotFoundError:
             return None
         except OSError as error:
             raise RecoveryError(
                 f"Cannot read recovery journal for {expected_path}: {error}"
             ) from error
-
-        try:
-            payload = json.loads(data.decode("utf-8"))
-            entry = _entry_from_payload(payload)
-        except (UnicodeDecodeError, json.JSONDecodeError, RecoveryError) as error:
-            if isinstance(error, RecoveryError):
-                raise
-            raise RecoveryError(f"Invalid recovery journal for {expected_path}: {error}") from error
         if entry.document_path != expected_path:
             raise RecoveryError(
                 f"Recovery journal path mismatch: expected {expected_path}, "
                 f"found {entry.document_path}"
             )
         return entry
+
+    def scan_workspace(self, workspace_root: Path) -> RecoveryScan:
+        """Find trusted journals for a workspace, including entries whose file vanished."""
+        expected_root = _absolute_path(workspace_root)
+        try:
+            journal_paths = sorted(self.state_root.glob("*.json"))
+        except OSError as error:
+            return RecoveryScan((), (f"Cannot scan recovery directory: {error}",))
+
+        entries: list[RecoveryEntry] = []
+        warnings: list[str] = []
+        for journal_path in journal_paths:
+            try:
+                if journal_path.is_symlink() or not journal_path.is_file():
+                    raise RecoveryError("Recovery entry is not a regular file")
+                entry = _read_entry(journal_path)
+                if self.path_for(entry.document_path) != journal_path:
+                    raise RecoveryError("Recovery journal filename does not match its document")
+                if entry.workspace_root != expected_root:
+                    continue
+                entry.document_path.relative_to(expected_root)
+                if entry.document_path.suffix.casefold() not in {".md", ".markdown"}:
+                    raise RecoveryError("Recovery document is not Markdown")
+            except (OSError, RecoveryError, ValueError) as error:
+                warnings.append(f"Cannot use recovery entry {journal_path.name}: {error}")
+                continue
+            entries.append(entry)
+        entries.sort(key=lambda entry: entry.updated_at, reverse=True)
+        return RecoveryScan(tuple(entries), tuple(warnings))
 
     def delete(self, document_path: Path) -> None:
         """Delete a recovery journal after a successful save or explicit discard."""
@@ -179,7 +210,7 @@ def _serialize(entry: RecoveryEntry) -> bytes:
         "workspace_root": str(entry.workspace_root),
         "text": entry.text,
         "encoding": entry.encoding,
-        "base_digest": entry.base_digest,
+        "base_snapshot": _snapshot_payload(entry.base_snapshot),
         "updated_at": entry.updated_at.isoformat(),
     }
     try:
@@ -194,11 +225,22 @@ def _serialize(entry: RecoveryEntry) -> bytes:
         raise RecoveryError(f"Recovery entry cannot be encoded as UTF-8 JSON: {error}") from error
 
 
+def _read_entry(journal_path: Path) -> RecoveryEntry:
+    data = journal_path.read_bytes()
+    try:
+        payload = json.loads(data.decode("utf-8"))
+        return _entry_from_payload(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecoveryError) as error:
+        if isinstance(error, RecoveryError):
+            raise
+        raise RecoveryError(f"Invalid recovery journal {journal_path.name}: {error}") from error
+
+
 def _entry_from_payload(payload: Any) -> RecoveryEntry:
     if not isinstance(payload, dict):
         raise RecoveryError("Invalid recovery journal: expected a JSON object")
     version = payload.get("version")
-    if not isinstance(version, int) or isinstance(version, bool) or version != _SCHEMA_VERSION:
+    if not isinstance(version, int) or isinstance(version, bool) or version not in {1, 2}:
         raise RecoveryError("Unsupported recovery journal version")
 
     required_types: dict[str, type[object]] = {
@@ -211,9 +253,16 @@ def _entry_from_payload(payload: Any) -> RecoveryEntry:
     for key, expected_type in required_types.items():
         if not isinstance(payload.get(key), expected_type):
             raise RecoveryError(f"Invalid recovery journal field: {key}")
-    base_digest = payload.get("base_digest")
-    if base_digest is not None and not isinstance(base_digest, str):
-        raise RecoveryError("Invalid recovery journal field: base_digest")
+    if version == 1:
+        base_digest = payload.get("base_digest")
+        if base_digest is not None and not isinstance(base_digest, str):
+            raise RecoveryError("Invalid recovery journal field: base_digest")
+        base_snapshot = FileSnapshot(
+            exists=base_digest is not None,
+            digest=base_digest,
+        )
+    else:
+        base_snapshot = _snapshot_from_payload(payload.get("base_snapshot"))
 
     try:
         updated_at = datetime.fromisoformat(payload["updated_at"])
@@ -224,7 +273,7 @@ def _entry_from_payload(payload: Any) -> RecoveryEntry:
         workspace_root=Path(payload["workspace_root"]),
         text=payload["text"],
         encoding=payload["encoding"],
-        base_digest=base_digest,
+        base_snapshot=base_snapshot,
         updated_at=updated_at,
     )
     _validate_entry(entry)
@@ -238,13 +287,65 @@ def _validate_entry(entry: RecoveryEntry) -> None:
         raise RecoveryError("Recovery workspace root must be absolute")
     if entry.encoding not in _SUPPORTED_ENCODINGS:
         raise RecoveryError(f"Unsupported recovery encoding: {entry.encoding}")
-    if entry.base_digest is not None and (
-        len(entry.base_digest) != 64
-        or any(character not in "0123456789abcdef" for character in entry.base_digest)
-    ):
-        raise RecoveryError("Recovery base digest must be a lowercase SHA-256 digest")
+    _validate_snapshot(entry.base_snapshot)
     if entry.updated_at.tzinfo is None or entry.updated_at.utcoffset() is None:
         raise RecoveryError("Recovery updated timestamp must include a timezone")
+
+
+def _snapshot_payload(snapshot: FileSnapshot) -> dict[str, object]:
+    return {
+        "exists": snapshot.exists,
+        "digest": snapshot.digest,
+        "size": snapshot.size,
+        "mtime_ns": snapshot.mtime_ns,
+        "mode": snapshot.mode,
+        "device": snapshot.device,
+        "inode": snapshot.inode,
+        "parent_device": snapshot.parent_device,
+        "parent_inode": snapshot.parent_inode,
+    }
+
+
+def _snapshot_from_payload(payload: Any) -> FileSnapshot:
+    if not isinstance(payload, dict) or not isinstance(payload.get("exists"), bool):
+        raise RecoveryError("Invalid recovery journal field: base_snapshot")
+    optional_fields = (
+        "size",
+        "mtime_ns",
+        "mode",
+        "device",
+        "inode",
+        "parent_device",
+        "parent_inode",
+    )
+    values: dict[str, int | None] = {}
+    for field_name in optional_fields:
+        value = payload.get(field_name)
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
+            raise RecoveryError(f"Invalid recovery snapshot field: {field_name}")
+        values[field_name] = value
+    digest = payload.get("digest")
+    if digest is not None and not isinstance(digest, str):
+        raise RecoveryError("Invalid recovery snapshot field: digest")
+    snapshot = FileSnapshot(
+        exists=payload["exists"],
+        digest=digest,
+        **values,
+    )
+    _validate_snapshot(snapshot)
+    return snapshot
+
+
+def _validate_snapshot(snapshot: FileSnapshot) -> None:
+    digest = snapshot.digest
+    if snapshot.exists and (
+        digest is None
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise RecoveryError("Recovery base digest must be a lowercase SHA-256 digest")
+    if not snapshot.exists and digest is not None:
+        raise RecoveryError("A missing recovery baseline cannot have a digest")
 
 
 def _sync_directory(directory: Path) -> None:

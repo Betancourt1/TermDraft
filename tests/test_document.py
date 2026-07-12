@@ -2,7 +2,12 @@
 
 from pathlib import Path
 
-from termwriter.models.document import Document, FileSnapshot
+from termwriter.models.document import (
+    Document,
+    FileSnapshot,
+    LineEndingStyle,
+    analyze_line_endings,
+)
 
 
 def make_document(text: str = "saved") -> Document:
@@ -44,3 +49,55 @@ def test_word_count_handles_markdown_and_unicode() -> None:
 
 def test_empty_document_has_no_words() -> None:
     assert make_document("").word_count == 0
+
+
+def test_line_ending_analysis_detects_uniform_and_mixed_sources() -> None:
+    assert analyze_line_endings("one\ntwo\n") == (LineEndingStyle.LF, "\n")
+    assert analyze_line_endings("one\r\ntwo\r\n") == (LineEndingStyle.CRLF, "\r\n")
+    assert analyze_line_endings("one\rtwo\r") == (LineEndingStyle.CR, "\r")
+    assert analyze_line_endings("one\r\ntwo\n") == (LineEndingStyle.MIXED, "\r\n")
+    assert analyze_line_endings("one\ntwo\r\n") == (LineEndingStyle.MIXED, "\r\n")
+    assert analyze_line_endings("no separator") == (LineEndingStyle.NONE, None)
+
+
+def test_document_exposes_mixed_line_ending_normalization_target() -> None:
+    document = make_document("one\r\ntwo\n")
+
+    assert document.has_mixed_line_endings
+    assert document.line_ending_label == "MIXED→CRLF"
+
+    document.update_text("one\r\ntwo\r\n")
+    assert document.line_ending_label == "CRLF"
+
+    document.update_text(document.saved_text)
+    assert document.line_ending_label == "MIXED→CRLF"
+
+    document.update_text("one\r\ntwo\r\n")
+    document.mark_saved(FileSnapshot(exists=True, digest="normalized"))
+
+    assert not document.has_mixed_line_endings
+    assert document.line_ending_label == "CRLF"
+
+
+def test_recovered_draft_tracks_whether_disk_changed_since_its_baseline() -> None:
+    document = make_document("disk")
+    document.snapshot = FileSnapshot(exists=True, digest="current")
+
+    document.restore_recovery(
+        "draft",
+        "utf-8",
+        FileSnapshot(exists=True, digest="older", device=1, inode=1),
+    )
+
+    assert document.dirty
+    assert document.recovery_saved
+    assert document.recovery_conflict
+    assert document.conflict
+    assert document.last_save_status == "Recovered conflict"
+
+    document.accept_unchanged_snapshot(FileSnapshot(exists=True, digest="current"))
+    assert document.conflict
+
+    document.mark_saved(FileSnapshot(exists=True, digest="saved"))
+    assert not document.recovery_saved
+    assert not document.recovery_conflict

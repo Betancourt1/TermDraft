@@ -26,7 +26,8 @@ Document  ───────── source text ─────────►
 TextArea source edits
    │
    ├──── load / fingerprint ───────────── Persistence
-   └──── save / conflict check ────────── External-change classifier
+   ├──── scheduled dirty source ───────── Recovery journal
+   └──── save / periodic poll ─────────── External-change classifier
 ```
 
 ## Document source of truth
@@ -39,19 +40,24 @@ TextArea source edits
 - the last disk `FileSnapshot`;
 - UTF-8 versus UTF-8-with-BOM encoding;
 - cursor and scroll coordinates;
-- conflict and last-save status.
+- conflict and last-save status;
+- current line-ending classification and normalization target;
+- whether a draft is journaled or recovered against a conflicting baseline.
 
-`dirty` is computed as `text != saved_text`; it is not an independently mutable flag. Reverting an
-edit to the baseline therefore clears dirty state without a special code path.
+`dirty` is computed as `text != saved_text` or an unresolved recovered-baseline conflict; it is not
+an independently mutable flag. Reverting an ordinary edit to the baseline therefore clears dirty
+state without a special code path.
 
 The `TextArea` is the editable view, not a second domain model. Its `Changed` message updates
 `Document.text`; selection changes update cursor and scroll state. Before save or transition,
 the coordinator also reads the widget synchronously so a queued message cannot omit the latest
 keypress.
 
-Textual reconstructs multiline text with the first line separator it detects. TermWriter retains a
-separate editor baseline so merely loading or focusing a deliberately mixed-ending file does not
-dirty or rewrite it. Once the user makes a real edit, Textual's normalized source becomes the local
+Textual reconstructs multiline text by preferring CRLF when present, then LF, then CR. TermWriter retains
+both Textual's normalized editor baseline and the exact source represented by that baseline. Merely
+loading, recovering, focusing, or saving a deliberately mixed-ending source therefore does not dirty
+or rewrite it. Before the editor becomes active, a modal identifies the normalization target and
+requires consent. Once the user makes a real edit, Textual's normalized source becomes the local
 source. Uniform LF and CRLF are preserved.
 
 ## Editor and preview flow
@@ -60,9 +66,11 @@ Opening a file is transactional at the application level:
 
 1. `Workspace.validate_document_path` revalidates containment, type, suffix, and symlink policy.
 2. `load_file` reads and decodes the complete file into a temporary `LoadedFile` value.
-3. Only after loading succeeds does the app replace its active `Document`.
-4. `TextArea.load_text` runs while `TextArea.Changed` is suppressed and clears prior undo history.
-5. The editor baseline, explorer label, preview revision, focus, and status are updated.
+3. A valid recovery journal is offered without mutating the loaded disk baseline.
+4. If the selected current source has mixed separators, normalization consent is required.
+5. Only after those decisions does the app replace its active `Document`.
+6. `TextArea.load_text` runs while `TextArea.Changed` is suppressed and clears prior undo history.
+7. Exact and normalized editor baselines, explorer label, preview revision, focus, and status update.
 
 If loading fails, the previously active document remains in memory.
 
@@ -132,6 +140,43 @@ after the second fingerprint and immediately before `os.replace`. Ordinary cross
 do not provide a version-conditional rename. The implementation narrows and documents this window
 instead of claiming an absolute guarantee.
 
+## Crash-recovery journal
+
+`services/recovery.py` stores optional recovery state outside the workspace. The filename is an
+opaque SHA-256 of the absolute document path. A versioned JSON entry contains the document path,
+workspace root, exact current source, UTF-8 encoding, the saved baseline fingerprint and file/parent
+identity, and a timezone-aware update time. It never replaces or changes a Markdown file.
+
+Each journal update creates a mode-0600 temporary file in the recovery directory, writes exact UTF-8
+JSON, flushes and `fsync`s it, publishes it with same-directory `os.replace`, and attempts to `fsync`
+the directory. Failed pre-publication writes clean the temporary entry and retain the prior complete
+journal. The state root is injectable so tests never use personal files.
+
+`TermWriterApp` starts a 500 ms deadline after the first dirty edit. Later edits update the in-memory
+payload without moving that deadline, so sustained typing cannot postpone recovery indefinitely.
+Successful Markdown saves, explicit discards, and reloads delete the entry. The status bar shows
+`RECOVERY STORED` only after journal publication succeeds.
+
+On open, Restore draft keeps the freshly loaded Markdown source as `saved_text` and installs the
+journal source as current `text`, so dirty state remains derived rather than forced. If the journal's
+baseline content or file/parent identity differs from current disk, `recovery_conflict` prevents
+Ctrl+S publication even though the disk was freshly loaded; the user must choose Save As, Reload, or
+Cancel. The original baseline is retained when a recovered draft is edited and re-journaled, so a
+second crash cannot erase the conflict. Legacy digest-only entries have unknown origin and therefore
+fail closed as conflicts. Use disk version deletes the entry. Cancel opening changes neither version.
+
+When a workspace directory starts without an explicit initial file, the journal scanner validates
+hashed filenames, entry schemas, workspace containment, and Markdown suffixes. Entries whose source
+path is missing, no longer a regular file, inaccessible, or invalid UTF-8 are offered as orphan
+recovery. Restoring one installs an unavailable-path conflict: Ctrl+S cannot recreate or replace the
+original name, while Save As can publish a new workspace-relative copy. Corrupt entries are skipped
+with a warning; entries belonging to another workspace are ignored.
+
+The journal narrows crash loss but is not autosave or history. The 500 ms window, state-directory
+write failures, forced termination during the timer, and storage failure can still lose unsaved text.
+Journal contents are plaintext source protected by ordinary per-user directory and mode-0600 file
+permissions.
+
 ## External changes and transitions
 
 `detect_external_change` returns one of:
@@ -142,9 +187,11 @@ instead of claiming an absolute guarantee.
 - `CONFLICT`: disk and local document both changed;
 - `INACCESSIBLE`: the current disk state cannot be established.
 
-Checks run before save, before guarded file/quit transitions, and on `AppFocus` where the terminal
-supports focus events. Save and transition checks remain authoritative because focus events are not
-universal.
+Checks run before save, before guarded file/quit transitions, on `AppFocus`, and every two seconds
+through Textual's interval timer. The background path never opens a modal: it reloads a clean
+external edit, or marks dirty/deleted/inaccessible state as a persistent conflict with one warning.
+Polling pauses while a modal or continuation is active. Save and transition checks remain
+authoritative and revalidate immediately before acting.
 
 The `TermWriterApp` coordinator owns pending transition and save continuations. Typed modal callbacks
 implement these paths:
@@ -181,4 +228,5 @@ The implementation targets Textual 8.2.8 and relies on documented APIs:
 - [`Markdown`](https://textual.textualize.io/widgets/markdown/)
 - [`DirectoryTree`](https://textual.textualize.io/widgets/directory_tree/)
 - [screens and typed results](https://textual.textualize.io/guide/screens/)
+- [`MessagePump.set_interval`](https://textual.textualize.io/api/message_pump/#textual.message_pump.MessagePump.set_interval)
 - [Pilot testing](https://textual.textualize.io/guide/testing/)

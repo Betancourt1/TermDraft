@@ -27,6 +27,10 @@ class TermWriterStatusBar(Static):
         status.append(document.path.relative_to(root).as_posix())
         if document.dirty:
             status.append("  ● modified", style="bold yellow")
+        if document.recovery_saved:
+            status.append("  |  RECOVERY STORED", style="bold cyan")
+        if document.has_mixed_line_endings:
+            status.append(f"  |  {document.line_ending_label}", style="bold magenta")
         status.append(f"  |  {document.word_count} words")
         status.append(f"  |  Ln {document.cursor.line + 1}, Col {document.cursor.column + 1}")
         status.append(f"  |  {document.last_save_status}")

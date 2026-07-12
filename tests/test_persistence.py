@@ -145,6 +145,34 @@ def test_atomic_save_preserves_permission_bits(tmp_path: Path) -> None:
     assert path.stat().st_mode & 0o777 == 0o640
 
 
+def test_atomic_save_preserves_a_read_only_destination_mode(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("before", encoding="utf-8")
+    path.chmod(0o444)
+    loaded = load_file(path)
+
+    atomic_save(path, "after", encoding="utf-8", expected=loaded.snapshot)
+
+    assert path.read_text(encoding="utf-8") == "after"
+    assert path.stat().st_mode & 0o777 == 0o444
+
+
+def test_atomic_save_reports_directory_sync_limit_after_verified_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("before", encoding="utf-8")
+    loaded = load_file(path)
+    monkeypatch.setattr(persistence, "_sync_directory", lambda descriptor: False)
+
+    result = atomic_save(path, "after", encoding="utf-8", expected=loaded.snapshot)
+
+    assert path.read_text(encoding="utf-8") == "after"
+    assert result.warning is not None
+    assert "crash durability" in result.warning
+
+
 def test_atomic_save_rejects_concurrent_permission_tightening(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

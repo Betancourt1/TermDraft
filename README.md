@@ -10,7 +10,9 @@ The current release is a functional MVP focused on a dependable writing loop:
 - read a rendered preview without leaving the terminal;
 - find files quickly;
 - save through a same-directory temporary file;
-- detect external changes before saves and guarded transitions;
+- keep an atomic per-user crash-recovery journal for dirty source;
+- poll the active file for external changes while the application is running;
+- require consent before editing a file with mixed line endings;
 - require an explicit decision before leaving unsaved work.
 
 Future WYSIWYM block editing is designed in
@@ -26,7 +28,7 @@ Future WYSIWYM block editing is designed in
 │  projects/               │ Today I learned…           │ Today I learned…     │
 │   termwriter.md          │                            │                      │
 ├──────────────────────────┴────────────────────────────┴──────────────────────┤
-│ EDIT | journal/2026-07-11.md ● modified | 36 words | Ln 4, Col 8 | Loaded │
+│ EDIT | journal/2026-07-11.md ● modified | RECOVERY STORED | 36 words | Ln… │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -101,6 +103,21 @@ Ctrl+Shift+Z from Ctrl+Z; Ctrl+Y remains the portable redo binding.
 `Document` is the in-memory source of truth for the active file. The preview never writes back to
 the editor or model.
 
+The first dirty edit schedules a recovery write no more than 500 ms later; continued typing updates
+the pending payload without postponing that deadline. Each JSON entry is mode 0600, written through
+a same-directory temporary file, flushed, replaced, and followed by a directory `fsync`. On the next
+open, TermWriter offers Restore draft / Use disk version / Cancel opening. A recovered draft whose
+saved baseline no longer matches disk is marked as a conflict and cannot be written over the Markdown
+path with Ctrl+S; it must be saved under another name or the disk version must be reloaded. Successful
+saves and explicit discards remove the journal entry.
+Opening a workspace directory also scans trusted entries for Markdown paths that disappeared or can
+no longer be read safely; restoring one opens its draft in conflict state so it can only be kept
+through Save As.
+
+The journal is recovery state, not a document format or database. Markdown remains the source of
+truth. The default recovery location is `~/Library/Application Support/TermWriter/recovery` on
+macOS and `$XDG_STATE_HOME/termwriter/recovery` or `~/.local/state/termwriter/recovery` on Linux.
+
 An existing file save follows this sequence:
 
 1. hash the current disk bytes and compare them with the last loaded/saved fingerprint;
@@ -128,6 +145,17 @@ document dirty and stop the requested transition.
 If a clean open file disappears or becomes inaccessible, a guarded transition offers Save local as,
 Continue without copy, or Cancel. Ctrl+S never recreates the missing original path silently.
 
+The active file is also checked every two seconds. A clean external edit reloads safely and leaves a
+visible `Reloaded externally` status. A dirty external edit, deletion, or inaccessible path keeps the
+editor source intact, marks a persistent conflict, and shows one warning; only an explicit save or
+transition opens the decision dialog. Checks pause while another modal workflow is active.
+
+Mixed line endings are detected before the editor becomes active. TermWriter states the separator
+Textual will use and requires an explicit Edit and normalize decision. Cancel leaves the current
+document untouched. For a mixed file reloaded by the watcher, choosing Keep read-only requires
+reopening the file to opt in to editing later. Merely opening or saving without an edit preserves its
+exact bytes.
+
 ## Tests and quality checks
 
 ```bash
@@ -137,21 +165,25 @@ ruff check .
 mypy
 ```
 
-The suite covers the document model, UTF-8/BOM/LF/CRLF preservation, empty files, missing final
-newlines, atomic-save failures, permission bits, external conflicts, deleted files, workspace
+The suite covers the document model, UTF-8/BOM/LF/CRLF preservation, mixed-ending consent, empty
+files, missing final newlines, recovery round trips and failures, restart recovery, atomic-save
+failures, metadata and permission bits, watcher reload/conflict/deletion behavior, workspace
 filtering, symlinks, file search, CLI validation, and Textual Pilot workflows.
 
 ## Known limitations
 
 - One document is active at a time; there are no tabs or session restoration yet.
-- There is no autosave, journal, backup, or crash-recovery file. Normal Ctrl+Q is guarded, but forced
-  termination and power loss before a durable save cannot be recovered by TermWriter.
-- External changes are checked on save, guarded transitions, and supported terminal focus events.
-  There is no permanent filesystem watcher.
+- Recovery has a maximum 500 ms first-write delay, so termination before the deadline or a failed
+  journal write can lose the latest unsaved keystrokes. It is not version history, a backup, or an
+  autosave of the Markdown path. Recovery entries contain the draft's plaintext source in a private
+  per-user state directory.
+- The watcher polls only the active file every two seconds. It is not an operating-system event
+  watcher, and synchronous hashing can briefly pause input for unusually large files.
 - Files must be valid UTF-8, with or without a UTF-8 BOM.
-- Uniform LF and CRLF sources round-trip through edits. Textual uses the first detected separator;
-  after an edit, a file with deliberately mixed line endings is normalized to that separator.
-  An untouched mixed-ending file is not rewritten by Ctrl+S.
+- Uniform LF and CRLF sources round-trip through edits. Textual prefers CRLF when it is present,
+  otherwise LF and then CR. After explicit consent and an edit, a deliberately mixed file is
+  normalized to that separator.
+  An untouched mixed-ending file and an unedited recovered draft retain their exact separators.
 - Atomic replacement means the destination name never points to a partially written temporary file
   on normal local filesystems that honor same-filesystem `os.replace` semantics. It is not a
   universal guarantee for every network or unusual filesystem, and power-loss durability still
@@ -176,10 +208,10 @@ filtering, symlinks, file search, CLI validation, and Textual Pilot workflows.
 
 ## Near-term roadmap
 
-1. Add a portable filesystem watcher and an in-app reload indicator without weakening save checks.
-2. Add an explicit mixed-line-ending warning and normalization choice before the first edit/save.
-3. Preserve more filesystem metadata where the host platform exposes a safe, testable mechanism.
-4. Add optional in-process workspace text search.
+1. Add recovery-entry management for renamed files and manual cleanup of corrupt/stale entries.
+2. Preserve more filesystem metadata where the host platform exposes a safe, testable mechanism.
+3. Add optional in-process workspace text search.
+4. Add a multi-document cache and restart restoration for cursor/scroll state.
 5. Prototype read-only semantic block mapping before attempting hybrid block editing.
 
 Implementation boundaries and tradeoffs are documented in

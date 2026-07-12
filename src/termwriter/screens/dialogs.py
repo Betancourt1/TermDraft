@@ -91,6 +91,101 @@ class ConflictDecision(Enum):
     CANCEL = auto()
 
 
+class RecoveryDecision(Enum):
+    RESTORE = auto()
+    DISCARD = auto()
+    CANCEL = auto()
+
+
+class RecoveryDialog(ModalScreen[RecoveryDecision | None]):
+    """Offer a crash journal without silently replacing the disk version."""
+
+    CSS = _DIALOG_CSS
+    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def __init__(
+        self,
+        path: Path,
+        updated_at: str,
+        *,
+        disk_changed: bool,
+        source_missing: bool = False,
+    ) -> None:
+        self.path = path
+        self.updated_at = updated_at
+        self.disk_changed = disk_changed
+        self.source_missing = source_missing
+        super().__init__(id="recovery-dialog-screen")
+
+    def compose(self) -> ComposeResult:
+        detail = f"A crash-recovery draft from {self.updated_at} is available for {self.path.name}."
+        if self.source_missing:
+            detail += (
+                " The original Markdown file is missing or cannot be safely read; "
+                "restore the draft to save a copy."
+            )
+        elif self.disk_changed:
+            detail += " The Markdown file also changed; restoring will require conflict recovery."
+        with Vertical(classes="dialog", id="recovery-dialog"):
+            yield Static("Recover unsaved draft", classes="dialog-title", markup=False)
+            yield Static(detail, classes="dialog-message", markup=False)
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Restore draft", id="recovery-restore", variant="primary")
+                discard_label = "Discard draft" if self.source_missing else "Use disk version"
+                yield Button(discard_label, id="recovery-discard", variant="warning")
+                yield Button("Cancel opening", id="recovery-cancel")
+
+    @on(Button.Pressed)
+    def choose(self, event: Button.Pressed) -> None:
+        decisions = {
+            "recovery-restore": RecoveryDecision.RESTORE,
+            "recovery-discard": RecoveryDecision.DISCARD,
+            "recovery-cancel": RecoveryDecision.CANCEL,
+        }
+        if event.button.id in decisions:
+            self.dismiss(decisions[event.button.id])
+
+    def action_cancel(self) -> None:
+        self.dismiss(RecoveryDecision.CANCEL)
+
+
+class MixedLineEndingsDialog(ModalScreen[bool]):
+    """Require consent before an edit can normalize mixed separators."""
+
+    CSS = _DIALOG_CSS
+    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def __init__(self, path: Path, target: str, *, cancel_label: str = "Cancel opening") -> None:
+        self.path = path
+        self.target = target
+        self.cancel_label = cancel_label
+        super().__init__(id="mixed-line-endings-dialog-screen")
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog", id="mixed-line-endings-dialog"):
+            yield Static("Mixed line endings", classes="dialog-title", markup=False)
+            yield Static(
+                f"{self.path.name} mixes line-ending styles. Textual will normalize them to "
+                f"{self.target} after the first edit. The file stays byte-for-byte unchanged "
+                "until you edit and save.",
+                classes="dialog-message",
+                markup=False,
+            )
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Edit and normalize", id="mixed-normalize", variant="primary")
+                yield Button(self.cancel_label, id="mixed-cancel")
+
+    @on(Button.Pressed)
+    def choose(self, event: Button.Pressed) -> None:
+        if event.button.id == "mixed-normalize":
+            self.dismiss(True)
+        elif event.button.id == "mixed-cancel":
+            self.dismiss(False)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
 class UnsavedChangesDialog(ModalScreen[UnsavedDecision | None]):
     """Require an actual decision before a dirty document is left behind."""
 

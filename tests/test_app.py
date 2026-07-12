@@ -13,15 +13,31 @@ from termwriter.screens.dialogs import (
     ConflictDialog,
     FileSearchDialog,
     HelpDialog,
+    MixedLineEndingsDialog,
+    RecoveryDialog,
     SaveAsDialog,
     UnsavedChangesDialog,
 )
 from termwriter.services.external_changes import ExternalChange, ExternalChangeKind
-from termwriter.services.persistence import SaveResult, atomic_save
+from termwriter.services.persistence import SaveResult, atomic_save, load_file
+from termwriter.services.recovery import RecoveryJournal
 
 
-def app_for_file(path: Path, *, debounce: float = 0.01) -> TermWriterApp:
-    return TermWriterApp(Workspace.from_target(path), preview_debounce=debounce)
+def app_for_file(
+    path: Path,
+    *,
+    debounce: float = 0.01,
+    external_poll_interval: float = 2.0,
+    recovery_debounce: float = 0.5,
+    recovery_journal: RecoveryJournal | None = None,
+) -> TermWriterApp:
+    return TermWriterApp(
+        Workspace.from_target(path),
+        preview_debounce=debounce,
+        external_poll_interval=external_poll_interval,
+        recovery_debounce=recovery_debounce,
+        recovery_journal=recovery_journal or RecoveryJournal(path.parent / ".test-recovery"),
+    )
 
 
 async def test_app_starts_and_opens_an_explicit_file(tmp_path: Path) -> None:
@@ -168,6 +184,44 @@ async def test_conflict_save_as_preserves_both_versions(tmp_path: Path) -> None:
         assert app.document is not None
         assert app.document.path == local_copy
         assert not app.document.dirty
+
+
+async def test_save_as_replaces_pending_recovery_timer_for_future_edits(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "note.md"
+    local_copy = tmp_path / "note-local.md"
+    path.write_text("base", encoding="utf-8")
+    journal = RecoveryJournal(tmp_path / "state")
+    app = app_for_file(
+        path,
+        recovery_debounce=10.0,
+        recovery_journal=journal,
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("x")
+        assert app._recovery_timer is not None
+        path.write_text("external", encoding="utf-8")
+        await pilot.press("ctrl+s")
+        await pilot.click("#conflict-save-as")
+        await pilot.press("enter")
+
+        assert app.document is not None
+        assert app.document.path == local_copy
+        assert app._recovery_timer is None
+        assert journal.load(path) is None
+
+        await pilot.press("y")
+        new_timer = app._recovery_timer
+        new_revision = app._recovery_revision
+        assert new_timer is not None
+        new_timer.stop()
+        app._write_recovery(new_revision)
+
+        recovered = journal.load(local_copy)
+        assert recovered is not None
+        assert recovered.text == "xybase"
 
 
 async def test_ancestor_swap_during_save_as_cannot_escape_workspace(
@@ -419,12 +473,58 @@ async def test_exact_mixed_newlines_remain_untouched_without_an_edit(tmp_path: P
     app = app_for_file(path)
 
     async with app.run_test(size=(100, 30)) as pilot:
+        assert isinstance(app.screen, MixedLineEndingsDialog)
+        await pilot.click("#mixed-normalize")
         await pilot.press("ctrl+s")
 
         assert app.document is not None
         assert not app.document.dirty
         assert app.document.text == source.decode()
         assert path.read_bytes() == source
+
+
+async def test_mixed_line_ending_edit_requires_consent_and_normalizes(tmp_path: Path) -> None:
+    path = tmp_path / "mixed.md"
+    path.write_bytes(b"one\r\ntwo\nthree")
+    app = app_for_file(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        assert isinstance(app.screen, MixedLineEndingsDialog)
+        assert app.document is None
+
+        await pilot.click("#mixed-normalize")
+        await pilot.press("x", "ctrl+s")
+
+        assert app.document is not None
+        assert app.document.line_ending_label == "CRLF"
+        assert path.read_bytes() == b"xone\r\ntwo\r\nthree"
+
+
+async def test_mixed_line_ending_dialog_can_cancel_opening(tmp_path: Path) -> None:
+    path = tmp_path / "mixed.md"
+    source = b"one\r\ntwo\n"
+    path.write_bytes(source)
+    app = app_for_file(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.click("#mixed-cancel")
+
+        assert app.document is None
+        assert path.read_bytes() == source
+
+
+async def test_lf_first_mixed_source_reports_textuals_crlf_target(tmp_path: Path) -> None:
+    path = tmp_path / "mixed.md"
+    path.write_bytes(b"one\ntwo\r\nthree")
+    app = app_for_file(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        assert isinstance(app.screen, MixedLineEndingsDialog)
+        assert app.screen.target == "CRLF"
+        await pilot.click("#mixed-normalize")
+        await pilot.press("x", "ctrl+s")
+
+        assert path.read_bytes() == b"xone\r\ntwo\r\nthree"
 
 
 async def test_crlf_is_preserved_when_editing_and_saving(tmp_path: Path) -> None:
@@ -447,3 +547,612 @@ async def test_f1_opens_shortcut_help(tmp_path: Path) -> None:
         await pilot.press("f1")
 
         assert isinstance(app.screen, HelpDialog)
+
+
+async def test_external_watcher_reloads_a_clean_document(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    app = app_for_file(path, external_poll_interval=0.01)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        path.write_text("external", encoding="utf-8")
+        await pilot.pause(0.06)
+
+        assert app.document is not None
+        assert app.document.text == "external"
+        assert app.editor.text == "external"
+        assert app.preview.source_text == "external"
+        assert app.document.last_save_status == "Reloaded externally"
+
+
+async def test_external_watcher_marks_dirty_conflict_without_opening_modal(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    app = app_for_file(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("x")
+        path.write_text("external", encoding="utf-8")
+        app._check_external_in_background()
+
+        assert app.document is not None
+        assert app.document.text == "xbase"
+        assert app.document.conflict
+        assert app.document.last_save_status == "External conflict"
+        assert not isinstance(app.screen, ConflictDialog)
+        assert path.read_text(encoding="utf-8") == "external"
+
+        await pilot.press("ctrl+s")
+        assert isinstance(app.screen, ConflictDialog)
+
+
+async def test_external_watcher_marks_deletion_without_erasing_editor(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    app = app_for_file(path)
+
+    async with app.run_test(size=(100, 30)):
+        path.unlink()
+        app._check_external_in_background()
+
+        assert app.document is not None
+        assert app.document.text == "base"
+        assert app.document.conflict
+        assert app.document.last_save_status == "Deleted externally"
+        assert not isinstance(app.screen, ConflictDialog)
+
+
+async def test_external_watcher_pauses_for_modal_and_clears_reverted_conflict(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    app = app_for_file(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("x", "f1")
+        path.write_text("external", encoding="utf-8")
+        app._check_external_in_background()
+
+        assert isinstance(app.screen, HelpDialog)
+        assert app.document is not None
+        assert not app.document.conflict
+
+        await pilot.press("escape")
+        app._check_external_in_background()
+        assert app.document.conflict
+
+        path.write_text("base", encoding="utf-8")
+        app._check_external_in_background()
+        assert not app.document.conflict
+        assert app.document.text == "xbase"
+        assert app.document.dirty
+
+
+async def test_external_watcher_requires_consent_for_mixed_line_ending_reload(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    source = b"one\r\ntwo\n"
+    app = app_for_file(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        path.write_bytes(source)
+        app._check_external_in_background()
+        await pilot.pause()
+
+        assert isinstance(app.screen, MixedLineEndingsDialog)
+        assert app.document is not None
+        assert app.document.text == source.decode()
+        assert app.editor.read_only
+
+        await pilot.click("#mixed-cancel")
+        assert app.editor.read_only
+        assert path.read_bytes() == source
+
+        path.write_text("uniform", encoding="utf-8")
+        app._check_external_in_background()
+        assert not app.editor.read_only
+        await pilot.press("x")
+        assert app.document.text == "xuniform"
+
+
+async def test_external_watcher_marks_invalid_utf8_reload_as_persistent_conflict(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    app = app_for_file(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        path.write_bytes(b"\xff\xfe")
+        app._check_external_in_background()
+        app._check_external_in_background()
+
+        assert app.document is not None
+        assert app.document.text == "base"
+        assert app.document.conflict
+        assert app.document.last_save_status == "File unavailable"
+        assert not isinstance(app.screen, ConflictDialog)
+
+        await pilot.press("ctrl+s")
+        assert isinstance(app.screen, ConflictDialog)
+        assert path.read_bytes() == b"\xff\xfe"
+
+
+async def test_dirty_edit_is_journaled_and_successful_save_clears_recovery(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    journal = RecoveryJournal(tmp_path / "state")
+    app = app_for_file(
+        path,
+        recovery_debounce=0.01,
+        recovery_journal=journal,
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("x")
+        await pilot.pause(0.04)
+
+        recovered = journal.load(path)
+        assert recovered is not None
+        assert recovered.text == "xbase"
+        assert app.document is not None
+        assert app.document.recovery_saved
+
+        await pilot.press("ctrl+s")
+
+        assert path.read_text(encoding="utf-8") == "xbase"
+        assert journal.load(path) is None
+        assert not app.document.recovery_saved
+
+
+async def test_continuous_edits_do_not_postpone_the_recovery_deadline(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    journal = RecoveryJournal(tmp_path / "state")
+    app = app_for_file(
+        path,
+        recovery_debounce=10.0,
+        recovery_journal=journal,
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("x")
+        pending_timer = app._recovery_timer
+        pending_revision = app._recovery_revision
+        assert pending_timer is not None
+
+        await pilot.press("y", "z")
+
+        assert app._recovery_timer is pending_timer
+        assert app._recovery_revision == pending_revision
+        pending_timer.stop()
+        app._write_recovery(pending_revision)
+        recovered = journal.load(path)
+        assert recovered is not None
+        assert recovered.text == "xyzbase"
+
+
+async def test_startup_can_restore_a_recovery_draft(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    loaded = load_file(path)
+    journal = RecoveryJournal(tmp_path / "state")
+    journal.save(
+        document_path=path,
+        workspace_root=tmp_path,
+        text="draft",
+        encoding="utf-8",
+        base_snapshot=loaded.snapshot,
+    )
+    app = app_for_file(path, recovery_journal=journal)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        assert isinstance(app.screen, RecoveryDialog)
+        assert app.document is None
+
+        await pilot.click("#recovery-restore")
+
+        assert app.document is not None
+        assert app.document.text == "draft"
+        assert app.document.dirty
+        assert app.document.recovery_saved
+        assert not app.document.recovery_conflict
+
+        await pilot.press("ctrl+s")
+        assert path.read_text(encoding="utf-8") == "draft"
+        assert journal.load(path) is None
+
+
+async def test_recovered_draft_conflicting_with_disk_cannot_overwrite_silently(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    loaded = load_file(path)
+    journal = RecoveryJournal(tmp_path / "state")
+    journal.save(
+        document_path=path,
+        workspace_root=tmp_path,
+        text="draft",
+        encoding="utf-8",
+        base_snapshot=loaded.snapshot,
+    )
+    path.write_text("external", encoding="utf-8")
+    app = app_for_file(path, recovery_journal=journal)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        assert isinstance(app.screen, RecoveryDialog)
+        assert app.screen.disk_changed
+        await pilot.click("#recovery-restore")
+
+        assert app.document is not None
+        assert app.document.text == "draft"
+        assert app.document.recovery_conflict
+
+        await pilot.press("ctrl+s")
+        assert isinstance(app.screen, ConflictDialog)
+        assert path.read_text(encoding="utf-8") == "external"
+
+
+async def test_recovery_detects_same_content_file_replacement_by_identity(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "note.md"
+    replacement = tmp_path / "replacement.md"
+    path.write_text("base", encoding="utf-8")
+    loaded = load_file(path)
+    original_inode = loaded.snapshot.inode
+    journal = RecoveryJournal(tmp_path / "state")
+    journal.save(
+        document_path=path,
+        workspace_root=tmp_path,
+        text="draft",
+        encoding="utf-8",
+        base_snapshot=loaded.snapshot,
+    )
+    replacement.write_text("base", encoding="utf-8")
+    replacement.replace(path)
+    assert path.stat().st_ino != original_inode
+    app = app_for_file(path, recovery_journal=journal)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        assert isinstance(app.screen, RecoveryDialog)
+        assert app.screen.disk_changed
+        await pilot.click("#recovery-restore")
+
+        assert app.document is not None
+        assert app.document.recovery_conflict
+        await pilot.press("ctrl+s")
+
+        assert isinstance(app.screen, ConflictDialog)
+        assert path.read_text(encoding="utf-8") == "base"
+
+
+async def test_recovered_conflict_keeps_original_baseline_across_two_restarts(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    original = load_file(path)
+    journal = RecoveryJournal(tmp_path / "state")
+    journal.save(
+        document_path=path,
+        workspace_root=tmp_path,
+        text="draft",
+        encoding="utf-8",
+        base_snapshot=original.snapshot,
+    )
+    path.write_text("external", encoding="utf-8")
+
+    first_app = app_for_file(
+        path,
+        recovery_debounce=0.01,
+        recovery_journal=journal,
+    )
+    async with first_app.run_test(size=(100, 30)) as pilot:
+        await pilot.click("#recovery-restore")
+        assert first_app.document is not None
+        assert first_app.document.recovery_conflict
+        await pilot.press("x")
+        await pilot.pause(0.04)
+
+    rewritten = journal.load(path)
+    assert rewritten is not None
+    assert rewritten.text == "xdraft"
+    assert rewritten.base_snapshot == original.snapshot
+
+    second_app = app_for_file(path, recovery_journal=journal)
+    async with second_app.run_test(size=(100, 30)) as pilot:
+        assert isinstance(second_app.screen, RecoveryDialog)
+        assert second_app.screen.disk_changed
+        await pilot.click("#recovery-restore")
+        assert second_app.document is not None
+        assert second_app.document.recovery_conflict
+
+        await pilot.press("ctrl+s")
+        assert isinstance(second_app.screen, ConflictDialog)
+        assert path.read_text(encoding="utf-8") == "external"
+
+
+async def test_workspace_startup_recovers_a_deleted_source_via_save_as(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    path = workspace / "deleted.md"
+    path.write_text("base", encoding="utf-8")
+    loaded = load_file(path)
+    journal = RecoveryJournal(tmp_path / "state")
+    journal.save(
+        document_path=path,
+        workspace_root=workspace,
+        text="draft",
+        encoding="utf-8",
+        base_snapshot=loaded.snapshot,
+    )
+    path.unlink()
+    app = TermWriterApp(
+        Workspace.from_target(workspace),
+        preview_debounce=0.01,
+        external_poll_interval=2.0,
+        recovery_debounce=0.01,
+        recovery_journal=journal,
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        assert isinstance(app.screen, RecoveryDialog)
+        assert app.screen.source_missing
+        await pilot.click("#recovery-restore")
+
+        assert app.document is not None
+        assert app.document.path == path
+        assert app.document.text == "draft"
+        assert app.document.dirty
+        assert app.document.recovery_conflict
+
+        await pilot.press("ctrl+s")
+        assert isinstance(app.screen, ConflictDialog)
+        assert not app.screen.can_reload
+        assert not path.exists()
+
+        await pilot.click("#conflict-save-as")
+        await pilot.press("enter")
+        local_copy = workspace / "deleted-local.md"
+        assert local_copy.read_text(encoding="utf-8") == "draft"
+        assert journal.load(path) is None
+
+
+async def test_workspace_startup_recovers_when_source_is_invalid_utf8(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    path = workspace / "broken.md"
+    path.write_text("base", encoding="utf-8")
+    loaded = load_file(path)
+    journal = RecoveryJournal(tmp_path / "state")
+    journal.save(
+        document_path=path,
+        workspace_root=workspace,
+        text="draft",
+        encoding="utf-8",
+        base_snapshot=loaded.snapshot,
+    )
+    path.write_bytes(b"\xff\xfe")
+    app = TermWriterApp(
+        Workspace.from_target(workspace),
+        recovery_journal=journal,
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        assert isinstance(app.screen, RecoveryDialog)
+        assert app.screen.source_missing
+        await pilot.click("#recovery-restore")
+        assert app.document is not None
+        assert app.document.text == "draft"
+
+        await pilot.press("ctrl+s")
+        assert isinstance(app.screen, ConflictDialog)
+        assert path.read_bytes() == b"\xff\xfe"
+
+
+async def test_discarding_one_orphan_defers_the_next_recovery_dialog(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    paths = [workspace / "first.md", workspace / "second.md"]
+    journal = RecoveryJournal(tmp_path / "state")
+    for path in paths:
+        path.write_text("base", encoding="utf-8")
+        loaded = load_file(path)
+        journal.save(
+            document_path=path,
+            workspace_root=workspace,
+            text=f"draft for {path.stem}",
+            encoding="utf-8",
+            base_snapshot=loaded.snapshot,
+        )
+        path.unlink()
+    app = TermWriterApp(
+        Workspace.from_target(workspace),
+        recovery_journal=journal,
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        assert isinstance(app.screen, RecoveryDialog)
+        first_offered = app.screen.path
+        await pilot.click("#recovery-discard")
+        await pilot.pause()
+
+        assert isinstance(app.screen, RecoveryDialog)
+        assert app.screen.path != first_offered
+        await pilot.click("#recovery-discard")
+        await pilot.pause()
+
+        assert app.document is None
+        assert all(journal.load(path) is None for path in paths)
+
+
+async def test_recovery_can_be_discarded_for_the_disk_version(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    loaded = load_file(path)
+    journal = RecoveryJournal(tmp_path / "state")
+    journal.save(
+        document_path=path,
+        workspace_root=tmp_path,
+        text="draft",
+        encoding="utf-8",
+        base_snapshot=loaded.snapshot,
+    )
+    app = app_for_file(path, recovery_journal=journal)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.click("#recovery-discard")
+
+        assert app.document is not None
+        assert app.document.text == "base"
+        assert not app.document.dirty
+        assert journal.load(path) is None
+
+
+async def test_exact_mixed_recovery_survives_restore_without_an_edit(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    loaded = load_file(path)
+    recovered_source = "one\r\ntwo\nlast"
+    journal = RecoveryJournal(tmp_path / "state")
+    journal.save(
+        document_path=path,
+        workspace_root=tmp_path,
+        text=recovered_source,
+        encoding="utf-8",
+        base_snapshot=loaded.snapshot,
+    )
+    app = app_for_file(path, recovery_journal=journal)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.click("#recovery-restore")
+        assert isinstance(app.screen, MixedLineEndingsDialog)
+        await pilot.click("#mixed-normalize")
+        await pilot.press("ctrl+s")
+
+        assert path.read_bytes() == recovered_source.encode()
+        assert journal.load(path) is None
+
+
+async def test_permission_tightening_before_save_is_preserved(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    path.chmod(0o644)
+    app = app_for_file(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("x")
+        path.chmod(0o600)
+        await pilot.press("ctrl+s")
+
+        assert path.read_text(encoding="utf-8") == "xbase"
+        assert path.stat().st_mode & 0o777 == 0o600
+
+
+async def test_explicit_quit_discard_removes_recovery_journal(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    journal = RecoveryJournal(tmp_path / "state")
+    app = app_for_file(
+        path,
+        recovery_debounce=0.01,
+        recovery_journal=journal,
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("x")
+        await pilot.pause(0.04)
+        assert journal.load(path) is not None
+
+        await pilot.press("ctrl+q")
+        assert isinstance(app.screen, UnsavedChangesDialog)
+        await pilot.click("#unsaved-discard")
+
+        assert journal.load(path) is None
+        assert not app.is_running
+
+
+async def test_discarded_transition_timer_cannot_journal_the_wrong_document(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("first", encoding="utf-8")
+    second.write_bytes(b"one\r\ntwo\n")
+    journal = RecoveryJournal(tmp_path / "state")
+    app = app_for_file(
+        first,
+        recovery_debounce=0.03,
+        recovery_journal=journal,
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("x", "ctrl+p")
+        await pilot.press("s", "e", "c", "o", "n", "d", "enter")
+        await pilot.click("#unsaved-discard")
+        assert isinstance(app.screen, MixedLineEndingsDialog)
+
+        await pilot.pause(0.06)
+        assert journal.load(first) is None
+
+        await pilot.click("#mixed-cancel")
+        await pilot.pause(0.06)
+
+        assert app.document is not None
+        assert app.document.path == first
+        assert app.document.text == "xfirst"
+        recovered = journal.load(first)
+        assert recovered is not None
+        assert recovered.text == "xfirst"
+        assert journal.load(second) is None
+
+
+async def test_failed_open_after_discard_rejournals_the_active_dirty_document(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    journal = RecoveryJournal(tmp_path / "state")
+    app = app_for_file(
+        first,
+        recovery_debounce=0.02,
+        recovery_journal=journal,
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("x")
+        await pilot.pause(0.04)
+        assert journal.load(first) is not None
+
+        await pilot.press("ctrl+p")
+        await pilot.press("s", "e", "c", "o", "n", "d", "enter")
+        assert isinstance(app.screen, UnsavedChangesDialog)
+        second.unlink()
+        await pilot.click("#unsaved-discard")
+        await pilot.pause(0.04)
+
+        assert app.document is not None
+        assert app.document.path == first
+        assert app.document.text == "xfirst"
+        recovered = journal.load(first)
+        assert recovered is not None
+        assert recovered.text == "xfirst"
