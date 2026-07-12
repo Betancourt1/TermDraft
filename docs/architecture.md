@@ -19,9 +19,9 @@ Workspace ───── validated paths / scan index ───── File expl
    │
    ▼
 TermWriterApp coordinator
-   │ owns ordered live buffers + one active view
+   │ owns ordered live buffers + one editor per buffer
    ▼
-Document tabs ──► active Document ── source text ──► Markdown preview
+Document tabs ──► active Document/editor ── source text ──► Markdown preview
    ▲  │
    │  └──── cursor / scroll / status ───► Status bar
    │
@@ -52,28 +52,32 @@ TextArea source edits
 an independently mutable flag. Reverting an ordinary edit to the baseline therefore clears dirty
 state without a special code path.
 
-The one shared `TextArea` is the active editable view, not a second domain model. Its `Changed`
-message updates only the active `Document.text`; selection changes update that document's cursor and
-scroll state. Before save, tab activation, or a destructive transition,
+Each open entry owns a mounted `TextArea` as an editable view, not a second domain model. Widget
+identity routes `Changed` and selection messages to the matching `Document`; only the active entry
+drives preview and status updates. Each entry also owns the normalized/exact baseline pair needed for
+mixed line endings and its independent Textual undo stack. Before save, tab activation, or a
+destructive transition,
 the coordinator also reads the widget synchronously so a queued message cannot omit the latest
 keypress.
 
 ## Content-free workspace sessions
 
 `services/session.py` stores one versioned JSON file per canonical workspace under the per-user
-state directory. It contains only workspace-relative Markdown paths, the last active path, and
-nonnegative cursor/scroll coordinates. It never stores source text, saved baselines, undo history,
-or recovery content. The workspace hash keeps filenames opaque; mode-0600 temporary publication,
-`fsync`, and same-directory `os.replace` preserve the previous complete session on write failure.
+state directory. Version two contains ordered open paths, the active path, and nonnegative
+cursor/scroll coordinates. It never stores source text, saved baselines, undo history, or recovery
+content. Version-one state migrates as one open active path. The workspace hash keeps filenames
+opaque; mode-0600 temporary publication, `fsync`, and same-directory `os.replace` preserve the
+previous complete session on write failure.
 
 The store rejects files larger than 512 KiB and states with more than 100 document views. The app
-loads metadata in a thread worker at the start of mounting. An explicit CLI file overrides the stored
-active path; otherwise a valid readable active path is reopened. Writes use one in-flight worker and
-one replaceable pending immutable snapshot, so an older thread cannot finish after newer metadata;
-clean quit waits for the queue to drain. Ctrl+O opens the bounded MRU order. Confirmed missing paths
-are pruned after this explicit use, while access failures are retained. Each activation caches the
-outgoing view, and Save As moves the cached view to the new path. Runtime tabs are intentionally not
-reconstructed. Corrupt session JSON is preserved and reported. Concurrent TermWriter instances use
+loads metadata in a thread worker at the start of mounting. An explicit CLI file suppresses tab
+restoration. A directory launch restores paths sequentially through normal recovery and
+mixed-ending decisions, then selects the stored active tab; missing paths are pruned and access
+failures are skipped without dropping their recent view. Writes use one in-flight worker and one
+replaceable pending immutable snapshot, so an older thread cannot finish after newer metadata;
+clean quit waits for the queue to drain. Ctrl+O opens the bounded MRU order. Each activation caches
+the outgoing view, and Save As moves the cached view to the new path. Corrupt session JSON is
+preserved and reported. Concurrent TermWriter instances use
 last-writer-wins metadata because coordinates are non-authoritative and cannot change Markdown.
 Quit traversal does not promote the inspected tabs in MRU order and restores the pre-quit active
 buffer before queuing the final snapshot. Once that snapshot is queued, tab activation and document
@@ -95,17 +99,18 @@ Opening a file is transactional at the application level:
 3. A valid recovery journal is offered without mutating the loaded disk baseline.
 4. If the selected current source has mixed separators, normalization consent is required.
 5. Only after those decisions does the app register and activate the new `Document`.
-6. `TextArea.load_text` runs while `TextArea.Changed` is suppressed and clears prior undo history.
-7. Exact and normalized editor baselines, explorer label, preview revision, focus, and status update.
+6. A new editor is mounted with the selected exact source and an empty history.
+7. Its exact/normalized baselines, explorer label, preview revision, focus, and status update.
 
 If loading fails, every existing buffer remains in memory. Opening or activating another path is
 non-destructive and therefore does not prompt for dirty work. Closing a tab, replacing its source,
 reloading, and quitting remain guarded. Activating a buffer synchronizes the outgoing exact source,
-cursor, and scroll; queues its dirty recovery source immediately; and restores the incoming state.
-The shared `TextArea.load_text()` call clears undo history, so histories cannot cross buffers but also
-do not survive a tab switch in this iteration. Registration also reuses the stable tab for an already
-open canonical path. An explicitly restored recovery draft may replace that clean buffer, but cannot
-replace an existing dirty buffer.
+cursor, and scroll; queues its dirty recovery source immediately; changes
+`ContentSwitcher.current`; and focuses the incoming editor. It does not call `load_text`, so each
+runtime history, selection, and viewport survives tab switches. Reload, discard, or recovery
+replacement clears only the affected editor's history because its source baseline changed.
+Registration also reuses the stable tab for an already open canonical path. An explicitly restored
+recovery draft may replace that clean buffer, but cannot replace an existing dirty buffer.
 
 `MarkdownEditor` intercepts Enter only for an empty selection and delegates the source/cursor
 calculation to the pure `services/markdown_continuation.py` function. It continues bullets, ordered
@@ -119,6 +124,13 @@ Each source edit increments a preview revision and stops the previous debounce t
 callback verifies its revision before awaiting `Markdown.update`. A stale callback rechecks the
 revision, so an old file's render cannot become the final preview for a newer file. Rendering errors
 are reported in the UI and never mutate `Document`.
+
+`services/semantic_blocks.py` is a diagnostic boundary, not an editor model. It uses the public
+`MarkdownIt.parse` token stream and `Token.map` line ranges with HTML disabled, converts those lines
+to exact Python-string offsets for LF/CRLF/CR source, and records every uncovered slice as a
+separator or unmapped source. The command-palette inspector parses in a worker, rejects results if
+the active document or captured text changed, and can only move the source cursor. Nested containers
+remain one outer top-level block, and the map is explicitly not sufficient for source splicing.
 
 The preview is constructed with `open_links=False` and a dedicated `markdown-it-py` parser factory.
 The `gfm-like2` preset provides tables, task metadata, five GFM alert kinds, and
@@ -181,8 +193,8 @@ after the target document is installed.
 ## Background document I/O
 
 Full Markdown reads, disk probes, content hashes, existing-file publication, Save As publication,
-session load/save, recovery-journal mutations, and orphan-source validation run through explicit
-Textual thread workers. Workers receive immutable
+workspace indexing, session load/save, recovery-record reads/mutations, orphan-source validation,
+and semantic mapping run through explicit Textual thread workers. Workers receive immutable
 paths, source strings, encodings, snapshots, and document tickets; they never mutate `Document` or a
 widget. Expected and unexpected failures are converted into result values, and
 `App.call_from_thread` is the only route back to coordinator callbacks.
@@ -274,9 +286,10 @@ publication, even if that directory is renamed. A failed `os.replace` leaves the
 bytes intact. A failure after publication is different: the name may already point to the new bytes,
 so the application reports uncertainty and does not advance its in-memory baseline.
 
-For a new Save As destination, the fully written temporary file is hard-linked to the final name.
-Hard-link creation fails if the name exists, providing no-clobber publication. The temporary name is
-then removed.
+For a new Save As destination, an immutable snapshot of open buffer paths first reserves all live
+document identities, including paths whose files disappeared. The fully written temporary file is
+then hard-linked to the final name. Hard-link creation fails if the name exists, providing
+no-clobber publication. The temporary name is then removed.
 
 Same-directory `os.replace` provides atomic namespace replacement on normal local POSIX filesystems;
 it does not prove identical behavior on every network filesystem. `fsync` improves crash durability
@@ -312,7 +325,7 @@ DELETE removes queued saves and forms an ordering barrier behind any in-flight p
 completion marks `recovery_saved` only when its document identity, path, exact source, encoding, and
 baseline still match. Successful Markdown saves, explicit discards, and reloads wait for ordered
 cleanup before continuing. The status bar shows `RECOVERY STORED` only after a current publication
-succeeds. Destructive transitions keep the shared editor read-only across this cleanup barrier;
+succeeds. Destructive transitions keep the affected editor read-only across this cleanup barrier;
 Discard restores the model's saved source before its close or quit continuation runs.
 
 On open, Restore draft keeps the freshly loaded Markdown source as `saved_text` and installs the
@@ -400,8 +413,8 @@ the original active buffer, and then seals editing while final state writes drai
 ## Widget/domain limits
 
 - Widgets render state and emit Textual messages.
-- `TermWriterApp` owns ordered live `Document` buffers, coordinates one active view, and resolves
-  user decisions.
+- `TermWriterApp` owns ordered live `Document`/editor entries, coordinates one active view, and
+  resolves user decisions.
 - `Document` and `Workspace` contain state/invariants without Textual imports.
 - Persistence and external-change modules perform filesystem work without UI calls.
 - File search fuzzy-ranks only the scanner's validated in-process index and has no `ripgrep`
@@ -409,18 +422,20 @@ the original active buffer, and then seals editing while final state writes drai
 - Text search and document content I/O use thread workers and never invoke workspace commands.
 - Configuration contains data only; document/workspace contents never define commands or CSS.
 
-Workspace-index scans and individual recovery-entry reads during opening remain synchronous and may
-briefly block the UI for an unusually large workspace or journal. Markdown hashing, stable reads,
-reloads, publication, session I/O, and recovery mutation are worker-backed; generation tickets,
-immutable mutation payloads, and critical-operation locks preserve callback ordering and conflict
-checks.
+Workspace-index scans, recovery-record reads, Markdown hashing, stable reads, reloads, publication,
+session I/O, recovery mutation, and semantic mapping are worker-backed. Cooperative cancellation,
+revisions, document tickets, immutable mutation payloads, and critical-operation locks preserve
+callback ordering and conflict checks. An individual operating-system read cannot be interrupted,
+so stale-result rejection remains authoritative.
 
 ## Textual API baseline
 
 The implementation targets Textual 8.2.8 and relies on documented APIs:
 
 - [`TextArea`](https://textual.textualize.io/widgets/text_area/)
+- [`ContentSwitcher`](https://textual.textualize.io/widgets/content_switcher/)
 - [`Tabs`](https://textual.textualize.io/widgets/tabs/)
+- [`markdown-it-py Token.map`](https://markdown-it-py.readthedocs.io/en/latest/api/markdown_it.token.html)
 - [`Markdown`](https://textual.textualize.io/widgets/markdown/)
 - [`mdit-py-plugins`](https://mdit-py-plugins.readthedocs.io/en/latest/)
 - [`regex`](https://pypi.org/project/regex/)

@@ -1,7 +1,8 @@
 # Future semantic block editing
 
 This document describes a possible WYSIWYM mode for TermWriter. It is a design direction, not a
-promise that the hard interaction problems are solved, and none of it is implemented in the MVP.
+promise that the hard interaction problems are solved. The MVP now includes only Stage 1's read-only
+top-level range inspector; rendered-block and hybrid editing remain unimplemented.
 
 ## Goal
 
@@ -35,9 +36,11 @@ Source offsets must be defined explicitly. Python string indexes count Unicode c
 uses bytes, Textual cursor columns are logical positions, and terminal cells vary by grapheme width.
 Mixing these units is a direct route to corrupt splices or misplaced cursors.
 
-The parser choice is unresolved. CommonMark-compatible parsers differ in whether they expose exact
-ranges for nested blocks, reference definitions, delimiter runs, and extensions. Before choosing
-one, prototypes must prove lossless ranges against a corpus rather than relying on token text alone.
+The diagnostic prototype uses `markdown-it-py` public block tokens and `Token.map` line ranges. It
+converts logical lines to Python-string offsets without normalizing LF, CRLF, or CR and retains every
+uncovered source slice. This is not yet an editing-grade parser choice: reference definitions,
+inline delimiters, nested identities, and extension-specific exact ranges still require corpus-level
+proof rather than inference from token text.
 
 ## Active and inactive blocks
 
@@ -81,6 +84,11 @@ Parse a document and display block boundaries/ranges in a developer-only view. V
 all untouched source slices reproduces the original bytes after encoding. Test Unicode, LF, CRLF,
 missing final newlines, nested lists, block quotes, fences, tables, references, and malformed input.
 
+Status: implemented as **Inspect semantic blocks** in the command palette. The worker-backed mapper
+lists non-overlapping top-level ranges and explicit separator/unmapped gaps, rejects stale results,
+and can move the full-source editor cursor. Nested containers deliberately remain one outer block;
+reference definitions may remain unmapped. The inspector never splices, saves, or renders source.
+
 ### Stage 2: rendered blocks without editing
 
 Render independent top-level blocks while keeping the existing full-source editor available as a
@@ -104,8 +112,9 @@ incremental parsing only after correctness is established with full reparsing.
 
 ## Undo, conflicts, and persistence
 
-Undo must operate on source transformations, not widget replacement. A future coordinator may need a
-document-level edit history so switching the active widget does not split or discard undo state.
+Undo must operate on source transformations, not widget replacement. Current full-source tabs each
+own a Textual undo history and preserve it across runtime tab switching, but a future hybrid mode
+would still need one coherent history for block activation and full-document source transformations.
 
 External-change detection and atomic persistence do not change: the complete Markdown source and its
 disk fingerprint remain the conflict boundary. If a conflict appears, semantic editing must stop and
@@ -127,4 +136,3 @@ use the same explicit Save As / reload / cancel flow as full-source editing.
 The safe fallback is always the current full-source `TextArea`. Semantic mode should ship only for
 constructs whose source mapping is demonstrably reversible, with unsupported cases falling back
 without modifying the file.
-

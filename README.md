@@ -12,8 +12,8 @@ The current release is a functional MVP focused on a dependable writing loop:
 - search source text across the workspace without an external command;
 - search commands from a palette;
 - customize editor options, keybindings, and Textual CSS without reinstalling;
-- keep several independently dirty documents open in guarded tabs;
-- reopen the last workspace document, remember per-file views, and switch through a bounded MRU list;
+- keep several independently dirty documents open with independent runtime undo histories;
+- restore the prior tab order and active view when reopening a workspace directory;
 - export quarantined recovery drafts and explicitly clean confirmed entries past a configured age;
 - traverse rendered headings from the keyboard with a visible level and position announcement;
 - save through a same-directory temporary file;
@@ -23,7 +23,8 @@ The current release is a functional MVP focused on a dependable writing loop:
 - require an explicit decision before closing, reloading, or replacing unsaved work.
 
 Future WYSIWYM block editing is designed in
-[`docs/semantic-editing.md`](docs/semantic-editing.md), but it is intentionally not implemented.
+[`docs/semantic-editing.md`](docs/semantic-editing.md). Hybrid editing is intentionally not
+implemented; a read-only semantic source-range inspector is available from the command palette.
 
 ## Interface
 
@@ -249,21 +250,27 @@ source from every open tab. Selecting a result activates an existing tab or open
 discarding the current buffer. Ctrl+P uses the same compound filter syntax and fuzzy-ranks
 abbreviated path queries.
 
+**Inspect semantic blocks** in the command palette parses the active source in a worker and lists
+top-level block ranges plus uncovered separators or reference-definition source. Selecting a range
+jumps to its first line. This diagnostic never edits or renders its source and is not the future
+hybrid WYSIWYM mode.
+
 ## Data-safety behavior
 
-Each open file has one live `Document` that remains its in-memory source of truth. One document is
-active in the shared editor and preview; neither rendered output nor tab widgets write source back to
-the model.
+Each open file has one live `Document` that remains its in-memory source of truth and one mounted
+Textual editor with its own runtime undo stack. One document/editor pair is active beside the shared
+preview; neither rendered output nor tab widgets write source back to the model.
 
-Workspace session JSON stores only the last active Markdown path and per-document cursor/scroll
-coordinates. It is limited to 100 document views and 512 KiB. Loading and serialized, coalesced
-writes run in workers; clean quit waits for the newest queued snapshot. Opening a directory restores
-the last active readable file, while an explicit CLI file takes precedence. Ctrl+O presents the
-most-recently-used order. Confirmed missing entries are pruned when that switcher is opened;
-temporarily inaccessible entries are retained. Positions are restored when files are opened again,
-but the full runtime tab set is not reconstructed. Session state is atomically replaced outside the
-workspace and never contains Markdown source. A clean quit preserves the tab that was active before
-the guard inspected the other buffers. Missing or corrupt state cannot prevent startup.
+Workspace session JSON stores only ordered open paths, the active path, and per-document
+cursor/scroll coordinates. It is limited to 100 document views and 512 KiB. Loading and serialized,
+coalesced writes run in workers; clean quit waits for the newest queued snapshot. Opening a directory
+restores readable tabs sequentially and then reselects the prior active tab, while an explicit CLI
+file takes precedence and does not resurrect siblings. Recovery and mixed-ending decisions pause
+that sequence so dialogs never overlap. Ctrl+O presents the most-recently-used order. Confirmed
+missing entries are pruned; temporarily inaccessible entries remain recent but are skipped during
+automatic restoration. Session state is atomically replaced outside the workspace and never
+contains Markdown source, recovery text, or undo history. Missing or corrupt state cannot prevent
+startup, and version-one state migrates by restoring only its prior active path.
 
 The first dirty edit schedules a recovery write for 500 ms later; continued typing updates the
 pending payload without postponing that deadline. Publications and deletions run through one ordered
@@ -307,16 +314,18 @@ An existing file save follows this sequence:
 8. attempt to `fsync` the parent directory and verify the visible bytes;
 9. only then update the document's saved/dirty state.
 
-Stable document reads, disk probes, all content hashing, atomic publication, Save As, session I/O,
-recovery mutation, and orphan-source validation run in Textual thread workers. A completed probe is
+Stable document reads, disk probes, all content hashing, atomic publication, Save As, workspace
+indexing, session I/O, recovery reads/mutations, orphan-source validation, and semantic mapping run
+in Textual thread workers. A completed probe is
 classified on the UI thread
 against the latest dirty state, so an edit made during a watcher or transition check cannot be
 silently reloaded or left behind. During actual publication the editor is temporarily read-only;
 quit, switching, duplicate saves, and Save As dismissal wait until the non-cancellable writer has
 finished. Stale worker results are rejected with a document-generation ticket.
 
-Save As publishes a fully written temporary file with a no-clobber hard-link step. If the target
-appears concurrently, TermWriter reports a conflict instead of replacing it.
+Save As first rejects paths owned by any open buffer, including a buffer whose disk file disappeared,
+then publishes a fully written temporary file with a no-clobber hard-link step. If the target appears
+concurrently, TermWriter reports a conflict instead of replacing it.
 
 If both local and disk content changed, the only choices are:
 
@@ -357,23 +366,26 @@ mypy
 The suite covers the document model, UTF-8/BOM/LF/CRLF preservation, mixed-ending consent, empty
 files, missing final newlines, recovery round trips and failures, restart recovery, atomic-save
 failures, metadata and permission bits, watcher reload/conflict/deletion behavior, workspace
-filtering, symlinks, file and workspace-text search, bounded content-free workspace sessions,
-quarantine restore/export/retention/deletion, independent document tabs, heading navigation
+filtering, symlinks, file and workspace-text search, bounded content-free workspace sessions and tab
+restoration, semantic source mapping, quarantine restore/export/retention/deletion, independent
+document tabs, heading navigation
 announcements, CLI validation, and Textual Pilot workflows.
 Customization tests also exercise remapped keys, runtime TOML reload, user-TCSS precedence, command
 discovery, task continuation, termination, and undo grouping. Race-focused worker tests block probes,
-loads, saves, session writes, recovery publication, and Save As publication to verify UI
+loads, workspace indexes, recovery reads, saves, session writes, recovery publication, semantic
+parsing, and Save As publication to verify UI
 responsiveness, ordered cleanup, stale-result rejection, conflict preservation, and non-cancellable
 writer locking.
 
 ## Known limitations
 
-- Tabs keep multiple live buffers only for the current run; restart restores the last active file and
-  MRU views, not the complete tab set. Tabs share one public Textual `TextArea`, whose documented
-  `load_text()` behavior clears undo history, so undo history resets when switching tabs.
-- Recovery restore reuses a clean tab already open for the same canonical path. A rare Save As to the
-  externally deleted path of another open clean tab can still leave duplicate path tabs; later save
-  conflict checks prevent silent overwrite, but the duplicate should be normalized in a future pass.
+- Each tab's undo/redo history survives runtime tab switching but is intentionally not serialized;
+  restored tabs begin with empty histories after restart. Keeping one mounted `TextArea` per tab also
+  means unusually large tab sets consume more memory. Session metadata restores at most 100 views.
+- The semantic inspector is line-level diagnostics, not an editing-grade AST. Nested containers are
+  represented by their outer block, reference definitions may appear as explicit unmapped source,
+  and the detail pane truncates very large block previews. It provides no inline delimiter offsets,
+  stable block identity, visual-position map, incremental parsing, or hybrid editing.
 - Recovery has a nominal 500 ms first-write delay. Termination before the timer runs, a blocked event
   loop, or a failed journal write can lose the latest unsaved keystrokes. It is not version history,
   a backup, or an autosave of the Markdown path. Recovery entries contain the draft's plaintext
@@ -430,16 +442,16 @@ writer locking.
   returns an error instead of results.
 - Thread workers cannot stop an in-progress operating-system read or write. TermWriter ignores stale
   read/probe results; an atomic writer is deliberately allowed to finish while the UI stays locked.
-- Workspace index refreshes and individual recovery-entry reads during document opening remain
-  synchronous. They can pause input for an unusually large workspace or recovery journal. Recovery
-  publication, deletion, and advisory-lock waits run outside the UI thread.
+- Thread cancellation cannot interrupt an individual operating-system directory or journal read,
+  but workspace-index and recovery-read results are revisioned or ticketed and applied only from
+  workers when still current.
 
 ## Near-term roadmap
 
-1. Give each tab independent editor undo history and optionally restore the previous runtime tab set.
-2. Move workspace indexing and recovery-entry reads fully off the UI thread.
-3. Prevent or merge the remaining deleted-target Save As duplicate-tab edge, then prototype read-only
-   semantic block mapping.
+1. Check inactive tabs for external changes without introducing modal storms.
+2. Narrow the recovery timer's remaining pre-journal crash window during orderly shutdown signals.
+3. Validate nested semantic ranges and reference definitions against a larger lossless corpus before
+   considering any rendered-block experiment.
 
 Implementation boundaries and tradeoffs are documented in
 [`docs/architecture.md`](docs/architecture.md).
