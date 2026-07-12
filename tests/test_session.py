@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 
 from termwriter.services.session import (
+    MAX_SESSION_BYTES,
+    MAX_SESSION_DOCUMENTS,
     DocumentViewState,
     SessionError,
     SessionState,
@@ -111,6 +113,52 @@ def test_corrupt_session_is_preserved_and_ignored(tmp_path: Path) -> None:
     assert result.state is None
     assert "Ignoring invalid session state" in (result.warning or "")
     assert state_path.read_bytes() == corrupt
+
+
+def test_oversized_session_is_preserved_and_ignored(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = SessionStore(tmp_path / "state")
+    state_path = store.path_for(workspace)
+    state_path.parent.mkdir()
+    oversized = b"{" + b" " * MAX_SESSION_BYTES + b"}"
+    state_path.write_bytes(oversized)
+
+    result = store.load(workspace)
+
+    assert result.state is None
+    assert f"exceeds {MAX_SESSION_BYTES} bytes" in (result.warning or "")
+    assert state_path.read_bytes() == oversized
+
+
+def test_session_document_limit_is_enforced_on_save_and_load(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = SessionStore(tmp_path / "state")
+    views = tuple(
+        DocumentViewState(workspace / f"note-{index}.md") for index in range(MAX_SESSION_DOCUMENTS)
+    )
+    store.save(SessionState(workspace, views[0].path, views))
+    assert store.load(workspace).state is not None
+
+    too_many = (*views, DocumentViewState(workspace / "overflow.md"))
+    with pytest.raises(SessionError, match=f"more than {MAX_SESSION_DOCUMENTS}"):
+        store.save(SessionState(workspace, too_many[0].path, too_many))
+
+    payload = json.loads(store.path_for(workspace).read_text(encoding="utf-8"))
+    payload["documents"].append(
+        {
+            "path": "overflow.md",
+            "line": 0,
+            "column": 0,
+            "scroll_x": 0.0,
+            "scroll_y": 0.0,
+        }
+    )
+    store.path_for(workspace).write_text(json.dumps(payload), encoding="utf-8")
+    result = store.load(workspace)
+    assert result.state is None
+    assert f"more than {MAX_SESSION_DOCUMENTS}" in (result.warning or "")
 
 
 @pytest.mark.parametrize(

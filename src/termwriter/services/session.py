@@ -16,6 +16,8 @@ from typing import Any
 from termwriter.models.workspace import MARKDOWN_SUFFIXES
 
 _SCHEMA_VERSION = 1
+MAX_SESSION_BYTES = 512 * 1024
+MAX_SESSION_DOCUMENTS = 100
 
 
 class SessionError(Exception):
@@ -84,13 +86,24 @@ class SessionStore:
         state_path = self.path_for(expected_root)
         try:
             metadata = state_path.lstat()
-            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-                raise SessionError("session path is not a regular file")
-            data = state_path.read_bytes()
         except FileNotFoundError:
             return SessionLoadResult()
-        except (OSError, SessionError) as error:
+        except OSError as error:
             return SessionLoadResult(warning=f"Cannot read session state: {error}")
+
+        try:
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+                raise SessionError("session path is not a regular file")
+            if metadata.st_size > MAX_SESSION_BYTES:
+                raise SessionError(f"session file exceeds {MAX_SESSION_BYTES} bytes")
+            with state_path.open("rb") as state_file:
+                data = state_file.read(MAX_SESSION_BYTES + 1)
+            if len(data) > MAX_SESSION_BYTES:
+                raise SessionError(f"session file exceeds {MAX_SESSION_BYTES} bytes")
+        except OSError as error:
+            return SessionLoadResult(warning=f"Cannot read session state: {error}")
+        except SessionError as error:
+            return SessionLoadResult(warning=f"Ignoring invalid session state: {error}")
 
         try:
             state = _state_from_bytes(data)
@@ -104,6 +117,8 @@ class SessionStore:
         """Validate and atomically replace a workspace session file."""
         _validate_state(state)
         data = _serialize(state)
+        if len(data) > MAX_SESSION_BYTES:
+            raise SessionError(f"session state exceeds {MAX_SESSION_BYTES} bytes")
         destination = self.path_for(state.workspace_root)
         temporary: Path | None = None
         descriptor = -1
@@ -194,6 +209,8 @@ def _state_from_payload(payload: Any) -> SessionState:
     documents_value = payload["documents"]
     if not isinstance(documents_value, list):
         raise SessionError("documents must be a list")
+    if len(documents_value) > MAX_SESSION_DOCUMENTS:
+        raise SessionError(f"session has more than {MAX_SESSION_DOCUMENTS} documents")
     documents = tuple(
         _view_from_payload(item, workspace_root, index)
         for index, item in enumerate(documents_value)
@@ -236,6 +253,8 @@ def _validate_state(state: SessionState) -> None:
     root = state.workspace_root
     if not root.is_absolute() or root != _normalize_workspace(root):
         raise SessionError("workspace root must be an absolute canonical path")
+    if len(state.documents) > MAX_SESSION_DOCUMENTS:
+        raise SessionError(f"session has more than {MAX_SESSION_DOCUMENTS} documents")
 
     paths: set[Path] = set()
     for view in state.documents:
