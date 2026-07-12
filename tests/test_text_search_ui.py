@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Event
+from typing import Any
 
 import pytest
 from textual.widgets import Checkbox, Input, Select, Static
@@ -146,6 +148,60 @@ async def test_text_search_dialog_applies_fuzzy_ranking_and_compound_filter(
         status = app.screen.query_one("#text-search-status", Static)
         assert "fuzzy" in str(status.render())
         assert "!docs/drafts/**" in str(status.render())
+
+
+async def test_text_search_ignores_queued_result_from_an_older_same_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "active.md"
+    path.write_text("Needle\nneedle\n", encoding="utf-8")
+    app = _app(path)
+    first_callback_started = Event()
+    release_first_callback = Event()
+    result_callbacks = 0
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("ctrl+shift+f")
+        assert isinstance(app.screen, TextSearchDialog)
+        real_call_from_thread = app.call_from_thread
+
+        def delay_first_result(*args: Any, **kwargs: Any) -> Any:
+            nonlocal result_callbacks
+            callback = args[0]
+            if getattr(callback, "__name__", "") == "_show_results":
+                result_callbacks += 1
+                if result_callbacks == 1:
+                    first_callback_started.set()
+                    assert release_first_callback.wait(2)
+            return real_call_from_thread(*args, **kwargs)
+
+        monkeypatch.setattr(app, "call_from_thread", delay_first_result)
+        query = app.screen.query_one("#text-search-input", Input)
+        query.value = "needle"
+        await pilot.press("enter")
+        for _ in range(200):
+            if first_callback_started.is_set():
+                break
+            await pilot.pause(0.01)
+        assert first_callback_started.is_set()
+
+        app.screen.query_one("#text-search-case", Checkbox).value = True
+        query.focus()
+        await pilot.press("enter")
+        for _ in range(200):
+            if [match.line for match in app.screen.matches] == [1]:
+                break
+            await pilot.pause(0.01)
+        assert [match.line for match in app.screen.matches] == [1]
+
+        release_first_callback.set()
+        await pilot.pause(0.05)
+
+        assert [match.line for match in app.screen.matches] == [1]
+        assert "1 match · literal" in str(
+            app.screen.query_one("#text-search-status", Static).render()
+        )
 
 
 async def test_text_search_dialog_reports_invalid_compound_filter(tmp_path: Path) -> None:

@@ -586,6 +586,7 @@ class TextSearchDialog(ModalScreen[TextSearchMatch | None]):
         self.root = workspace.root
         self.active_override = active_override
         self.matches: tuple[TextSearchMatch, ...] = ()
+        self._search_revision = 0
         super().__init__(id="text-search-screen")
 
     def compose(self) -> ComposeResult:
@@ -622,6 +623,8 @@ class TextSearchDialog(ModalScreen[TextSearchMatch | None]):
 
     @on(Input.Submitted, "#text-search-input")
     def submit_search(self, event: Input.Submitted) -> None:
+        self._search_revision += 1
+        revision = self._search_revision
         query = event.value
         if not query:
             self.matches = ()
@@ -640,10 +643,15 @@ class TextSearchDialog(ModalScreen[TextSearchMatch | None]):
             file_filter=file_filter,
             case_sensitive=self.query_one("#text-search-case", Checkbox).value,
         )
-        self._search_in_background(query, options)
+        self._search_in_background(revision, query, options)
 
     @work(group="text-search", exclusive=True, thread=True, exit_on_error=False)
-    def _search_in_background(self, query: str, options: TextSearchOptions) -> None:
+    def _search_in_background(
+        self,
+        revision: int,
+        query: str,
+        options: TextSearchOptions,
+    ) -> None:
         worker = get_current_worker()
         try:
             scan = self.workspace.scan(should_cancel=lambda: worker.is_cancelled)
@@ -662,21 +670,26 @@ class TextSearchDialog(ModalScreen[TextSearchMatch | None]):
             )
         except Exception as error:
             if not worker.is_cancelled:
-                self.app.call_from_thread(self._show_error, query, str(error))
+                self.app.call_from_thread(self._show_error, revision, query, str(error))
             return
         if not worker.is_cancelled:
-            self.app.call_from_thread(self._show_results, query, options, result)
+            self.app.call_from_thread(self._show_results, revision, query, options, result)
 
     def _show_results(
         self,
+        revision: int,
         query: str,
         options: TextSearchOptions,
         result: TextSearchResult,
     ) -> None:
-        if not self.is_mounted or self.query_one("#text-search-input", Input).value != query:
+        if (
+            revision != self._search_revision
+            or not self.is_mounted
+            or self.query_one("#text-search-input", Input).value != query
+        ):
             return
         if result.error is not None:
-            self._show_error(query, result.error)
+            self._show_error(revision, query, result.error)
             return
         self.matches = result.matches
         result_options = [
@@ -709,8 +722,12 @@ class TextSearchDialog(ModalScreen[TextSearchMatch | None]):
             status += f" · {len(result.warnings)} {warning_word}"
         self.query_one("#text-search-status", Static).update(status)
 
-    def _show_error(self, query: str, error: str) -> None:
-        if not self.is_mounted or self.query_one("#text-search-input", Input).value != query:
+    def _show_error(self, revision: int, query: str, error: str) -> None:
+        if (
+            revision != self._search_revision
+            or not self.is_mounted
+            or self.query_one("#text-search-input", Input).value != query
+        ):
             return
         self.matches = ()
         self._set_placeholder("Search failed")
