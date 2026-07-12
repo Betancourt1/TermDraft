@@ -992,7 +992,10 @@ async def test_external_watcher_reloads_a_clean_document(tmp_path: Path) -> None
 
     async with app.run_test(size=(100, 30)) as pilot:
         path.write_text("external", encoding="utf-8")
-        await pilot.pause(0.06)
+        for _ in range(100):
+            if app.preview.source_text == "external":
+                break
+            await pilot.pause(0.005)
 
         assert app.document is not None
         assert app.document.text == "external"
