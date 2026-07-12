@@ -9,6 +9,7 @@ from textual.actions import parse as parse_action
 from textual.binding import Binding, BindingType
 from textual.content import Content
 from textual.css.query import NoMatches
+from textual.message import Message
 from textual.widgets import Markdown
 from textual.widgets.markdown import MarkdownBlock
 
@@ -31,6 +32,15 @@ class _PreviewLink:
     end: int
 
 
+@dataclass(frozen=True, slots=True)
+class _PreviewHeading:
+    """One rendered Markdown heading exposed by Textual's table of contents."""
+
+    block: MarkdownBlock
+    label: str
+    level: int
+
+
 class _FootnoteLabel(MarkdownBlock):
     """An anchored definition label understood by Textual's Markdown widget."""
 
@@ -47,12 +57,53 @@ class MarkdownPreview(Markdown):
         Binding("tab", "select_next_link", "Next preview link", show=False),
         Binding("shift+tab", "select_previous_link", "Previous preview link", show=False),
         Binding("enter", "activate_selected_link", "Open preview link", show=False),
+        Binding(
+            "alt+down",
+            "select_next_heading",
+            "Next preview heading",
+            show=False,
+            id="preview_next_heading",
+        ),
+        Binding(
+            "alt+up",
+            "select_previous_heading",
+            "Previous preview heading",
+            show=False,
+            id="preview_previous_heading",
+        ),
     ]
     DEFAULT_CSS = """
     MarkdownPreview .keyboard-link-selected {
         background: $accent 18%;
     }
+    MarkdownPreview .keyboard-heading-selected {
+        background: $accent 18%;
+        outline-left: thick $accent;
+    }
     """
+
+    class HeadingFocused(Message):
+        """A rendered heading selected through preview keyboard navigation."""
+
+        def __init__(
+            self,
+            preview: "MarkdownPreview",
+            label: str,
+            level: int,
+            position: int,
+            total: int,
+        ) -> None:
+            super().__init__()
+            self.preview = preview
+            self.label = label
+            self.level = level
+            self.position = position
+            self.total = total
+
+        @property
+        def control(self) -> "MarkdownPreview":
+            """Return the preview associated with this message."""
+            return self.preview
 
     def __init__(self) -> None:
         self.source_text = "Select a Markdown file to begin."
@@ -60,6 +111,8 @@ class MarkdownPreview(Markdown):
         self._footnote_link_origins: dict[str, int] = {}
         self._links: list[_PreviewLink] = []
         self._selected_link: int | None = None
+        self._headings: list[_PreviewHeading] = []
+        self._selected_heading: int | None = None
         super().__init__(
             self.source_text,
             id="markdown-preview",
@@ -70,11 +123,15 @@ class MarkdownPreview(Markdown):
     async def render_source(self, source: str) -> None:
         """Replace the rendered document and wait for its blocks to mount."""
         self._clear_link_selection()
+        self._clear_heading_selection()
+        self._links.clear()
+        self._headings.clear()
         self._footnote_origins.clear()
         self._footnote_link_origins.clear()
         await self.update(source)
         self.source_text = source
         self._index_links()
+        self._index_headings()
 
     def unhandled_token(self, token: Token) -> MarkdownBlock | None:
         """Mount the one custom block used as a footnote definition target."""
@@ -148,9 +205,28 @@ class MarkdownPreview(Markdown):
         selected = self._links[self._selected_link]
         await selected.block.action_link(selected.href)
 
+    def action_select_next_heading(self) -> None:
+        """Select the next rendered heading, stopping at the final heading."""
+        if not self._headings:
+            return
+        index = 0 if self._selected_heading is None else self._selected_heading + 1
+        self._select_heading(min(index, len(self._headings) - 1))
+
+    def action_select_previous_heading(self) -> None:
+        """Select the previous rendered heading, stopping at the first heading."""
+        if not self._headings:
+            return
+        index = (
+            len(self._headings) - 1
+            if self._selected_heading is None
+            else self._selected_heading - 1
+        )
+        self._select_heading(max(index, 0))
+
     def on_blur(self) -> None:
         """Remove keyboard selection when focus leaves the preview."""
         self._clear_link_selection()
+        self._clear_heading_selection()
 
     def _index_links(self) -> None:
         """Index Textual link actions from the mounted Markdown blocks."""
@@ -188,6 +264,19 @@ class MarkdownPreview(Markdown):
                 )
         self._links = links
 
+    def _index_headings(self) -> None:
+        """Index mounted heading blocks through Textual's public table of contents."""
+        headings: list[_PreviewHeading] = []
+        for level, label, block_id in self.table_of_contents:
+            if block_id is None:
+                continue
+            try:
+                block = self.query_one(f"#{block_id}", MarkdownBlock)
+            except NoMatches:
+                continue
+            headings.append(_PreviewHeading(block=block, label=label, level=level))
+        self._headings = headings
+
     def _select_href(self, href: str, *, scroll: bool) -> None:
         for index, link in enumerate(self._links):
             if link.href == href:
@@ -196,6 +285,7 @@ class MarkdownPreview(Markdown):
 
     def _select_link(self, index: int, *, scroll: bool = True) -> None:
         self._clear_link_selection()
+        self._clear_heading_selection()
         self._selected_link = index
         selected = self._links[index]
         selected.block.add_class("keyboard-link-selected")
@@ -206,6 +296,23 @@ class MarkdownPreview(Markdown):
         if scroll:
             selected.block.scroll_visible()
 
+    def _select_heading(self, index: int) -> None:
+        self._clear_heading_selection()
+        self._clear_link_selection()
+        self._selected_heading = index
+        selected = self._headings[index]
+        selected.block.add_class("keyboard-heading-selected")
+        selected.block.scroll_visible(animate=False, top=True, immediate=True)
+        self.post_message(
+            self.HeadingFocused(
+                self,
+                selected.label,
+                selected.level,
+                index + 1,
+                len(self._headings),
+            )
+        )
+
     def _clear_link_selection(self) -> None:
         if self._selected_link is None:
             return
@@ -213,3 +320,10 @@ class MarkdownPreview(Markdown):
         selected.block.remove_class("keyboard-link-selected")
         selected.block.update(selected.content, layout=False)
         self._selected_link = None
+
+    def _clear_heading_selection(self) -> None:
+        if self._selected_heading is None:
+            return
+        selected = self._headings[self._selected_heading]
+        selected.block.remove_class("keyboard-heading-selected")
+        self._selected_heading = None

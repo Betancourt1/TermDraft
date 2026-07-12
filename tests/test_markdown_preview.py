@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from markdown_it.token import Token
 from textual.app import App, ComposeResult
 from textual.content import Content
@@ -435,3 +436,229 @@ async def test_malformed_reserved_fragment_stays_inert() -> None:
 
         assert app.opened_urls == []
         assert preview.query(".keyboard-link-selected")
+
+
+async def test_keyboard_navigates_rendered_headings_and_posts_typed_positions() -> None:
+    source = (
+        "# Overview\n\n[Guide](https://example.com)\n\n"
+        + "\n\n".join(f"Opening filler {number}." for number in range(20))
+        + "\n\n## Résumé\n\n"
+        + "\n\n".join(f"Closing filler {number}." for number in range(20))
+        + "\n\n### Finish\n"
+    )
+
+    class PreviewApp(App[None]):
+        CSS = "MarkdownPreview { height: 8; overflow-y: auto; }"
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.heading_events: list[MarkdownPreview.HeadingFocused] = []
+
+        def compose(self) -> ComposeResult:
+            yield MarkdownPreview()
+
+        def on_markdown_preview_heading_focused(
+            self, event: MarkdownPreview.HeadingFocused
+        ) -> None:
+            self.heading_events.append(event)
+
+    app = PreviewApp()
+    async with app.run_test(size=(60, 12)) as pilot:
+        preview = app.query_one(MarkdownPreview)
+        await preview.render_source(source)
+        preview.focus()
+        await pilot.pause()
+
+        await pilot.press("alt+down")
+        selected = preview.query_one(".keyboard-heading-selected", MarkdownBlock)
+        selected_content = selected.render()
+        assert isinstance(selected_content, Content)
+        assert selected_content.plain == "Overview"
+        first_event = app.heading_events[-1]
+        assert first_event.control is preview
+        assert (first_event.label, first_event.level) == ("Overview", 1)
+        assert (first_event.position, first_event.total) == (1, 3)
+
+        await pilot.press("alt+down")
+        await pilot.pause()
+        selected = preview.query_one(".keyboard-heading-selected", MarkdownBlock)
+        selected_content = selected.render()
+        assert isinstance(selected_content, Content)
+        assert selected_content.plain == "Résumé"
+        assert preview.scroll_y > 0
+        second_event = app.heading_events[-1]
+        assert (second_event.label, second_event.level) == ("Résumé", 2)
+        assert (second_event.position, second_event.total) == (2, 3)
+
+        await pilot.press("alt+up")
+        assert app.heading_events[-1].label == "Overview"
+        assert app.heading_events[-1].position == 1
+
+        await pilot.press("tab")
+        assert not preview.query(".keyboard-heading-selected")
+        assert preview.query_one(".keyboard-link-selected", MarkdownBlock)
+
+        await pilot.press("alt+down")
+        assert preview.query_one(".keyboard-heading-selected", MarkdownBlock)
+        assert not preview.query(".keyboard-link-selected")
+
+
+async def test_heading_bindings_only_run_while_preview_has_focus() -> None:
+    class PreviewApp(App[None]):
+        def __init__(self) -> None:
+            super().__init__()
+            self.heading_labels: list[str] = []
+
+        def compose(self) -> ComposeResult:
+            yield Button("Before", id="before")
+            yield MarkdownPreview()
+
+        def on_markdown_preview_heading_focused(
+            self, event: MarkdownPreview.HeadingFocused
+        ) -> None:
+            self.heading_labels.append(event.label)
+
+    app = PreviewApp()
+    async with app.run_test(size=(60, 12)) as pilot:
+        preview = app.query_one(MarkdownPreview)
+        await preview.render_source("# First\n\n## Second\n")
+        app.query_one("#before", Button).focus()
+        await pilot.pause()
+
+        await pilot.press("alt+down")
+        assert app.heading_labels == []
+        assert not preview.query(".keyboard-heading-selected")
+
+        preview.focus()
+        await pilot.press("alt+down")
+        assert app.heading_labels == ["First"]
+        assert preview.query_one(".keyboard-heading-selected", MarkdownBlock)
+
+
+async def test_heading_binding_ids_support_textual_keymap_overrides() -> None:
+    class PreviewApp(App[None]):
+        def __init__(self) -> None:
+            super().__init__()
+            self.heading_labels: list[str] = []
+
+        def compose(self) -> ComposeResult:
+            yield MarkdownPreview()
+
+        def on_markdown_preview_heading_focused(
+            self, event: MarkdownPreview.HeadingFocused
+        ) -> None:
+            self.heading_labels.append(event.label)
+
+    app = PreviewApp()
+    app.set_keymap({"preview_next_heading": "alt+j"})
+    async with app.run_test() as pilot:
+        preview = app.query_one(MarkdownPreview)
+        await preview.render_source("# First\n\n## Second\n")
+        preview.focus()
+
+        await pilot.press("alt+down")
+        assert app.heading_labels == []
+
+        await pilot.press("alt+j")
+        assert app.heading_labels == ["First"]
+        assert preview.query_one(".keyboard-heading-selected", MarkdownBlock)
+
+
+async def test_failed_render_discards_stale_heading_and_link_indexes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class PreviewApp(App[None]):
+        def __init__(self) -> None:
+            super().__init__()
+            self.heading_labels: list[str] = []
+
+        def compose(self) -> ComposeResult:
+            yield MarkdownPreview()
+            yield Button("After", id="after")
+
+        def on_markdown_preview_heading_focused(
+            self, event: MarkdownPreview.HeadingFocused
+        ) -> None:
+            self.heading_labels.append(event.label)
+
+    app = PreviewApp()
+    async with app.run_test() as pilot:
+        preview = app.query_one(MarkdownPreview)
+        await preview.render_source("# Old heading\n\n[Old link](https://example.com)\n")
+        preview.focus()
+        await pilot.press("alt+down", "tab")
+        assert app.heading_labels == ["Old heading"]
+        assert preview.query_one(".keyboard-link-selected", MarkdownBlock)
+
+        async def fail_update(_source: str) -> None:
+            raise RuntimeError("injected render failure")
+
+        monkeypatch.setattr(preview, "update", fail_update)
+        with pytest.raises(RuntimeError, match="injected render failure"):
+            await preview.render_source("# Replacement\n")
+
+        assert not preview.query(".keyboard-heading-selected")
+        assert not preview.query(".keyboard-link-selected")
+        preview.focus()
+        await pilot.press("alt+down")
+        assert app.heading_labels == ["Old heading"]
+        assert not preview.query(".keyboard-heading-selected")
+
+        await pilot.press("tab")
+        assert app.focused is app.query_one("#after", Button)
+        assert not preview.query(".keyboard-link-selected")
+
+
+async def test_heading_index_is_replaced_with_each_rendered_source() -> None:
+    class PreviewApp(App[None]):
+        def __init__(self) -> None:
+            super().__init__()
+            self.positions: list[tuple[str, int, int]] = []
+
+        def compose(self) -> ComposeResult:
+            yield MarkdownPreview()
+
+        def on_markdown_preview_heading_focused(
+            self, event: MarkdownPreview.HeadingFocused
+        ) -> None:
+            self.positions.append((event.label, event.position, event.total))
+
+    app = PreviewApp()
+    async with app.run_test() as pilot:
+        preview = app.query_one(MarkdownPreview)
+        await preview.render_source("# Old first\n\n## Old second\n")
+        preview.focus()
+        await pilot.press("alt+down")
+        assert app.positions[-1] == ("Old first", 1, 2)
+
+        await preview.render_source("### Replacement\n")
+        assert not preview.query(".keyboard-heading-selected")
+        await pilot.press("alt+down")
+        assert app.positions[-1] == ("Replacement", 1, 1)
+
+
+async def test_heading_navigation_is_inert_without_rendered_headings() -> None:
+    class PreviewApp(App[None]):
+        def __init__(self) -> None:
+            super().__init__()
+            self.heading_events: list[MarkdownPreview.HeadingFocused] = []
+
+        def compose(self) -> ComposeResult:
+            yield MarkdownPreview()
+
+        def on_markdown_preview_heading_focused(
+            self, event: MarkdownPreview.HeadingFocused
+        ) -> None:
+            self.heading_events.append(event)
+
+    app = PreviewApp()
+    async with app.run_test() as pilot:
+        preview = app.query_one(MarkdownPreview)
+        await preview.render_source("A paragraph without headings.\n")
+        preview.focus()
+
+        await pilot.press("alt+down", "alt+up")
+        await pilot.pause()
+
+        assert app.heading_events == []
+        assert not preview.query(".keyboard-heading-selected")
