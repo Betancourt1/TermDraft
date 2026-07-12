@@ -51,6 +51,7 @@ from termwriter.screens.dialogs import (
     UnsavedDecision,
 )
 from termwriter.screens.recent_documents import RecentDocumentsDialog
+from termwriter.screens.semantic_inspector import SemanticInspectorDialog
 from termwriter.services.external_changes import (
     DiskProbe,
     ExternalChange,
@@ -74,6 +75,11 @@ from termwriter.services.recovery import (
     RecoveryRecord,
     RecoveryRetentionResult,
     RecoveryScan,
+)
+from termwriter.services.semantic_blocks import (
+    SemanticBlock,
+    SemanticBlockMap,
+    map_semantic_blocks,
 )
 from termwriter.services.session import (
     MAX_SESSION_DOCUMENTS,
@@ -144,6 +150,20 @@ class _LoadWorkerResult:
     recovery_record: RecoveryRecord | None = None
     load_error: str | None = None
     recovery_error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _SemanticMapRequest:
+    document: Document
+    path: Path
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class _SemanticMapResult:
+    request: _SemanticMapRequest
+    mapping: SemanticBlockMap | None = None
+    error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -2883,6 +2903,48 @@ class TermWriterApp(App[None]):
         if not self._has_modal:
             self.push_screen(HelpDialog(MARKDOWN_SYNTAX_HELP, title="Markdown syntax"))
 
+    def action_inspect_semantic_blocks(self) -> None:
+        if self._has_modal:
+            return
+        self._sync_editor_state()
+        document = self.document
+        if document is None:
+            self.notify("Open a Markdown document first", severity="warning")
+            return
+        self._semantic_map_worker(_SemanticMapRequest(document, document.path, document.text))
+
+    @work(group="semantic-map", exclusive=True, thread=True, exit_on_error=False)
+    def _semantic_map_worker(self, request: _SemanticMapRequest) -> None:
+        worker = get_current_worker()
+        try:
+            result = _SemanticMapResult(request, mapping=map_semantic_blocks(request.text))
+        except Exception as error:
+            result = _SemanticMapResult(request, error=str(error))
+        if not worker.is_cancelled:
+            self.call_from_thread(self._show_semantic_map, result)
+
+    def _show_semantic_map(self, result: _SemanticMapResult) -> None:
+        request = result.request
+        document = self.document
+        if (
+            document is not request.document
+            or document.path != request.path
+            or document.text != request.text
+        ):
+            return
+        if result.error is not None or result.mapping is None:
+            self.notify(
+                escape(result.error or "Semantic mapping failed"),
+                severity="warning",
+                title="Semantic blocks unavailable",
+            )
+            return
+        self.push_screen(SemanticInspectorDialog(result.mapping), self._jump_to_semantic_block)
+
+    def _jump_to_semantic_block(self, block: SemanticBlock | None) -> None:
+        if block is not None and self.document is not None:
+            self._focus_editor_at(block.start_line, 0)
+
     def action_reload_config(self) -> None:
         if self._has_modal:
             return
@@ -2967,6 +3029,11 @@ class TermWriterApp(App[None]):
             "Markdown syntax help",
             "Show supported Markdown and nesting examples",
             self.action_show_markdown_help,
+        )
+        yield SystemCommand(
+            "Inspect semantic blocks",
+            "Inspect read-only parser ranges for the active Markdown source",
+            self.action_inspect_semantic_blocks,
         )
         yield SystemCommand(
             "Quit safely", "Prompt before discarding changes", self.action_request_quit

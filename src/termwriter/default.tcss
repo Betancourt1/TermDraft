@@ -122,6 +122,23 @@ ModalScreen {
     height: 32;
 }
 
+#semantic-inspector-dialog {
+    height: 34;
+}
+
+#semantic-blocks {
+    height: 1fr;
+    min-height: 6;
+    border: round $panel-lighten-2;
+    margin-bottom: 1;
+}
+
+#semantic-block-detail {
+    height: 9;
+    overflow-y: auto;
+    color: $text-muted;
+}
+
 #recovery-manager-records {
     height: 1fr;
     min-height: 5;
