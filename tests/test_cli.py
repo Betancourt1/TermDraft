@@ -80,6 +80,7 @@ def test_cli_commands_show_effective_remapped_keys(
     assert "Open the command palette" in output
     assert "Search workspace text (literal / fuzzy / word / regex)" in output
     assert "manage recovery drafts" in output
+    assert "inspect semantic blocks" in output
     assert "Esc in editor" in output
     assert "Tab / Shift+Tab in preview" in output
     assert "Select links or leave the preview" in output

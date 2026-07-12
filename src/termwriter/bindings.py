@@ -221,7 +221,8 @@ def format_command_help(
         + "  Save, find file, open recent, next/previous/close tab, search workspace text,\n"
         + "  toggle files, toggle preview,\n"
         + "  undo, redo,\n"
-        + "  reload configuration, manage recovery drafts, shortcut help,\n"
+        + "  reload configuration, manage recovery drafts, inspect semantic blocks,\n"
+        + "  shortcut help,\n"
         + "  Markdown syntax help, and safe quit."
     )
 
