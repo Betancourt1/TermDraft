@@ -96,6 +96,16 @@ from termwriter.widgets.preview import MarkdownPreview
 from termwriter.widgets.status_bar import TermWriterStatusBar
 
 
+def _paths_reserve_same_spelling(left: Path, right: Path) -> bool:
+    """Reserve normalized names only when their parent directory is the same."""
+    if path_spelling_key(left) != path_spelling_key(right):
+        return False
+    try:
+        return left.parent.samefile(right.parent)
+    except OSError:
+        return left.parent == right.parent
+
+
 class _ProbePurpose(Enum):
     WATCH = auto()
     TRANSITION = auto()
@@ -2279,7 +2289,7 @@ class TermWriterApp(App[None]):
         try:
             target = self.workspace.validate_document_path(requested_path, must_exist=False)
             if any(
-                path_spelling_key(target) == path_spelling_key(occupied_path)
+                _paths_reserve_same_spelling(target, occupied_path)
                 or paths_are_spelling_aliases(target, occupied_path)
                 for occupied_path in occupied_paths
             ):
