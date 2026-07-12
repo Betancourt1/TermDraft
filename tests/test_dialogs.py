@@ -38,7 +38,7 @@ class RecoveryManagerHarness(App[None]):
     def __init__(self, dialog: RecoveryManagerDialog) -> None:
         self.dialog = dialog
         self.result: RecoveryManagerRequest | None = None
-        super().__init__()
+        super().__init__(css_path=Path(__file__).parents[1] / "src" / "termwriter" / "default.tcss")
 
     def on_mount(self) -> None:
         self.push_screen(self.dialog, self._store_result)
@@ -148,6 +148,38 @@ async def test_recovery_manager_protects_active_draft_and_can_archive_corrupt_en
         assert app.result is not None
         assert app.result.action is RecoveryManagerAction.QUARANTINE
         assert app.result.record.entry is None
+
+
+async def test_recovery_manager_actions_fit_and_scroll_into_a_narrow_terminal(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    journal = RecoveryJournal(tmp_path / "state")
+    journal.save(
+        document_path=workspace / "draft.md",
+        workspace_root=workspace,
+        text="draft",
+        encoding="utf-8",
+        base_snapshot=FileSnapshot.missing(),
+    )
+    dialog = RecoveryManagerDialog(journal.list_entries(workspace), workspace)
+    app = RecoveryManagerHarness(dialog)
+
+    async with app.run_test(size=(24, 20)) as pilot:
+        await pilot.pause()
+        for selector in (
+            "#recovery-manager-open",
+            "#recovery-manager-retarget",
+            "#recovery-manager-archive",
+            "#recovery-manager-close",
+        ):
+            button = dialog.query_one(selector, Button).focus()
+            await pilot.pause()
+            assert button.region.x >= 0
+            assert button.region.right <= app.size.width
+            assert button.region.y >= 0
+            assert button.region.bottom <= app.size.height
 
 
 async def test_recovery_manager_returns_explicit_retarget_request(tmp_path: Path) -> None:

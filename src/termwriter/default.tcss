@@ -126,6 +126,19 @@ ModalScreen {
     margin-bottom: 1;
 }
 
+#recovery-manager-buttons {
+    height: 7;
+    grid-size: 2 2;
+    grid-columns: 1fr 1fr;
+    grid-rows: 3 3;
+    grid-gutter: 1;
+}
+
+#recovery-manager-buttons Button {
+    width: 1fr;
+    margin: 0;
+}
+
 #search-input, #file-search-filter, #text-search-input {
     margin-bottom: 1;
 }

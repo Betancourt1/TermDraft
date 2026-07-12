@@ -11,7 +11,7 @@ from typing import ClassVar
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Horizontal, Vertical
+from textual.containers import Grid, Horizontal, Vertical
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Input, OptionList, Select, Static
@@ -159,7 +159,7 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | None]):
                 placeholder="Retarget to a workspace path, e.g. notes/renamed.md",
                 id="recovery-manager-target",
             )
-            with Horizontal(classes="dialog-buttons", id="recovery-manager-buttons"):
+            with Grid(classes="dialog-buttons", id="recovery-manager-buttons"):
                 yield Button("Open draft", id="recovery-manager-open", variant="primary")
                 yield Button("Retarget", id="recovery-manager-retarget")
                 yield Button("Archive", id="recovery-manager-archive", variant="warning")
