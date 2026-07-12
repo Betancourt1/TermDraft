@@ -346,7 +346,9 @@ recovery. Restoring one installs an unavailable-path conflict: Ctrl+S cannot rec
 original name, while Save As can publish a new workspace-relative copy. Entries belonging to another
 workspace are ignored. Immediately before each orphan prompt, a worker rereads the exact
 `RecoveryRecord` and source availability so a delayed inventory cannot present an older cooperating
-process's draft.
+process's draft. This does not lock the record for the duration of the user's dialog decision;
+another instance can publish afterward, and recovery metadata remains last-writer-sensitive rather
+than a version history.
 
 Every successful publication returns an exact content fingerprint. Cleanup acquires the same
 per-journal lock and deletes only that observed version; a newer or newly appeared journal is

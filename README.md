@@ -394,6 +394,10 @@ writer locking.
 - Recovery mutations use advisory per-journal locks between cooperating TermWriter processes. An
   unrelated program can ignore them, and lock behavior on unusual or network filesystems remains
   filesystem-dependent.
+- An orphan draft is revalidated immediately before its prompt, but not continuously while the
+  prompt remains open. Another TermWriter instance can publish a newer journal during that decision;
+  restoring and then editing the captured draft may supersede the newer recovery journal. The
+  Markdown-file conflict guard still applies, but recovery metadata is not a multi-writer history.
 - The watcher polls only the active file every two seconds. It is not an operating-system event
   watcher. Hashing runs in a worker, so a completed check can arrive after the disk changed again;
   save and transition checks remain authoritative.
