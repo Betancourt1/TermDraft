@@ -318,6 +318,9 @@ preservation, and non-cancellable writer locking.
   source in a private per-user state directory.
 - Archived recovery entries are retained as opaque files in `quarantine/`; TermWriter does not yet
   provide a permanent-delete or restore-from-quarantine UI.
+- Recovery mutations use advisory per-journal locks between cooperating TermWriter processes. An
+  unrelated program can ignore them, and lock behavior on unusual or network filesystems remains
+  filesystem-dependent.
 - The watcher polls only the active file every two seconds. It is not an operating-system event
   watcher. Hashing runs in a worker, so a completed check can arrive after the disk changed again;
   save and transition checks remain authoritative.
@@ -356,14 +359,16 @@ preservation, and non-cancellable writer locking.
 - A malformed `theme.tcss` can prevent startup until the file is corrected. Only a theme present at
   launch is watched; create the templates with `--init-config` before opening the TUI.
 - Workspace text search returns one match per source line and caps results at 100. Fuzzy mode scans
-  every candidate line before returning its globally strongest matches. Compound filters do not
-  provide escaping for filenames containing commas. Regexes are limited to 500 characters and 50 ms
-  per source line; a timed-out expression returns an error instead of results.
+  every candidate line before returning its globally strongest matches, with cooperative
+  cancellation during long lines. Compound filters do not provide escaping for filenames containing
+  commas. Regexes are limited to 500 characters and 50 ms per source line; a timed-out expression
+  returns an error instead of results.
 - Thread workers cannot stop an in-progress operating-system read or write. TermWriter ignores stale
   read/probe results; an atomic writer is deliberately allowed to finish while the UI stays locked.
-- Recovery-journal publication and workspace index refreshes remain synchronous. They can briefly
-  pause input for an unusually large dirty document or workspace even though Markdown-file hashing
-  and publication now run outside the UI thread.
+- Recovery-journal publication and workspace index refreshes remain synchronous. Journal locking
+  can also wait briefly for another TermWriter process. These operations can pause input for an
+  unusually large dirty document or workspace even though Markdown-file hashing and publication now
+  run outside the UI thread.
 
 ## Near-term roadmap
 

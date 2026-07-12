@@ -118,11 +118,14 @@ wins, while a clean document prefers current disk content and still remains sear
 disappeared.
 
 The modal starts search only when Enter is submitted and runs both the recursive scan and file reads
-through a Textual thread worker. Cancellation is checked between workspace entries, files, and source
-lines; only the result callback updates widgets on the UI thread. Results are deterministic,
-same-file aliases are deduplicated, the list is limited to 100 matching lines, and each line produces
-at most one result. Fuzzy mode retains a bounded set while scanning, then orders matches globally by
-subsequence tightness, word boundary, source position, line length, path, and line. File search uses
+through a Textual thread worker. Cancellation is checked between workspace entries, files, source
+lines, and periodically within long fuzzy matches. A submission revision prevents an older callback
+from replacing results after the mode, filter, or case option changes. Only the accepted callback
+updates widgets on the UI thread. Results are deterministic, same-file aliases are deduplicated, the
+list is limited to 100 matching lines, and each line produces at most one result. Fuzzy mode
+canonically decomposes Unicode while retaining original source columns, keeps a bounded set while
+scanning, then orders matches globally by subsequence tightness, word boundary, source position,
+line length, path, and line. File search uses
 the same normalized subsequence idea while preserving prefix and substring priority. Selecting a
 different file revalidates its path and enters the same guarded transition used by the explorer and
 file search; a dirty current document therefore still requires Save / Discard / Cancel. A pending
@@ -245,7 +248,10 @@ identity, and a timezone-aware update time. It never replaces or changes a Markd
 Each journal update creates a mode-0600 temporary file in the recovery directory, writes exact UTF-8
 JSON, flushes and `fsync`s it, publishes it with same-directory `os.replace`, and attempts to `fsync`
 the directory. Failed pre-publication writes clean the temporary entry and retain the prior complete
-journal. The state root is injectable so tests never use personal files.
+journal. Persistent per-journal lock files serialize mutations by cooperating TermWriter processes;
+retarget acquires its source and destination locks in deterministic order. The locks are advisory and
+their guarantees still depend on the filesystem. The state root is injectable so tests never use
+personal files.
 
 `TermWriterApp` schedules a nominal 500 ms deadline after the first dirty edit. Later edits update
 the in-memory payload without moving that deadline, so sustained typing does not reset the timer.
@@ -274,7 +280,8 @@ visible because their metadata cannot be trusted enough to associate them. A fin
 mutation to the exact listed bytes. Retarget validates workspace containment, publishes the new
 journal with a no-clobber hard link, then removes the old record. Archive uses the same no-clobber
 rule to preserve exact bytes under `quarantine/` before removing the active entry. The manager does
-not expose permanent deletion, and it protects the active dirty document's journal.
+not expose permanent deletion. It revalidates resolved path containment when loading records and
+rechecks the active dirty document immediately before moving or archiving its journal.
 
 The journal narrows crash loss but is not autosave or history. The 500 ms window, state-directory
 write failures, forced termination during the timer, and storage failure can still lose unsaved text.
