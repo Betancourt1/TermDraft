@@ -63,6 +63,10 @@ auto_continue_lists = true
 soft_wrap = true
 show_line_numbers = true
 
+[recovery]
+# Used only when you explicitly choose age-based cleanup in Recovery Manager.
+retention_days = 30
+
 [keybindings]
 # Bindings override keys only. They cannot define actions or commands.
 # save = "ctrl+s"
@@ -104,11 +108,19 @@ class EditorConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RecoveryConfig:
+    """Manual recovery-retention behavior."""
+
+    retention_days: int = 30
+
+
+@dataclass(frozen=True, slots=True)
 class TermWriterConfig:
     """Fully resolved configuration, including defaults."""
 
     root: Path
     editor: EditorConfig = field(default_factory=EditorConfig)
+    recovery: RecoveryConfig = field(default_factory=RecoveryConfig)
     keybindings: Mapping[str, str] = field(
         default_factory=lambda: MappingProxyType(dict(DEFAULT_KEYBINDINGS))
     )
@@ -160,15 +172,21 @@ def load_config(
         raise ConfigError(f"cannot read {config_path}: {error}") from error
 
     config = _as_table(raw_config, "configuration root")
-    unknown_sections = set(config) - {"editor", "keybindings"}
+    unknown_sections = set(config) - {"editor", "recovery", "keybindings"}
     if unknown_sections:
         raise ConfigError(
             f"unknown configuration section or key: {_format_names(unknown_sections)}"
         )
 
     editor = _parse_editor(config.get("editor", {}))
+    recovery = _parse_recovery(config.get("recovery", {}))
     keybindings = _parse_keybindings(config.get("keybindings", {}))
-    return TermWriterConfig(root=root, editor=editor, keybindings=keybindings)
+    return TermWriterConfig(
+        root=root,
+        editor=editor,
+        recovery=recovery,
+        keybindings=keybindings,
+    )
 
 
 def initialize_config(
@@ -209,6 +227,21 @@ def _parse_editor(raw_editor: object) -> EditorConfig:
         soft_wrap=values["soft_wrap"],
         show_line_numbers=values["show_line_numbers"],
     )
+
+
+def _parse_recovery(raw_recovery: object) -> RecoveryConfig:
+    recovery = _as_table(raw_recovery, "recovery")
+    unknown_keys = set(recovery) - {"retention_days"}
+    if unknown_keys:
+        raise ConfigError(f"unknown recovery option: {_format_names(unknown_keys)}")
+    retention_days = recovery.get("retention_days", 30)
+    if (
+        not isinstance(retention_days, int)
+        or isinstance(retention_days, bool)
+        or retention_days < 1
+    ):
+        raise ConfigError("recovery.retention_days must be a positive integer")
+    return RecoveryConfig(retention_days=retention_days)
 
 
 def _parse_keybindings(raw_keybindings: object) -> Mapping[str, str]:

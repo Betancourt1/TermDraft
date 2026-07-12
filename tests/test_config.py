@@ -19,6 +19,7 @@ from termwriter.config import (
     THEME_TEMPLATE,
     ConfigError,
     EditorConfig,
+    RecoveryConfig,
     get_config_root,
     initialize_config,
     load_config,
@@ -57,6 +58,7 @@ def test_missing_config_returns_effective_defaults(tmp_path: Path) -> None:
     config = load_config(tmp_path / "missing")
 
     assert config.editor == EditorConfig()
+    assert config.recovery == RecoveryConfig()
     assert config.keybindings == DEFAULT_KEYBINDINGS
     assert set(config.keybindings) == KNOWN_BINDING_IDS
     assert config.config_path == tmp_path / "missing" / CONFIG_FILE_NAME
@@ -71,6 +73,9 @@ def test_config_applies_editor_and_keybinding_overrides(tmp_path: Path) -> None:
 [editor]
 auto_continue_lists = false
 show_line_numbers = false
+
+[recovery]
+retention_days = 45
 
 [keybindings]
 save = "ctrl+shift+s"
@@ -87,6 +92,7 @@ redo = "ctrl+r, ctrl+shift+r"
         soft_wrap=True,
         show_line_numbers=False,
     )
+    assert config.recovery == RecoveryConfig(retention_days=45)
     assert config.keybindings["save"] == "ctrl+shift+s"
     assert config.keybindings["search_text"] == "ctrl+f"
     assert config.keybindings["redo"] == "ctrl+r,ctrl+shift+r"
@@ -101,6 +107,10 @@ redo = "ctrl+r, ctrl+shift+r"
         ("editor = true\n", "editor must be a TOML table"),
         ("[editor]\nunknown = true\n", "unknown editor option"),
         ("[editor]\nsoft_wrap = 1\n", "editor.soft_wrap must be true or false"),
+        ("recovery = true\n", "recovery must be a TOML table"),
+        ("[recovery]\nunknown = 1\n", "unknown recovery option"),
+        ("[recovery]\nretention_days = 0\n", "must be a positive integer"),
+        ("[recovery]\nretention_days = true\n", "must be a positive integer"),
         ("keybindings = false\n", "keybindings must be a TOML table"),
         ('[keybindings]\nunknown = "ctrl+x"\n', "unknown keybinding id"),
         ("[keybindings]\nsave = true\n", "keybindings.save must be a string"),
@@ -171,12 +181,14 @@ def test_templates_are_valid_and_initialization_is_private(tmp_path: Path) -> No
     config = initialize_config(root)
 
     assert config.editor == EditorConfig()
+    assert config.recovery == RecoveryConfig()
     assert (root / CONFIG_FILE_NAME).read_text(encoding="utf-8") == CONFIG_TEMPLATE
     assert (root / THEME_FILE_NAME).read_text(encoding="utf-8") == THEME_TEMPLATE
     assert stat.S_IMODE(root.stat().st_mode) == 0o700
     assert stat.S_IMODE((root / CONFIG_FILE_NAME).stat().st_mode) == 0o600
     assert stat.S_IMODE((root / THEME_FILE_NAME).stat().st_mode) == 0o600
     assert tomllib.loads(CONFIG_TEMPLATE)["editor"]["soft_wrap"] is True
+    assert tomllib.loads(CONFIG_TEMPLATE)["recovery"]["retention_days"] == 30
 
 
 def test_initialization_does_not_replace_existing_files(tmp_path: Path) -> None:
