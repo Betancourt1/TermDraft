@@ -5,12 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from textual.widgets import Static
+from textual.widgets import Checkbox, Input, Select, Static
 
 from termwriter.app import TermWriterApp
 from termwriter.models.workspace import Workspace
 from termwriter.screens.dialogs import TextSearchDialog, UnsavedChangesDialog
 from termwriter.services.recovery import RecoveryJournal
+from termwriter.services.text_search import TextSearchMode
 
 
 def _app(path: Path) -> TermWriterApp:
@@ -68,6 +69,54 @@ async def test_text_search_uses_dirty_active_source(tmp_path: Path) -> None:
         assert app.document.dirty
         assert app.editor.cursor_location == (0, 0)
         assert path.read_text(encoding="utf-8") == "base"
+
+
+async def test_text_search_dialog_applies_regex_case_and_file_filter(
+    tmp_path: Path,
+) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    active = tmp_path / "active.md"
+    selected = docs / "selected.md"
+    excluded = tmp_path / "excluded.md"
+    active.write_text("nothing", encoding="utf-8")
+    selected.write_text("Ticket id-42", encoding="utf-8")
+    excluded.write_text("Ticket ID-99", encoding="utf-8")
+    app = _app(active)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.press("ctrl+shift+f")
+        assert isinstance(app.screen, TextSearchDialog)
+        app.screen.query_one("#text-search-mode", Select).value = TextSearchMode.REGEX.value
+        app.screen.query_one("#text-search-case", Checkbox).value = False
+        app.screen.query_one("#text-search-filter", Input).value = "docs/*.md"
+
+        app.screen.query_one("#text-search-input", Input).value = r"id-\d+"
+        await pilot.press("enter")
+        await pilot.pause(0.15)
+
+        assert [(match.path, match.column) for match in app.screen.matches] == [(selected, 7)]
+        status = app.screen.query_one("#text-search-status", Static)
+        assert "regular expression" in str(status.render())
+        assert "docs/*.md" in str(status.render())
+
+
+async def test_text_search_dialog_reports_invalid_regex(tmp_path: Path) -> None:
+    path = tmp_path / "active.md"
+    path.write_text("text", encoding="utf-8")
+    app = _app(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("ctrl+shift+f")
+        assert isinstance(app.screen, TextSearchDialog)
+        app.screen.query_one("#text-search-mode", Select).value = TextSearchMode.REGEX.value
+
+        await pilot.press("[", "enter")
+        await pilot.pause(0.1)
+
+        assert app.screen.matches == ()
+        status = app.screen.query_one("#text-search-status", Static)
+        assert "Invalid regular expression" in str(status.render())
 
 
 async def test_text_search_reads_new_disk_text_for_a_clean_active_document(

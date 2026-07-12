@@ -12,7 +12,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, OptionList, Static
+from textual.widgets import Button, Checkbox, Input, OptionList, Select, Static
 from textual.widgets.option_list import Option
 from textual.worker import get_current_worker
 
@@ -20,6 +20,8 @@ from termwriter.models.workspace import Workspace
 from termwriter.services.file_search import search_files
 from termwriter.services.text_search import (
     TextSearchMatch,
+    TextSearchMode,
+    TextSearchOptions,
     TextSearchOverride,
     TextSearchResult,
     search_text,
@@ -370,8 +372,25 @@ class TextSearchDialog(ModalScreen[TextSearchMatch | None]):
         with Vertical(classes="dialog", id="text-search-dialog"):
             yield Static("Search workspace text", classes="dialog-title", markup=False)
             yield Input(
-                placeholder="Type literal text and press Enter…",
+                placeholder="Type a query and press Enter…",
                 id="text-search-input",
+            )
+            with Horizontal(id="text-search-options"):
+                yield Select(
+                    (
+                        ("Literal", TextSearchMode.LITERAL.value),
+                        ("Whole word", TextSearchMode.WHOLE_WORD.value),
+                        ("Regular expression", TextSearchMode.REGEX.value),
+                    ),
+                    value=TextSearchMode.LITERAL.value,
+                    allow_blank=False,
+                    compact=True,
+                    id="text-search-mode",
+                )
+                yield Checkbox("Match case", compact=True, id="text-search-case")
+            yield Input(
+                placeholder="Optional file glob, e.g. notes/**/*.md",
+                id="text-search-filter",
             )
             yield Static("Enter a query to search Markdown source.", id="text-search-status")
             yield OptionList(id="text-search-results", markup=False)
@@ -390,10 +409,20 @@ class TextSearchDialog(ModalScreen[TextSearchMatch | None]):
             return
         self.query_one("#text-search-status", Static).update("Searching…")
         self._set_placeholder("Searching…")
-        self._search_in_background(query)
+        mode_value = self.query_one("#text-search-mode", Select).value
+        mode = (
+            TextSearchMode.LITERAL if mode_value is Select.NULL else TextSearchMode(str(mode_value))
+        )
+        file_filter = self.query_one("#text-search-filter", Input).value.strip() or None
+        options = TextSearchOptions(
+            mode=mode,
+            file_filter=file_filter,
+            case_sensitive=self.query_one("#text-search-case", Checkbox).value,
+        )
+        self._search_in_background(query, options)
 
     @work(group="text-search", exclusive=True, thread=True, exit_on_error=False)
-    def _search_in_background(self, query: str) -> None:
+    def _search_in_background(self, query: str, options: TextSearchOptions) -> None:
         worker = get_current_worker()
         try:
             scan = self.workspace.scan(should_cancel=lambda: worker.is_cancelled)
@@ -402,23 +431,34 @@ class TextSearchDialog(ModalScreen[TextSearchMatch | None]):
                 query,
                 active_override=self.active_override,
                 should_cancel=lambda: worker.is_cancelled,
+                options=options,
+                root=self.root,
             )
             result = TextSearchResult(
                 result.matches,
                 (*scan.warnings, *result.warnings),
+                result.error,
             )
         except Exception as error:
             if not worker.is_cancelled:
                 self.app.call_from_thread(self._show_error, query, str(error))
             return
         if not worker.is_cancelled:
-            self.app.call_from_thread(self._show_results, query, result)
+            self.app.call_from_thread(self._show_results, query, options, result)
 
-    def _show_results(self, query: str, result: TextSearchResult) -> None:
+    def _show_results(
+        self,
+        query: str,
+        options: TextSearchOptions,
+        result: TextSearchResult,
+    ) -> None:
         if not self.is_mounted or self.query_one("#text-search-input", Input).value != query:
             return
+        if result.error is not None:
+            self._show_error(query, result.error)
+            return
         self.matches = result.matches
-        options = [
+        result_options = [
             Option(
                 f"{match.path.relative_to(self.root).as_posix()}:{match.line + 1}:"
                 f"{match.column + 1}  {match.preview}",
@@ -427,14 +467,21 @@ class TextSearchDialog(ModalScreen[TextSearchMatch | None]):
             for index, match in enumerate(self.matches)
         ]
         results = self.query_one("#text-search-results", OptionList)
-        if options:
-            results.set_options(options)
+        if result_options:
+            results.set_options(result_options)
             results.highlighted = 0
             results.focus()
         else:
             self._set_placeholder("No matching source lines")
         match_word = "match" if len(self.matches) == 1 else "matches"
-        status = f"{len(self.matches)} {match_word}"
+        mode_label = {
+            TextSearchMode.LITERAL: "literal",
+            TextSearchMode.WHOLE_WORD: "whole word",
+            TextSearchMode.REGEX: "regular expression",
+        }[options.mode]
+        status = f"{len(self.matches)} {match_word} · {mode_label}"
+        if options.file_filter:
+            status += f" · {options.file_filter}"
         if result.warnings:
             warning_word = "warning" if len(result.warnings) == 1 else "warnings"
             status += f" · {len(result.warnings)} {warning_word}"

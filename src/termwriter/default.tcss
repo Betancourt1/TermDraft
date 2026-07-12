@@ -101,10 +101,27 @@ ModalScreen {
 }
 
 #search-dialog, #text-search-dialog {
-    height: 24;
+    height: 28;
 }
 
 #search-input, #text-search-input {
+    margin-bottom: 1;
+}
+
+#text-search-options {
+    height: 3;
+}
+
+#text-search-mode {
+    width: 1fr;
+}
+
+#text-search-case {
+    width: auto;
+    margin-left: 1;
+}
+
+#text-search-filter {
     margin-bottom: 1;
 }
 

@@ -10,6 +10,9 @@ import pytest
 from termwriter.services.persistence import LoadedFile, load_file
 from termwriter.services.text_search import (
     MAX_PREVIEW_LENGTH,
+    MAX_REGEX_LENGTH,
+    TextSearchMode,
+    TextSearchOptions,
     TextSearchOverride,
     search_text,
 )
@@ -40,6 +43,102 @@ def test_search_reports_zero_based_unicode_source_columns(tmp_path: Path) -> Non
 
     assert expanded_fold.matches[0].column == 1
     assert accented.matches[0].column == 3
+
+
+def test_whole_word_search_respects_unicode_boundaries_and_casefolding(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "unicode.md"
+    path.write_text("Straße\nSTRASSE\nStrassen\nVorstraße\n", encoding="utf-8")
+
+    result = search_text(
+        (path,),
+        "strasse",
+        options=TextSearchOptions(mode=TextSearchMode.WHOLE_WORD),
+    )
+
+    assert [(match.line, match.column) for match in result.matches] == [(0, 0), (1, 0)]
+    assert result.error is None
+
+
+def test_literal_and_whole_word_search_can_be_case_sensitive(tmp_path: Path) -> None:
+    path = tmp_path / "case.md"
+    path.write_text("Word\nword\nsWord\n", encoding="utf-8")
+
+    literal = search_text(
+        (path,),
+        "Word",
+        options=TextSearchOptions(case_sensitive=True),
+    )
+    whole_word = search_text(
+        (path,),
+        "Word",
+        options=TextSearchOptions(
+            mode=TextSearchMode.WHOLE_WORD,
+            case_sensitive=True,
+        ),
+    )
+
+    assert [match.line for match in literal.matches] == [0, 2]
+    assert [match.line for match in whole_word.matches] == [0]
+
+
+def test_regex_search_supports_unicode_case_insensitive_patterns_and_source_columns(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "regex.md"
+    path.write_text("Préfix CAFÉ-42 suffix\nCafé-no-number\n", encoding="utf-8")
+
+    result = search_text(
+        (path,),
+        r"café-\d+",
+        options=TextSearchOptions(mode=TextSearchMode.REGEX),
+    )
+
+    assert [(match.line, match.column, match.preview) for match in result.matches] == [
+        (0, 7, "Préfix CAFÉ-42 suffix")
+    ]
+    assert result.error is None
+
+
+def test_regex_search_can_be_case_sensitive_and_returns_one_match_per_line(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "regex.md"
+    path.write_text("ID-1 ID-2\nid-3\n", encoding="utf-8")
+
+    result = search_text(
+        (path,),
+        r"ID-\d",
+        options=TextSearchOptions(
+            mode=TextSearchMode.REGEX,
+            case_sensitive=True,
+        ),
+    )
+
+    assert [(match.line, match.column) for match in result.matches] == [(0, 0)]
+
+
+def test_invalid_or_oversized_regex_returns_error_without_reading_files(
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "missing.md"
+    regex_options = TextSearchOptions(mode=TextSearchMode.REGEX)
+
+    invalid = search_text((missing,), "[", options=regex_options)
+    oversized = search_text(
+        (missing,),
+        "x" * (MAX_REGEX_LENGTH + 1),
+        options=regex_options,
+    )
+
+    assert invalid.matches == ()
+    assert invalid.warnings == ()
+    assert invalid.error is not None
+    assert invalid.error.startswith("Invalid regular expression:")
+    assert oversized.matches == ()
+    assert oversized.warnings == ()
+    assert oversized.error == (f"Regular expression is limited to {MAX_REGEX_LENGTH} characters.")
 
 
 def test_search_handles_utf8_bom_crlf_and_missing_final_newline(tmp_path: Path) -> None:
@@ -74,6 +173,72 @@ def test_limit_is_deterministic_across_unsorted_and_duplicate_paths(tmp_path: Pa
         ("a.md", 0),
         ("a.md", 1),
     ]
+
+
+def test_file_filter_matches_case_insensitive_workspace_relative_posix_glob(
+    tmp_path: Path,
+) -> None:
+    docs = tmp_path / "docs"
+    deep = docs / "deep"
+    deep.mkdir(parents=True)
+    direct = docs / "Guide.MD"
+    nested = deep / "nested.md"
+    root_file = tmp_path / "root.md"
+    direct.write_text("needle direct\n", encoding="utf-8")
+    nested.write_text("needle nested\n", encoding="utf-8")
+    root_file.write_text("needle root\n", encoding="utf-8")
+
+    direct_result = search_text(
+        (root_file, nested, direct),
+        "needle",
+        options=TextSearchOptions(file_filter=" DOCS/*.md "),
+        root=tmp_path,
+    )
+    nested_result = search_text(
+        (root_file, nested, direct),
+        "needle",
+        options=TextSearchOptions(file_filter="docs/**/*.md"),
+        root=tmp_path,
+    )
+
+    assert [match.path for match in direct_result.matches] == [direct]
+    assert [match.path for match in nested_result.matches] == [nested]
+
+
+def test_file_filter_is_applied_before_loading_or_using_active_override(
+    tmp_path: Path,
+) -> None:
+    included = tmp_path / "included.md"
+    missing_excluded = tmp_path / "excluded.markdown"
+    included.write_text("needle on disk\n", encoding="utf-8")
+
+    result = search_text(
+        (included, missing_excluded),
+        "needle",
+        options=TextSearchOptions(file_filter="*.md"),
+        root=tmp_path,
+        active_override=TextSearchOverride(
+            missing_excluded,
+            "needle in memory\n",
+        ),
+    )
+
+    assert [match.path for match in result.matches] == [included]
+    assert result.warnings == ()
+
+
+def test_file_filter_requires_workspace_root_before_reading_files(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.md"
+
+    result = search_text(
+        (missing,),
+        "needle",
+        options=TextSearchOptions(file_filter="*.md"),
+    )
+
+    assert result.matches == ()
+    assert result.warnings == ()
+    assert result.error == "A workspace root is required when using a file filter."
 
 
 def test_file_failures_become_warnings_without_hiding_other_matches(
