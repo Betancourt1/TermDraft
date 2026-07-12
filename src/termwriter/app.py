@@ -209,6 +209,7 @@ class TermWriterApp(App[None]):
         self._open_documents: list[_OpenDocument] = []
         self._next_tab_id = 0
         self._quit_documents: list[Document] | None = None
+        self._quit_active_document: Document | None = None
         self.preview_debounce = preview_debounce
         self.external_poll_interval = external_poll_interval
         self.recovery_debounce = recovery_debounce
@@ -249,6 +250,7 @@ class TermWriterApp(App[None]):
         self._orphan_recoveries: list[RecoveryEntry] = []
         self._scan_orphans_after_session_open = False
         self._mixed_reload_continuation: Callable[[], None] | None = None
+        self._mixed_reload_document: Document | None = None
         self._pending_open_location: tuple[Path, int, int] | None = None
         self._pending_focus_location: tuple[int, int] | None = None
         self._preview_heading_announcement: str | None = None
@@ -487,7 +489,7 @@ class TermWriterApp(App[None]):
             scroll_y=float(self.editor.scroll_offset.y),
         )
 
-    def _remember_document_view(self, document: Document) -> None:
+    def _remember_document_view(self, document: Document, *, mark_recent: bool = True) -> None:
         """Cache one document's content-free view coordinates."""
         cursor = document.cursor
         self._session_views[document.path] = DocumentViewState(
@@ -497,7 +499,8 @@ class TermWriterApp(App[None]):
             scroll_x=cursor.scroll_x,
             scroll_y=cursor.scroll_y,
         )
-        self._mark_document_recent(document.path)
+        if mark_recent:
+            self._mark_document_recent(document.path)
 
     def _mark_document_recent(self, path: Path) -> None:
         """Move one exact workspace path to the front of the MRU order."""
@@ -669,7 +672,11 @@ class TermWriterApp(App[None]):
     @on(Tabs.TabActivated, "#document-tabs")
     def document_tab_activated(self, event: Tabs.TabActivated) -> None:
         event.stop()
-        if not self.query(MarkdownEditor) or self.document_tabs.active != event.tab.id:
+        if (
+            self._exit_requested
+            or not self.query(MarkdownEditor)
+            or self.document_tabs.active != event.tab.id
+        ):
             return
         opened = next(
             (item for item in self._open_documents if item.tab_id == event.tab.id),
@@ -684,6 +691,8 @@ class TermWriterApp(App[None]):
         self._activate_document(opened.document)
 
     def _request_open(self, path: Path) -> None:
+        if self._exit_requested:
+            return
         try:
             safe_path = self.workspace.validate_document_path(path)
         except WorkspaceError as error:
@@ -706,6 +715,8 @@ class TermWriterApp(App[None]):
 
     def _request_open_at(self, path: Path, line: int, column: int) -> None:
         """Open a validated search result through the normal transition guard."""
+        if self._exit_requested:
+            return
         if self._critical_io:
             self.notify("Wait for the current file operation to finish", severity="warning")
             return
@@ -745,6 +756,8 @@ class TermWriterApp(App[None]):
         return paths_are_spelling_aliases(path, document.path)
 
     def _request_transition(self, continuation: Callable[[], object]) -> None:
+        if self._exit_requested:
+            return
         if self._critical_io:
             self.notify("Wait for the current file operation to finish", severity="warning")
             return
@@ -778,15 +791,34 @@ class TermWriterApp(App[None]):
         if decision is UnsavedDecision.SAVE:
             self._save_current(after=self._complete_pending_transition)
         elif decision is UnsavedDecision.DISCARD:
-            if self.document is not None:
+            document = self.document
+            if document is not None and self._begin_critical_io(
+                document,
+                freeze_editor=True,
+                status="Discarding…",
+            ):
                 self._clear_recovery(
-                    self.document.path,
-                    after=self._complete_pending_transition,
+                    document.path,
+                    after=lambda: self._finish_discard_recovery_cleanup(document),
                 )
             else:
-                self._complete_pending_transition()
+                self._cancel_pending_transition()
         else:
             self._cancel_pending_transition()
+
+    def _finish_discard_recovery_cleanup(self, document: Document) -> None:
+        if self.document is not document:
+            self._finish_critical_io(restore_status=False)
+            self._cancel_pending_transition()
+            return
+        document.discard_changes()
+        with self.editor.prevent(TextArea.Changed):
+            self.editor.load_text(document.text)
+        self._editor_baseline_text = self.editor.text
+        self._editor_baseline_source_text = document.text
+        self._schedule_preview(immediate=True)
+        self._finish_critical_io(restore_status=False)
+        self._complete_pending_transition()
 
     def _complete_pending_transition(self) -> None:
         continuation = self._pending_transition
@@ -798,6 +830,7 @@ class TermWriterApp(App[None]):
         self._pending_transition = None
         self._save_continuation = None
         self._quit_documents = None
+        self._quit_active_document = None
         self._pending_open_location = None
         self._pending_focus_location = None
         self._refresh_status()
@@ -1324,7 +1357,21 @@ class TermWriterApp(App[None]):
         self._refresh_status()
 
     def _install_document(self, document: Document) -> None:
-        newly_opened = self._register_open_document(document)
+        existing = self._open_document_for_path(document.path)
+        if existing is not None and existing is not document:
+            if existing.dirty:
+                self.notify(
+                    "Kept the existing dirty buffer; the recovery draft remains available",
+                    severity="warning",
+                )
+                self._activate_document(existing)
+                return
+            opened = self._open_entry_for_document(existing)
+            if opened is not None:
+                opened.document = document
+            newly_opened = False
+        else:
+            newly_opened = self._register_open_document(document)
         self._activate_document(document, newly_opened=newly_opened)
 
     def _flush_recovery_before_switch(self, document: Document) -> None:
@@ -1341,7 +1388,10 @@ class TermWriterApp(App[None]):
         *,
         newly_opened: bool = False,
         flush_previous_recovery: bool = True,
+        record_session: bool = True,
     ) -> None:
+        if self._exit_requested:
+            return
         previous = self.document
         if previous is document:
             self.editor.focus()
@@ -1349,7 +1399,7 @@ class TermWriterApp(App[None]):
             return
         if previous is not None:
             self._sync_editor_state()
-            self._remember_document_view(previous)
+            self._remember_document_view(previous, mark_recent=record_session)
             if flush_previous_recovery:
                 self._flush_recovery_before_switch(previous)
         self.document = document
@@ -1416,7 +1466,8 @@ class TermWriterApp(App[None]):
                 scroll_y=float(self.editor.scroll_offset.y),
             )
         self.editor.focus()
-        self._persist_session()
+        if record_session:
+            self._persist_session()
         self._refresh_document_tabs()
         self._continue_session_orphan_scan()
         self._refresh_status()
@@ -1871,12 +1922,27 @@ class TermWriterApp(App[None]):
         self._editor_baseline_text = self.editor.text
         self._editor_baseline_source_text = document.text
         self._save_continuation = None
-        self._finish_critical_io(restore_status=False)
         if outcome.saved.warning:
             self.notify(outcome.saved.warning, severity="warning")
         else:
             self.notify(f"Saved {escape(document.path.name)}")
-        self._clear_recovery(document.path, after=continuation)
+        self._clear_recovery(
+            document.path,
+            after=lambda: self._finish_save_recovery_cleanup(document, continuation),
+        )
+
+    def _finish_save_recovery_cleanup(
+        self,
+        document: Document,
+        continuation: Callable[[], None] | None,
+    ) -> None:
+        if self.document is not document:
+            self._finish_critical_io(restore_status=False)
+            self._cancel_pending_transition()
+            return
+        self._finish_critical_io(restore_status=False)
+        if continuation is not None:
+            continuation()
 
     def _show_conflict(
         self,
@@ -2165,7 +2231,6 @@ class TermWriterApp(App[None]):
                 self._cancel_pending_transition()
             return
 
-        self._finish_critical_io()
         self._finish_reload_loaded(ticket.document, loaded, automatic=automatic)
 
     def _finish_reload_loaded(
@@ -2201,10 +2266,16 @@ class TermWriterApp(App[None]):
         document: Document,
         continuation: Callable[[], None] | None,
     ) -> None:
+        if self.document is not document:
+            self._finish_critical_io(restore_status=False)
+            self._cancel_pending_transition()
+            return
         if document.has_mixed_line_endings:
             document.read_only = True
+            self._finish_critical_io(restore_status=False)
             self.editor.read_only = True
             self._mixed_reload_continuation = continuation
+            self._mixed_reload_document = document
             target = document.line_ending_label.removeprefix("MIXED→")
             self.push_screen(
                 MixedLineEndingsDialog(
@@ -2216,15 +2287,18 @@ class TermWriterApp(App[None]):
             )
             return
         document.read_only = False
+        self._finish_critical_io(restore_status=False)
         self.editor.read_only = False
         if continuation is not None:
             continuation()
 
     def _handle_reloaded_mixed_line_ending_decision(self, accepted: bool | None) -> None:
-        document = self.document
+        document = self._mixed_reload_document
+        self._mixed_reload_document = None
         if document is not None and accepted:
             document.read_only = False
-            self.editor.read_only = False
+            if self.document is document:
+                self.editor.read_only = False
             self.notify(
                 f"Edits to {escape(document.path.name)} will normalize line endings to "
                 f"{document.line_ending_label.removeprefix('MIXED→')}",
@@ -2232,7 +2306,8 @@ class TermWriterApp(App[None]):
             )
         elif document is not None:
             document.read_only = True
-            self.editor.read_only = True
+            if self.document is document:
+                self.editor.read_only = True
             document.last_save_status = "Mixed line endings · read-only"
             self._refresh_status()
         continuation = self._mixed_reload_continuation
@@ -2243,7 +2318,8 @@ class TermWriterApp(App[None]):
     def _check_external_in_background(self) -> None:
         document = self.document
         if (
-            document is None
+            self._exit_requested
+            or document is None
             or self._critical_io
             or self._has_modal
             or self._pending_transition is not None
@@ -2294,25 +2370,45 @@ class TermWriterApp(App[None]):
         self.notify(message, severity="warning", title="External change detected")
 
     def action_request_quit(self) -> None:
-        if self._has_modal:
+        if self._exit_requested or self._has_modal:
             return
         if self._critical_io:
             self.notify("Wait for the current file operation to finish", severity="warning")
             return
         self._sync_editor_state()
-        self._quit_documents = [opened.document for opened in self._open_documents]
+        self._quit_active_document = self.document
+        self._quit_documents = [
+            *(() if self.document is None else (self.document,)),
+            *(
+                opened.document
+                for opened in self._open_documents
+                if opened.document is not self.document
+            ),
+        ]
         self._continue_quit()
 
     def _continue_quit(self) -> None:
         if self._quit_documents is None:
             return
         if not self._quit_documents:
+            active_document = self._quit_active_document
             self._quit_documents = None
+            self._quit_active_document = None
+            if active_document is not None and active_document is not self.document:
+                self._activate_document(
+                    active_document,
+                    flush_previous_recovery=False,
+                    record_session=False,
+                )
             self._exit_with_session()
             return
         document = self._quit_documents.pop(0)
         if document is not self.document:
-            self._activate_document(document)
+            self._activate_document(
+                document,
+                flush_previous_recovery=False,
+                record_session=False,
+            )
         self._request_transition(self._continue_quit)
 
     def _exit_with_session(self) -> None:
@@ -2344,7 +2440,12 @@ class TermWriterApp(App[None]):
         self._cycle_tab(-1)
 
     def _cycle_tab(self, offset: int) -> None:
-        if self._has_modal or self._critical_io or len(self._open_documents) < 2:
+        if (
+            self._exit_requested
+            or self._has_modal
+            or self._critical_io
+            or len(self._open_documents) < 2
+        ):
             return
         active_index = next(
             (
@@ -2358,7 +2459,7 @@ class TermWriterApp(App[None]):
         self._activate_document(target.document)
 
     def action_close_tab(self) -> None:
-        if self._has_modal or self._critical_io or self.document is None:
+        if self._exit_requested or self._has_modal or self._critical_io or self.document is None:
             return
         document = self.document
         self._request_transition(lambda: self._close_document_now(document))

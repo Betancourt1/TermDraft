@@ -41,6 +41,24 @@ def test_mark_saved_advances_the_baseline() -> None:
     assert document.snapshot is snapshot
 
 
+def test_explicit_discard_restores_saved_source_and_clears_recovery_state() -> None:
+    document = make_document()
+    document.restore_recovery(
+        "recovered change",
+        "utf-8",
+        FileSnapshot(exists=True, digest="older"),
+    )
+
+    document.discard_changes()
+
+    assert document.text == "saved"
+    assert not document.dirty
+    assert not document.conflict
+    assert not document.recovery_saved
+    assert document.recovery_base_snapshot is None
+    assert document.last_save_status == "Changes discarded"
+
+
 def test_word_count_handles_markdown_and_unicode() -> None:
     document = make_document("# Café\n\n**naïve** don't 東京")
 

@@ -211,6 +211,19 @@ class Document:
         self.last_save_status = status
         self._refresh_line_ending_metadata()
 
+    def discard_changes(self) -> None:
+        """Return to the saved source after an explicit discard decision."""
+        recovered_conflict = self.recovery_conflict
+        self.text = self.saved_text
+        self.recovery_saved = False
+        self.recovery_conflict = False
+        self.recovery_base_snapshot = None
+        if recovered_conflict:
+            self.conflict = False
+        if not self.conflict:
+            self.last_save_status = "Changes discarded"
+        self._refresh_line_ending_metadata()
+
     def accept_unchanged_snapshot(self, snapshot: FileSnapshot) -> None:
         """Refresh disk metadata and clear a conflict whose content returned to baseline."""
         self.snapshot = snapshot

@@ -208,22 +208,22 @@ async def test_quit_guards_each_dirty_tab_and_cancel_stops_exit(tmp_path: Path) 
         await _open(app, pilot, second)
         await pilot.press("y", "ctrl+q")
         assert isinstance(app.screen, UnsavedChangesDialog)
-        assert app.document is not None and app.document.path == first
+        assert app.document is not None and app.document.path == second
 
         await pilot.click("#unsaved-save")
         for _ in range(200):
-            if isinstance(app.screen, UnsavedChangesDialog) and app.document.path == second:
+            if isinstance(app.screen, UnsavedChangesDialog) and app.document.path == first:
                 break
             await pilot.pause(0.01)
 
-        assert first.read_text(encoding="utf-8") == "xfirst"
+        assert second.read_text(encoding="utf-8") == "ysecond"
         assert isinstance(app.screen, UnsavedChangesDialog)
         await pilot.click("#unsaved-cancel")
 
         assert app.is_running
-        assert app.document.path == second
+        assert app.document.path == first
         assert app.document.dirty
-        assert second.read_text(encoding="utf-8") == "second"
+        assert first.read_text(encoding="utf-8") == "first"
 
 
 async def test_reactivating_dirty_tab_detects_external_conflict(tmp_path: Path) -> None:

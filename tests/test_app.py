@@ -1570,6 +1570,7 @@ async def test_recovery_manager_retargets_a_renamed_draft_and_opens_it(
             await pilot.pause(0.01)
         assert isinstance(app.screen, RecoveryManagerDialog)
 
+        await pilot.pause()
         app.screen.query_one("#recovery-manager-target", Input).value = "renamed.md"
         await pilot.click("#recovery-manager-retarget")
         for _ in range(500):
@@ -1627,9 +1628,10 @@ async def test_recovery_manager_archives_corrupt_entry_without_changing_bytes(
                 break
             await pilot.pause(0.01)
         assert isinstance(app.screen, RecoveryManagerDialog)
+        await pilot.pause()
         await pilot.click("#recovery-manager-archive")
         quarantine_path = journal.state_root / "quarantine" / corrupt_path.name
-        for _ in range(100):
+        for _ in range(500):
             if quarantine_path.exists() and not corrupt_path.exists():
                 break
             await pilot.pause(0.01)
@@ -1718,6 +1720,8 @@ async def test_recovery_manager_restores_quarantine_into_guarded_open_flow(
         assert app.document is not None
         assert app.document.text == "archived unsaved draft"
         assert app.document.dirty
+        assert len(app._open_documents) == 1
+        assert app._open_documents[0].document is app.document
         assert journal.list_quarantined(tmp_path) == ()
         assert journal.load(path) is not None
 

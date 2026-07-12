@@ -15,6 +15,7 @@ from termwriter.models.document import FileSnapshot
 from termwriter.models.workspace import Workspace
 from termwriter.screens.dialogs import (
     ConflictDialog,
+    MixedLineEndingsDialog,
     RecoveryDialog,
     SaveAsDialog,
     UnsavedChangesDialog,
@@ -247,12 +248,174 @@ async def test_discard_waits_for_recovery_save_then_delete_without_resurrection(
         await pilot.click("#unsaved-discard")
         assert app.document is not None
         assert app.document.path == first
+        assert app.editor.read_only
+        before = app.editor.text
+        await pilot.press("y", "ctrl+pageup")
+        assert app.editor.text == before
 
         release.set()
         await _wait_until(pilot, lambda: app.document is None)
 
         assert journal.load(first) is None
         assert first.read_text(encoding="utf-8") == "first"
+
+
+async def test_successful_save_stays_frozen_until_recovery_cleanup_finishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    journal = RecoveryJournal(tmp_path / "recovery")
+    app = _app(path, journal=journal)
+    started = Event()
+    release = Event()
+    real_delete = journal.delete_expected
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("x")
+        assert app._recovery_timer is not None
+        app._recovery_timer.stop()
+        app._write_recovery(app._recovery_revision)
+        await _wait_until(pilot, lambda: journal.load(path) is not None)
+
+        def blocked_delete(document_path: Path, *, fingerprint: str | None) -> None:
+            started.set()
+            assert release.wait(2)
+            real_delete(document_path, fingerprint=fingerprint)
+
+        monkeypatch.setattr(journal, "delete_expected", blocked_delete)
+        await pilot.press("ctrl+s")
+        await _wait_until(pilot, started.is_set)
+
+        assert app._critical_io
+        assert app.editor.read_only
+        assert path.read_text(encoding="utf-8") == "xbase"
+        before = app.editor.text
+        await pilot.press("y", "ctrl+z", "ctrl+y")
+        assert app.editor.text == before
+
+        release.set()
+        await _wait_until(pilot, lambda: not app._critical_io)
+
+        assert app.document is not None and not app.document.dirty
+        assert not app.editor.read_only
+        assert journal.load(path) is None
+
+
+async def test_quit_drain_is_sealed_and_preserves_active_session_tab(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    store = SessionStore(tmp_path / "sessions")
+    app = _app(first, session_store=store)
+    started = Event()
+    release = Event()
+    real_save = store.save
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        app._request_open(second)
+        await _wait_until(
+            pilot,
+            lambda: bool(app.document and app.document.path == second),
+        )
+        await pilot.press("ctrl+pageup")
+        assert app.document is not None and app.document.path == first
+        await _wait_until(
+            pilot,
+            lambda: not app._session_save_in_flight and app._pending_session_state is None,
+        )
+
+        def blocked_save(state: SessionState) -> None:
+            started.set()
+            assert release.wait(2)
+            real_save(state)
+
+        monkeypatch.setattr(store, "save", blocked_save)
+        await pilot.press("ctrl+q")
+        await _wait_until(pilot, started.is_set)
+
+        assert app._exit_requested
+        assert app.document is not None and app.document.path == first
+        assert app.editor.read_only
+        before = app.editor.text
+        await pilot.press("ctrl+pagedown", "y")
+        assert app.document.path == first
+        assert app.editor.text == before
+
+        release.set()
+        await _wait_until(pilot, lambda: not app.is_running)
+
+    state = store.load(tmp_path).state
+    assert state is not None
+    assert state.active_path == first
+    assert tuple(view.path for view in state.documents) == (first, second)
+
+
+async def test_reload_cleanup_keeps_its_tab_frozen_and_mixed_state_scoped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("first\n", encoding="utf-8")
+    second.write_text("second\n", encoding="utf-8")
+    journal = RecoveryJournal(tmp_path / "recovery")
+    app = _app(first, journal=journal)
+    started = Event()
+    release = Event()
+    real_delete = journal.delete_expected
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        app._request_open(second)
+        await _wait_until(
+            pilot,
+            lambda: bool(app.document and app.document.path == second),
+        )
+        await pilot.press("ctrl+pageup")
+        assert app.document is not None and app.document.path == first
+        record = journal.publish(
+            document_path=first,
+            workspace_root=tmp_path,
+            text="draft",
+            encoding="utf-8",
+            base_snapshot=app.document.snapshot,
+        )
+        app._known_recovery_fingerprints[first] = record.fingerprint
+
+        def blocked_delete(document_path: Path, *, fingerprint: str | None) -> None:
+            started.set()
+            assert release.wait(2)
+            real_delete(document_path, fingerprint=fingerprint)
+
+        monkeypatch.setattr(journal, "delete_expected", blocked_delete)
+        first.write_text("external\r\nmixed\n", encoding="utf-8")
+        app._reload_current_from_disk(automatic=True)
+        await _wait_until(pilot, started.is_set)
+
+        assert app._critical_io
+        assert app.editor.read_only
+        await pilot.press("ctrl+pagedown")
+        assert app.document is not None and app.document.path == first
+
+        release.set()
+        await _wait_until(pilot, lambda: isinstance(app.screen, MixedLineEndingsDialog))
+        assert app.document.path == first
+        dialog = app.screen
+        await pilot.pause()
+        await pilot.click("#mixed-cancel")
+        await _wait_until(pilot, lambda: app.screen is not dialog)
+        assert app.document.read_only
+        assert app.editor.read_only
+
+        await pilot.press("ctrl+pagedown")
+        assert app.document.path == second
+        assert not app.document.read_only
+        assert not app.editor.read_only
 
 
 async def test_watcher_probe_allows_edit_and_classifies_result_against_latest_dirty_state(
