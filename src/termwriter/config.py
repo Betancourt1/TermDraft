@@ -8,6 +8,7 @@ import tomllib
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
 from typing import cast
@@ -249,6 +250,9 @@ def _parse_recovery(raw_recovery: object) -> RecoveryConfig:
         or retention_days < 1
     ):
         raise ConfigError("recovery.retention_days must be a positive integer")
+    maximum_days = (datetime.now(UTC) - datetime.min.replace(tzinfo=UTC)).days
+    if retention_days > maximum_days:
+        raise ConfigError("recovery.retention_days is too large for the current date")
     return RecoveryConfig(retention_days=retention_days)
 
 

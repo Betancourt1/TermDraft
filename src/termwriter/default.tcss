@@ -143,6 +143,25 @@ ModalScreen {
     margin: 0;
 }
 
+#recovery-retention-records {
+    height: 5;
+    min-height: 3;
+    border: round $panel-lighten-2;
+    margin-bottom: 1;
+}
+
+#recovery-retention-buttons {
+    height: 6;
+    grid-size: 1 2;
+    grid-columns: 1fr;
+    grid-rows: 3 3;
+}
+
+#recovery-retention-buttons Button {
+    width: 1fr;
+    margin: 0;
+}
+
 #search-input, #file-search-filter, #text-search-input {
     margin-bottom: 1;
 }

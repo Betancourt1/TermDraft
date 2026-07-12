@@ -434,6 +434,10 @@ class RecoveryRetentionDialog(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         count = len(self.request.records)
         noun = "draft" if count == 1 else "drafts"
+        options = []
+        for record in self.request.records:
+            path = record.journal_path if record.entry is None else record.entry.document_path
+            options.append(Option(f"{path.name} · {path}", disabled=True))
         with Vertical(classes="dialog", id="recovery-retention-dialog"):
             yield Static("Delete expired recoveries?", classes="dialog-title", markup=False)
             yield Static(
@@ -442,7 +446,12 @@ class RecoveryRetentionDialog(ModalScreen[bool]):
                 classes="dialog-message",
                 markup=False,
             )
-            with Horizontal(classes="dialog-buttons"):
+            yield OptionList(
+                *options,
+                id="recovery-retention-records",
+                markup=False,
+            )
+            with Grid(classes="dialog-buttons", id="recovery-retention-buttons"):
                 yield Button(
                     "Delete expired",
                     id="recovery-retention-confirm",

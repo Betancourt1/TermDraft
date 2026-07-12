@@ -1,5 +1,6 @@
 """Focused interaction tests for reusable modal behavior."""
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 from textual import on
@@ -12,6 +13,7 @@ from termwriter.screens.dialogs import (
     RecoveryManagerAction,
     RecoveryManagerDialog,
     RecoveryManagerRequest,
+    RecoveryRetentionDialog,
     RecoveryRetentionRequest,
     SaveAsDialog,
 )
@@ -72,6 +74,17 @@ class RecoveryDeleteFlowHarness(App[None]):
 
     def _store_confirmation(self, confirmed: bool | None) -> None:
         self.confirmed = confirmed
+
+
+class RecoveryRetentionHarness(App[None]):
+    """Mount the irreversible retention confirmation with production CSS."""
+
+    def __init__(self, dialog: RecoveryRetentionDialog) -> None:
+        self.dialog = dialog
+        super().__init__(css_path=Path(__file__).parents[1] / "src" / "termwriter" / "default.tcss")
+
+    def on_mount(self) -> None:
+        self.push_screen(self.dialog)
 
 
 async def test_save_as_busy_state_blocks_edit_submit_cancel_and_escape() -> None:
@@ -343,3 +356,43 @@ async def test_permanent_delete_double_enter_defaults_to_cancel(tmp_path: Path) 
         await pilot.pause()
 
         assert app.confirmed is False
+
+
+async def test_retention_confirmation_lists_files_and_fits_narrow_terminal(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    journal = RecoveryJournal(tmp_path / "state")
+    for name in ("first.md", "second.md"):
+        document = workspace / name
+        journal.save(
+            document_path=document,
+            workspace_root=workspace,
+            text=f"{name} draft",
+            encoding="utf-8",
+            base_snapshot=FileSnapshot.missing(),
+        )
+        record = next(
+            item
+            for item in journal.list_entries(workspace)
+            if item.entry is not None and item.entry.document_path == document
+        )
+        journal.quarantine(record)
+    records = journal.list_quarantined(workspace)
+    dialog = RecoveryRetentionDialog(RecoveryRetentionRequest(datetime.now(UTC), records, 30))
+    app = RecoveryRetentionHarness(dialog)
+
+    async with app.run_test(size=(24, 20)) as pilot:
+        await pilot.pause()
+        options = dialog.query_one("#recovery-retention-records", OptionList)
+        labels = [str(options.get_option_at_index(index).prompt) for index in range(len(records))]
+        assert any("first.md" in label for label in labels)
+        assert any("second.md" in label for label in labels)
+
+        for selector in ("#recovery-retention-confirm", "#recovery-retention-cancel"):
+            button = dialog.query_one(selector, Button)
+            button.focus()
+            await pilot.pause()
+            assert button.region.x >= 0
+            assert button.region.right <= app.size.width

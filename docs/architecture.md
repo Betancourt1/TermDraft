@@ -199,7 +199,8 @@ The CLI resolves the configuration root in this order: explicit `--config-dir`,
 than workspace-level, so merely opening a repository cannot install key behavior or visual rules.
 
 `config.toml` is parsed with the standard-library `tomllib`. Only three editor booleans, a positive
-`recovery.retention_days` integer, and a closed set of binding IDs are accepted. Values map binding
+`recovery.retention_days` integer representable from the current date, and a closed set of binding
+IDs are accepted. Values map binding
 IDs to key strings, never to Textual action names; unknown sections, options, IDs, empty values, and
 duplicate effective keys fail closed. The retention value is consulted only after the user opens
 Recovery Manager; it cannot schedule deletion. The initializer uses exclusive creation, does not
@@ -328,10 +329,11 @@ A valid quarantined entry may also be exported to a new workspace-contained Mark
 re-verifies the listed fingerprint, preserves the stored UTF-8/UTF-8-SIG source exactly, uses the
 normal parent-bound `snapshot_file` / `atomic_save` no-clobber path, and leaves the quarantine record
 unchanged. Manual retention selects only valid entries strictly older than the configured cutoff.
-The confirmation carries the exact displayed `RecoveryRecord` tuple into a worker, so a newly
-appearing old record is not implicitly added after consent. Each deletion is independently
-fingerprint-guarded; partial failures remain in the result and are reported rather than rolled into
-a false all-success message. Corrupt entries have no trusted timestamp and are never age-deleted.
+The confirmation lists every selected path and carries the exact displayed `RecoveryRecord` tuple
+into a worker, so a newly appearing old record is not implicitly added after consent. Each deletion
+is independently fingerprint-guarded; every partial failure remains in the result and is reported
+rather than rolled into a false all-success message. Corrupt entries have no trusted timestamp and
+are never age-deleted.
 
 The journal narrows crash loss but is not autosave or history. The 500 ms window, state-directory
 write failures, forced termination during the timer, and storage failure can still lose unsaved text.

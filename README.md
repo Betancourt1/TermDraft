@@ -278,7 +278,7 @@ corrupt entry from the active inventory while preserving its exact journal bytes
 directory's `quarantine/` folder. Quarantined trusted entries can be restored without replacing an
 active draft. **Export copy** publishes the archived source as a new no-clobber Markdown file while
 keeping the quarantine intact. **Delete expired** considers only valid quarantined entries older than
-`recovery.retention_days`, confirms the exact displayed inventory, and reports partial failures;
+`recovery.retention_days`, lists and confirms the exact path inventory, and reports every failure;
 nothing expires automatically. **Delete forever** requires a separate irreversible confirmation and
 also handles corrupt quarantine entries. The active dirty document's draft cannot be moved,
 archived, or replaced by a quarantine restore.

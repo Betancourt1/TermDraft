@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from textual.widgets import Input, Static
 
-from termwriter.app import TermWriterApp
+from termwriter.app import TermWriterApp, _RecoveryCleanupWorkerResult
 from termwriter.models.document import FileSnapshot
 from termwriter.models.workspace import Workspace
 from termwriter.screens.dialogs import (
@@ -31,7 +31,11 @@ from termwriter.services.persistence import (
     atomic_save,
     load_file,
 )
-from termwriter.services.recovery import RecoveryJournal
+from termwriter.services.recovery import (
+    RecoveryJournal,
+    RecoveryRetentionOutcome,
+    RecoveryRetentionResult,
+)
 from termwriter.services.session import DocumentViewState, SessionState, SessionStore
 
 
@@ -1820,6 +1824,50 @@ async def test_recovery_manager_cleans_only_confirmed_expired_quarantine(
                 break
             await pilot.pause(0.01)
         assert not quarantine_path.exists()
+
+
+async def test_recovery_cleanup_notification_includes_every_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = tmp_path / "active.md"
+    active.write_text("base", encoding="utf-8")
+    app = app_for_file(active)
+    cutoff = datetime.now(UTC) - timedelta(days=30)
+    result = RecoveryRetentionResult(
+        cutoff,
+        (
+            RecoveryRetentionOutcome(
+                tmp_path / "first.json",
+                tmp_path / "first.md",
+                cutoff,
+                False,
+                "fingerprint changed",
+            ),
+            RecoveryRetentionOutcome(
+                tmp_path / "second.json",
+                tmp_path / "second.md",
+                cutoff,
+                False,
+                "permission denied",
+            ),
+        ),
+    )
+    notifications: list[str] = []
+
+    async with app.run_test(size=(100, 32)):
+        monkeypatch.setattr(
+            app,
+            "notify",
+            lambda message, **_kwargs: notifications.append(str(message)),
+        )
+        app._handle_recovery_cleanup_result(_RecoveryCleanupWorkerResult(result=result))
+
+    assert len(notifications) == 1
+    assert "first.md" in notifications[0]
+    assert "fingerprint changed" in notifications[0]
+    assert "second.md" in notifications[0]
+    assert "permission denied" in notifications[0]
 
 
 async def test_recovery_manager_rechecks_dirty_document_before_quarantine_restore(

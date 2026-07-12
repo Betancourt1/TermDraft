@@ -803,8 +803,11 @@ class TermWriterApp(App[None]):
             return
         message = f"Deleted {result.deleted_count} of {result.selected_count} expired recoveries"
         if result.failed_count:
-            failed = next(item for item in result.outcomes if not item.deleted)
-            message += f". {failed.document_path.name}: {failed.error or 'deletion failed'}"
+            failures = [item for item in result.outcomes if not item.deleted]
+            details = "\n".join(
+                f"- {item.document_path}: {item.error or 'deletion failed'}" for item in failures
+            )
+            message += f"\n{details}"
             self.notify(
                 escape(message),
                 severity="warning",

@@ -113,6 +113,7 @@ redo = "ctrl+r, ctrl+shift+r"
         ("[recovery]\nunknown = 1\n", "unknown recovery option"),
         ("[recovery]\nretention_days = 0\n", "must be a positive integer"),
         ("[recovery]\nretention_days = true\n", "must be a positive integer"),
+        ("[recovery]\nretention_days = 999999999\n", "too large for the current date"),
         ("keybindings = false\n", "keybindings must be a TOML table"),
         ('[keybindings]\nunknown = "ctrl+x"\n', "unknown keybinding id"),
         ("[keybindings]\nsave = true\n", "keybindings.save must be a string"),
