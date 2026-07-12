@@ -152,8 +152,9 @@ JSON, flushes and `fsync`s it, publishes it with same-directory `os.replace`, an
 the directory. Failed pre-publication writes clean the temporary entry and retain the prior complete
 journal. The state root is injectable so tests never use personal files.
 
-`TermWriterApp` starts a 500 ms deadline after the first dirty edit. Later edits update the in-memory
-payload without moving that deadline, so sustained typing cannot postpone recovery indefinitely.
+`TermWriterApp` schedules a nominal 500 ms deadline after the first dirty edit. Later edits update
+the in-memory payload without moving that deadline, so sustained typing does not reset the timer.
+Synchronous work that blocks Textual's event loop can still delay callback execution.
 Successful Markdown saves, explicit discards, and reloads delete the entry. The status bar shows
 `RECOVERY STORED` only after journal publication succeeds.
 

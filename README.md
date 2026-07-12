@@ -103,8 +103,8 @@ Ctrl+Shift+Z from Ctrl+Z; Ctrl+Y remains the portable redo binding.
 `Document` is the in-memory source of truth for the active file. The preview never writes back to
 the editor or model.
 
-The first dirty edit schedules a recovery write no more than 500 ms later; continued typing updates
-the pending payload without postponing that deadline. Each JSON entry is mode 0600, written through
+The first dirty edit schedules a recovery write for 500 ms later; continued typing updates the
+pending payload without postponing that deadline. Each JSON entry is mode 0600, written through
 a same-directory temporary file, flushed, replaced, and followed by a directory `fsync`. On the next
 open, TermWriter offers Restore draft / Use disk version / Cancel opening. A recovered draft whose
 saved baseline no longer matches disk is marked as a conflict and cannot be written over the Markdown
@@ -173,10 +173,10 @@ filtering, symlinks, file search, CLI validation, and Textual Pilot workflows.
 ## Known limitations
 
 - One document is active at a time; there are no tabs or session restoration yet.
-- Recovery has a maximum 500 ms first-write delay, so termination before the deadline or a failed
-  journal write can lose the latest unsaved keystrokes. It is not version history, a backup, or an
-  autosave of the Markdown path. Recovery entries contain the draft's plaintext source in a private
-  per-user state directory.
+- Recovery has a nominal 500 ms first-write delay. Termination before the timer runs, a blocked event
+  loop, or a failed journal write can lose the latest unsaved keystrokes. It is not version history,
+  a backup, or an autosave of the Markdown path. Recovery entries contain the draft's plaintext
+  source in a private per-user state directory.
 - The watcher polls only the active file every two seconds. It is not an operating-system event
   watcher, and synchronous hashing can briefly pause input for unusually large files.
 - Files must be valid UTF-8, with or without a UTF-8 BOM.
