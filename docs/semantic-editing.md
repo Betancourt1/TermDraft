@@ -36,6 +36,13 @@ Source offsets must be defined explicitly. Python string indexes count Unicode c
 uses bytes, Textual cursor columns are logical positions, and terminal cells vary by grapheme width.
 Mixing these units is a direct route to corrupt splices or misplaced cursors.
 
+The command-palette-only **Inspect cursor coordinates** diagnostic now reports one immutable cursor
+snapshot as an exact Python source offset, UTF-8 byte offset, Textual logical location, wrapped row
+and cell, and live terminal-screen offset. It recognizes extended grapheme boundaries and warns
+when Textual's current narrow wrapping divides one. Tests cover LF, CRLF, CR, mixed endings, tabs,
+combining marks, CJK, emoji, and ZWJ sequences. This validates the coordinate units but deliberately
+does not expose a reverse mapping or permit source edits.
+
 The diagnostic prototype uses `markdown-it-py` public block tokens and `Token.map` line ranges. It
 converts logical lines to Python-string offsets without normalizing LF, CRLF, or CR and retains every
 uncovered source slice. Valid top-level link-reference definitions use defensively validated line
@@ -139,6 +146,8 @@ use the same explicit Save As / reload / cancel flow as full-source editing.
 - Mixed line endings need an explicit policy before source splicing can be called lossless.
 - IME composition, bidirectional text, grapheme clusters, and terminal-width disagreement need real
   interaction tests.
+- The diagnostic can expose grapheme-splitting wraps, but terminal/font width rules can still differ
+  from Textual and IME or bidirectional cursor behavior remains unmodeled.
 - Widget replacement can disrupt selection, accessibility, scroll position, and undo grouping.
 - Large documents may make full reparsing or mounting many rendered widgets too slow.
 

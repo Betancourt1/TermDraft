@@ -222,7 +222,7 @@ def format_command_help(
         + "  toggle files, toggle preview,\n"
         + "  undo, redo,\n"
         + "  reload configuration, manage recovery drafts, inspect semantic blocks,\n"
-        + "  read semantic blocks experimentally,\n"
+        + "  read semantic blocks experimentally, inspect cursor coordinates,\n"
         + "  shortcut help,\n"
         + "  Markdown syntax help, and safe quit."
     )

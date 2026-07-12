@@ -32,6 +32,7 @@ from termwriter.models.workspace import (
     path_spelling_key,
     paths_are_spelling_aliases,
 )
+from termwriter.screens.coordinate_inspector import CoordinateInspectorDialog
 from termwriter.screens.dialogs import (
     ConflictDecision,
     ConflictDialog,
@@ -54,6 +55,7 @@ from termwriter.screens.dialogs import (
 from termwriter.screens.recent_documents import RecentDocumentsDialog
 from termwriter.screens.semantic_inspector import SemanticInspectorDialog
 from termwriter.screens.semantic_reader import SemanticReaderDialog
+from termwriter.services.coordinate_diagnostic import diagnose_coordinate
 from termwriter.services.external_changes import (
     DiskProbe,
     ExternalChange,
@@ -3116,6 +3118,22 @@ class TermWriterApp(App[None]):
     def action_read_semantic_blocks(self) -> None:
         self._request_semantic_view(_SemanticViewPurpose.READ)
 
+    def action_inspect_cursor_coordinates(self) -> None:
+        if self._has_modal:
+            return
+        self._sync_editor_state()
+        if self.document is None:
+            self.notify("Open a Markdown document first", severity="warning")
+            return
+        editor = self.editor
+        diagnostic = diagnose_coordinate(
+            editor.text,
+            editor.cursor_location,
+            wrap_width=editor.wrap_width,
+            tab_width=editor.indent_width,
+        )
+        self.push_screen(CoordinateInspectorDialog(diagnostic, editor.cursor_screen_offset))
+
     def _request_semantic_view(self, purpose: _SemanticViewPurpose) -> None:
         if self._has_modal:
             return
@@ -3260,6 +3278,11 @@ class TermWriterApp(App[None]):
             "Read semantic blocks (experimental)",
             "Render headings and paragraphs with source fallback for other blocks",
             self.action_read_semantic_blocks,
+        )
+        yield SystemCommand(
+            "Inspect cursor coordinates",
+            "Compare source, UTF-8, wrapped, grapheme, and terminal cursor positions",
+            self.action_inspect_cursor_coordinates,
         )
         yield SystemCommand(
             "Quit safely", "Prompt before discarding changes", self.action_request_quit

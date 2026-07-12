@@ -259,6 +259,11 @@ snapshot, independently renders only top-level headings and paragraphs, and show
 construct as exact Markdown source. Escape or **Return to source** immediately reveals the unchanged
 full editor. Links stay inert. Neither command edits, saves, or splices source.
 
+**Inspect cursor coordinates** reports the current cursor as a source-character offset, UTF-8 byte
+offset, logical line/column, wrapped row/cell, and live screen position. It also flags cursors inside
+an extended grapheme and very narrow wraps that split one. This is a read-only developer diagnostic
+for future semantic editing, not a source transformation.
+
 ## Data-safety behavior
 
 Each open file has one live `Document` that remains its in-memory source of truth and one mounted

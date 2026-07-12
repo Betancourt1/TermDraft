@@ -144,6 +144,12 @@ Escape dismisses the snapshot and restores the prior editor focus, cursor, scrol
 The reader has no callback capable of updating `Document`; reference definitions and other nonlocal
 syntax remain source fallbacks rather than being reconstructed from render output.
 
+`services/coordinate_diagnostic.py` is a manual, read-only validation aid for the future semantic
+editing boundary. It preserves exact source line endings while translating a valid TextArea cursor
+into Python-character, UTF-8-byte, logical, and wrapped terminal-cell units through Textual's public
+`Document` and `WrappedDocument` models. Extended grapheme checks make unsafe narrow wraps visible;
+the service is intentionally one-way and never participates in editing or persistence.
+
 The preview is constructed with `open_links=False` and a dedicated `markdown-it-py` parser factory.
 The `gfm-like2` preset provides tables, task metadata, five GFM alert kinds, and
 single/double-tilde strikethrough; `mdit-py-plugins` parses footnotes and definition lists. HTML

@@ -130,6 +130,11 @@ ModalScreen {
     height: 36;
 }
 
+#coordinate-inspector-dialog {
+    height: auto;
+    max-height: 28;
+}
+
 #semantic-reader-content {
     height: 1fr;
     border: round $panel-lighten-2;
