@@ -1628,6 +1628,47 @@ async def test_recovery_manager_restores_quarantine_into_guarded_open_flow(
         assert journal.load(path) is not None
 
 
+async def test_recovery_manager_exports_quarantine_without_consuming_it(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "active.md"
+    path.write_text("disk base", encoding="utf-8")
+    export_dir = tmp_path / "exports"
+    export_dir.mkdir()
+    destination = export_dir / "archived.md"
+    journal = RecoveryJournal(tmp_path / "state")
+    journal.save(
+        document_path=path,
+        workspace_root=tmp_path,
+        text="archived unsaved draft\r\nwithout final newline",
+        encoding="utf-8",
+        base_snapshot=load_file(path).snapshot,
+    )
+    (active_record,) = journal.list_entries(tmp_path)
+    quarantine_path = journal.quarantine(active_record)
+    app = app_for_file(path, recovery_journal=journal)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        app.action_manage_recovery()
+        for _ in range(100):
+            if isinstance(app.screen, RecoveryManagerDialog):
+                break
+            await pilot.pause(0.01)
+        assert isinstance(app.screen, RecoveryManagerDialog)
+        await pilot.pause()
+        app.screen.query_one("#recovery-manager-target", Input).value = "exports/archived.md"
+        await pilot.click("#recovery-manager-archive")
+
+        for _ in range(200):
+            if destination.exists():
+                break
+            await pilot.pause(0.01)
+
+        assert destination.read_bytes() == b"archived unsaved draft\r\nwithout final newline"
+        assert quarantine_path.exists()
+        assert len(journal.list_quarantined(tmp_path)) == 1
+
+
 async def test_recovery_manager_permanently_deletes_quarantine_after_confirmation(
     tmp_path: Path,
 ) -> None:

@@ -253,13 +253,45 @@ async def test_recovery_manager_restores_a_valid_quarantined_entry(tmp_path: Pat
 
         assert "Restore" in str(dialog.query_one("#recovery-manager-open", Button).label)
         assert "Delete forever" in str(dialog.query_one("#recovery-manager-retarget", Button).label)
-        assert dialog.query_one("#recovery-manager-target", Input).disabled
-        assert dialog.query_one("#recovery-manager-archive", Button).disabled
+        assert not dialog.query_one("#recovery-manager-target", Input).disabled
+        assert "Export copy" in str(dialog.query_one("#recovery-manager-archive", Button).label)
+        assert not dialog.query_one("#recovery-manager-archive", Button).disabled
         await pilot.click("#recovery-manager-open")
         await pilot.pause()
 
         assert app.result is not None
         assert app.result.action is RecoveryManagerAction.RESTORE_QUARANTINED
+        assert app.result.record.quarantined
+
+
+async def test_recovery_manager_returns_explicit_quarantine_export_request(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    journal = RecoveryJournal(tmp_path / "state")
+    document = workspace / "draft.md"
+    journal.save(
+        document_path=document,
+        workspace_root=workspace,
+        text="draft",
+        encoding="utf-8",
+        base_snapshot=FileSnapshot.missing(),
+    )
+    (active_record,) = journal.list_entries(workspace)
+    journal.quarantine(active_record)
+    dialog = RecoveryManagerDialog(journal.list_quarantined(workspace), workspace)
+    app = RecoveryManagerHarness(dialog)
+
+    async with app.run_test(size=(90, 36)) as pilot:
+        await pilot.pause()
+        dialog.query_one("#recovery-manager-target", Input).value = "exports/draft.md"
+        await pilot.click("#recovery-manager-archive")
+        await pilot.pause()
+
+        assert app.result is not None
+        assert app.result.action is RecoveryManagerAction.EXPORT_QUARANTINED
+        assert app.result.target == "exports/draft.md"
         assert app.result.record.quarantined
 
 

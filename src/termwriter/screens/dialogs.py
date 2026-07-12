@@ -58,6 +58,7 @@ class RecoveryManagerAction(Enum):
     RETARGET = auto()
     QUARANTINE = auto()
     RESTORE_QUARANTINED = auto()
+    EXPORT_QUARANTINED = auto()
     DELETE_QUARANTINED = auto()
 
 
@@ -144,8 +145,8 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | None]):
         with Vertical(classes="dialog", id="recovery-manager-dialog"):
             yield Static("Manage recovery drafts", classes="dialog-title", markup=False)
             yield Static(
-                "Archive preserves bytes in quarantine. Quarantined entries can be restored or "
-                "deleted forever.",
+                "Archive preserves bytes in quarantine. Quarantined entries can be restored, "
+                "exported as Markdown, or deleted forever.",
                 classes="dialog-message",
                 markup=False,
             )
@@ -212,6 +213,8 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | None]):
         archive_button = self.query_one("#recovery-manager-archive", Button)
         open_button.label = "Open draft"
         retarget_button.label = "Retarget"
+        archive_button.label = "Archive"
+        target.placeholder = "Retarget to a workspace path, e.g. notes/renamed.md"
         if record is None:
             detail.update("Nothing to manage in this recovery directory.")
             target.disabled = True
@@ -223,16 +226,18 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | None]):
         entry = record.entry
         protected = record.journal_path == self.protected_journal_path
         if record.quarantined:
-            target.disabled = True
+            target.disabled = entry is None
+            target.placeholder = "Export copy as Markdown, e.g. recovered/draft.md"
             open_button.label = "Restore"
             retarget_button.label = "Delete forever"
+            archive_button.label = "Export copy"
             open_button.disabled = entry is None
             retarget_button.disabled = False
-            archive_button.disabled = True
+            archive_button.disabled = entry is None
             if entry is None:
                 detail.update(
                     (record.error or "This quarantined entry could not be validated.")
-                    + " It cannot be restored, but it can be permanently deleted."
+                    + " It cannot be restored or exported, but it can be permanently deleted."
                 )
             else:
                 updated = entry.updated_at.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
@@ -266,7 +271,6 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | None]):
             self.dismiss(RecoveryManagerRequest(action, record))
 
     @on(Button.Pressed, "#recovery-manager-retarget")
-    @on(Input.Submitted, "#recovery-manager-target")
     def retarget_record(self) -> None:
         record = self._selected_record()
         if record is not None and record.quarantined:
@@ -294,10 +298,36 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | None]):
         )
 
     @on(Button.Pressed, "#recovery-manager-archive")
-    def archive_record(self) -> None:
+    def archive_or_export_record(self) -> None:
         record = self._selected_record()
-        if record is not None:
+        if record is None:
+            return
+        if not record.quarantined:
             self.dismiss(RecoveryManagerRequest(RecoveryManagerAction.QUARANTINE, record))
+            return
+        target = self.query_one("#recovery-manager-target", Input).value.strip()
+        if record.entry is None:
+            return
+        if not target:
+            self.query_one("#recovery-manager-detail", Static).update(
+                "Enter a new workspace-relative Markdown path for the exported copy."
+            )
+            return
+        self.dismiss(
+            RecoveryManagerRequest(
+                RecoveryManagerAction.EXPORT_QUARANTINED,
+                record,
+                target,
+            )
+        )
+
+    @on(Input.Submitted, "#recovery-manager-target")
+    def submit_target(self) -> None:
+        record = self._selected_record()
+        if record is not None and record.quarantined:
+            self.archive_or_export_record()
+        else:
+            self.retarget_record()
 
     @on(Button.Pressed, "#recovery-manager-close")
     def close_button(self) -> None:

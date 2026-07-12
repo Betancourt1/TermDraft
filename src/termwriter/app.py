@@ -132,6 +132,8 @@ class _RecoveryManagementResult:
     action: RecoveryManagerAction
     entry: RecoveryEntry | None = None
     quarantine_path: Path | None = None
+    target: Path | None = None
+    warning: str | None = None
     source_unavailable: bool = False
     error: str | None = None
 
@@ -800,6 +802,20 @@ class TermWriterApp(App[None]):
                     request.action,
                     quarantine_path=request.record.journal_path,
                 )
+            elif request.action is RecoveryManagerAction.EXPORT_QUARANTINED:
+                target = self.workspace.validate_document_path(
+                    Path(request.target or ""),
+                    must_exist=False,
+                )
+                saved = self.recovery_journal.export_quarantined(
+                    request.record,
+                    destination=target,
+                )
+                result = _RecoveryManagementResult(
+                    request.action,
+                    target=target,
+                    warning=saved.warning,
+                )
             elif request.action is RecoveryManagerAction.RETARGET:
                 target = self.workspace.validate_document_path(
                     Path(request.target or ""),
@@ -874,6 +890,15 @@ class TermWriterApp(App[None]):
         if result.action is RecoveryManagerAction.DELETE_QUARANTINED:
             name = result.quarantine_path.name if result.quarantine_path is not None else "entry"
             self.notify(f"Permanently deleted quarantined recovery {escape(name)}")
+            return
+        if result.action is RecoveryManagerAction.EXPORT_QUARANTINED:
+            if result.target is None:
+                return
+            relative = result.target.relative_to(self.workspace.root).as_posix()
+            if result.warning is not None:
+                self.notify(escape(result.warning), severity="warning")
+            self.notify(f"Exported recovery copy to {escape(relative)}")
+            self._refresh_workspace_index()
             return
         entry = result.entry
         if entry is None:
