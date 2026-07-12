@@ -134,9 +134,11 @@ The repository also includes a complete [Markdown syntax gallery](docs/markdown-
 with `termwriter docs/markdown-gallery.md` to compare its editable syntax and preview side by side.
 
 Clicking a footnote label scrolls to its definition; `↩` returns to the most recently followed
-reference for that note. Keyboard users can focus the preview with Ctrl+E or Tab, use Tab/Shift+Tab
-to select links, and press Enter to activate the selection. Internal footnotes navigate; external
-URLs remain inert. Unreferenced definitions are omitted by the footnote parser, and definition lists
+reference for that note. Esc leaves the indentation-enabled source editor for the next visible
+control; Ctrl+E toggles the preview and focuses it when shown. Once the preview has focus,
+Tab/Shift+Tab select links and Enter activates the selection. Internal footnotes navigate; external
+URLs remain inert.
+Unreferenced definitions are omitted by the footnote parser, and definition lists
 use bold terms plus quoted bodies rather than a dedicated `<dl>` layout. Alerts use a conservative
 titled-blockquote presentation rather than GitHub's color and icon treatment. Math, underline,
 subscript, superscript, and rendered raw HTML are not supported. Preview rendering never writes back
@@ -209,9 +211,11 @@ TermWriter is already running, restart once so it can be added to the watched st
 | Ctrl+Y or Ctrl+Shift+Z | Redo |
 | Ctrl+\ | Open the searchable command palette |
 | F1 | Shortcut help |
+| Esc in editor | Leave the editor and focus the next visible control |
 
-Tab and Shift+Tab move focus; inside the focused preview they select links, and Enter activates the
-selection. Reaching either end returns to the normal focus chain. F1 is the help key so a literal `?`
+The editor keeps Tab and Shift+Tab for Markdown indentation. Esc leaves the editor for the next
+visible control. Inside the focused preview, Tab and Shift+Tab select links, and Enter activates the
+selection; reaching either end returns to the normal focus chain. F1 is the help key so a literal `?`
 remains editable Markdown. Some terminals do not distinguish
 Ctrl+Shift+Z from Ctrl+Z; Ctrl+Y remains the portable redo binding. On a bullet, numbered item,
 task, or blockquote, Enter inserts the next marker; Enter on an empty marker ends that structure.
