@@ -79,8 +79,10 @@ If loading fails, the previously active document remains in memory.
 
 `MarkdownEditor` intercepts Enter only for an empty selection and delegates the source/cursor
 calculation to the pure `services/markdown_continuation.py` function. It continues bullets, ordered
-markers, tasks, and blockquotes, terminates empty markers, and leaves fenced code or unsupported
-contexts to TextArea. The replacement is one TextArea edit, so undo removes the inserted marker and
+markers, tasks, and blockquotes, terminates empty markers, and leaves fenced or indented code to
+TextArea. Prefixes containing a tab or four-space run are ambiguous, so that narrow case parses the
+source prefix through the cursor with CommonMark and continues only if the current line begins a real
+`list_item_open` token. The replacement is one TextArea edit, so undo removes the inserted marker and
 newline together. Disabling `editor.auto_continue_lists` restores TextArea's ordinary Enter behavior.
 
 Each source edit increments a preview revision and stops the previous debounce timer. The async
@@ -89,11 +91,30 @@ revision, so an old file's render cannot become the final preview for a newer fi
 are reported in the UI and never mutate `Document`.
 
 The preview is constructed with `open_links=False` and a dedicated `markdown-it-py` parser factory.
-The `gfm-like2` preset provides tables, task metadata, and single/double-tilde strikethrough; alerts
-and HTML parsing are disabled because Textual does not safely render those token types. A small core
-rule turns task metadata into visible `☐` / `☑` text without changing source. Markdown links render
-but do not launch a browser or another external application. Unsupported extensions remain literal
-text or ordinary blocks rather than introducing renderer-specific document state.
+The `gfm-like2` preset provides tables, task metadata, and single/double-tilde strikethrough;
+`mdit-py-plugins` parses footnotes and definition lists. Alerts and HTML parsing are disabled because
+Textual does not safely render those token types. A final core rule turns task metadata into visible
+`☐` / `☑` text and normalizes unsupported footnote/definition tokens into Textual-supported inline
+text, paragraphs, and bullet lists. Markdown links render but do not launch a browser or another
+external application. None of these preview transforms change `Document.text`.
+
+## Workspace text search
+
+`services/text_search.py` performs bounded, literal, case-insensitive searches over the validated
+workspace scan. It uses the same safe `load_file` path as document opening, returns zero-based
+source coordinates and short line previews, and converts individual read/decode failures into
+warnings instead of aborting the search. The active `Document.text` is passed as a fallback: dirty
+source always wins, while a clean document prefers current disk content and still remains searchable
+if its path disappeared.
+
+The modal starts search only when Enter is submitted and runs both the recursive scan and file reads
+through a Textual thread worker. Cancellation is checked between workspace entries, files, and source
+lines; only the result callback updates widgets on the UI thread. Results are deterministic,
+same-file aliases are deduplicated, the list is limited to 100 matching lines, and each line produces
+at most one result. Selecting a different file revalidates its path and enters the same guarded
+transition used by the explorer and file search; a dirty current document therefore still requires
+Save / Discard / Cancel. A pending line/column target survives recovery and mixed-line-ending dialogs
+and is applied only after the new document is installed.
 
 ## User configuration
 
@@ -252,6 +273,7 @@ user may save that copy under a new name, explicitly continue without it, or can
 - `Document` and `Workspace` contain state/invariants without Textual imports.
 - Persistence and external-change modules perform filesystem work without UI calls.
 - File search ranks only the scanner's validated in-process index and has no `ripgrep` dependency.
+- Text search reads validated Markdown through a thread worker and never invokes workspace commands.
 - Configuration contains data only; document/workspace contents never define commands or CSS.
 
 Synchronous hashing and writes may briefly block the UI for very large Markdown files. Moving I/O to
@@ -264,8 +286,10 @@ The implementation targets Textual 8.2.8 and relies on documented APIs:
 
 - [`TextArea`](https://textual.textualize.io/widgets/text_area/)
 - [`Markdown`](https://textual.textualize.io/widgets/markdown/)
+- [`mdit-py-plugins`](https://mdit-py-plugins.readthedocs.io/en/latest/)
 - [`App.set_keymap`](https://textual.textualize.io/api/app/#textual.app.App.set_keymap)
 - [command palette](https://textual.textualize.io/guide/command_palette/)
+- [workers](https://textual.textualize.io/guide/workers/)
 - [Textual CSS](https://textual.textualize.io/guide/CSS/)
 - [`DirectoryTree`](https://textual.textualize.io/widgets/directory_tree/)
 - [screens and typed results](https://textual.textualize.io/guide/screens/)

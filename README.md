@@ -9,6 +9,7 @@ The current release is a functional MVP focused on a dependable writing loop:
 - edit source with soft wrapping, Unicode, syntax highlighting, undo, redo, and list continuation;
 - read a safe GFM-style rendered preview without leaving the terminal;
 - find files quickly;
+- search source text across the workspace without an external command;
 - search commands from a palette;
 - customize editor options, keybindings, and Textual CSS without reinstalling;
 - save through a same-directory temporary file;
@@ -46,7 +47,7 @@ both panes into an unusable layout. Ctrl+B can reclaim the explorer width at any
   searchable when saving.
 
 TermWriter currently targets Textual 8.x, installs its Markdown syntax-highlighting extra, and uses
-`markdown-it-py` for the preview parser.
+`markdown-it-py` plus `mdit-py-plugins` for the preview parser.
 
 ## Installation
 
@@ -96,8 +97,18 @@ termwriter --commands
 
 The preview supports headings H1-H6, paragraphs, emphasis, bold, strikethrough, blockquotes,
 horizontal rules, links, image placeholders, inline and fenced code, nested ordered/unordered lists,
-tables, and task lists. Task state is rendered as `☐` or `☑`; the Markdown source remains unchanged.
-Raw HTML is displayed literally and is never executed.
+tables, task lists, footnotes, and definition lists. Task state is rendered as `☐` or `☑`;
+footnote references and definitions remain visible; definition terms are shown as bold bullet items.
+The Markdown source remains unchanged. Raw HTML is displayed literally and is never executed.
+
+```markdown
+Claim with a source.[^source]
+
+[^source]: Footnote text.
+
+Term
+: Definition text.
+```
 
 Nested ordered items use an indented normal marker:
 
@@ -112,8 +123,10 @@ Nested ordered items use an indented normal marker:
 bold; portable Markdown has no underline syntax. F1 opens the effective shortcut list, and the
 command palette includes a compact Markdown syntax reference.
 
-Footnotes, definition lists, GFM alerts, math, underline, subscript, superscript, and rendered raw
-HTML are not supported yet. Preview rendering never writes back to the source editor.
+Footnotes are terminal labels rather than clickable links and have no backlinks. Unreferenced
+definitions are omitted by the footnote parser, and definition lists use bullets rather than a
+dedicated `<dl>` layout. GFM alerts, math, underline, subscript, superscript, and rendered raw HTML
+are not supported. Preview rendering never writes back to the source editor.
 
 ## Configuration
 
@@ -140,6 +153,7 @@ save = "ctrl+s"
 quit = "ctrl+q"
 toggle_explorer = "ctrl+b"
 find_file = "ctrl+p"
+search_text = "ctrl+shift+f"
 toggle_preview = "ctrl+e"
 undo = "ctrl+z,super+z"
 redo = "ctrl+y,super+y,ctrl+shift+z"
@@ -175,6 +189,7 @@ TermWriter is already running, restart once so it can be added to the watched st
 | Ctrl+Q | Quit through the unsaved-change guard |
 | Ctrl+B | Show or hide the file explorer |
 | Ctrl+P | Find and open a workspace Markdown file |
+| Ctrl+Shift+F | Search literal text across workspace Markdown files |
 | Ctrl+E | Show/hide preview, or switch editor/preview when narrow |
 | Ctrl+Z | Undo |
 | Ctrl+Y or Ctrl+Shift+Z | Redo |
@@ -185,6 +200,10 @@ Tab and Shift+Tab move focus where the focused control does not use Tab for inde
 help key so a literal `?` remains editable Markdown. Some terminals do not distinguish
 Ctrl+Shift+Z from Ctrl+Z; Ctrl+Y remains the portable redo binding. On a bullet, numbered item,
 task, or blockquote, Enter inserts the next marker; Enter on an empty marker ends that structure.
+
+Workspace text search runs only after Enter is pressed in its dialog. It is literal,
+case-insensitive, capped at 100 matching lines, and includes the active document's unsaved source.
+Selecting another file still passes through Save / Discard / Cancel before leaving dirty work.
 
 ## Data-safety behavior
 
@@ -256,7 +275,7 @@ mypy
 The suite covers the document model, UTF-8/BOM/LF/CRLF preservation, mixed-ending consent, empty
 files, missing final newlines, recovery round trips and failures, restart recovery, atomic-save
 failures, metadata and permission bits, watcher reload/conflict/deletion behavior, workspace
-filtering, symlinks, file search, CLI validation, and Textual Pilot workflows.
+filtering, symlinks, file and workspace-text search, CLI validation, and Textual Pilot workflows.
 Customization tests also exercise remapped keys, runtime TOML reload, user-TCSS precedence, command
 discovery, task continuation, termination, and undo grouping.
 
@@ -294,21 +313,22 @@ discovery, task continuation, termination, and undo grouping.
   cache or restart restoration yet.
 - Preview links are deliberately non-opening. Raw document HTML, JavaScript, and shell text are not
   executed.
-- Preview intentionally omits footnotes, definition lists, alerts, math, underline, subscript, and
-  superscript. Images do not render terminal graphics.
-- Smart Enter handles common single-line list/task/blockquote prefixes, thematic breaks, and fenced
-  code; it is not a full Markdown incremental parser. A root-level four-space-indented list-like
-  line can still be continued even though CommonMark treats it as indented code.
+- Preview intentionally omits alerts, math, underline, subscript, and superscript. Footnote labels
+  are not links, definition lists use bullets, and images do not render terminal graphics.
+- Smart Enter handles common list/task/blockquote prefixes, thematic breaks, fenced code, and the
+  distinction between indented code and genuine nested lists. Ambiguous indentation parses the
+  source prefix through the cursor, so Enter may have a small delay in extremely large files.
 - A malformed `theme.tcss` can prevent startup until the file is corrected. Only a theme present at
   launch is watched; create the templates with `--init-config` before opening the TUI.
-- Global full-text search is not part of this MVP.
+- Workspace text search is literal rather than regex/fuzzy search, returns one match per source line,
+  and caps results at 100. A thread already reading a file may finish that read after cancellation.
 
 ## Near-term roadmap
 
 1. Add a syntax-help fixture/gallery and broaden preview support only where Textual can render tokens
    safely.
 2. Add recovery-entry management for renamed files and manual cleanup of corrupt/stale entries.
-3. Add optional in-process workspace text search.
+3. Add optional regex and whole-word modes to workspace text search.
 4. Add a multi-document cache and restart restoration for cursor/scroll state.
 5. Prototype read-only semantic block mapping before attempting hybrid block editing.
 
