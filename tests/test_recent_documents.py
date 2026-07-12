@@ -13,7 +13,12 @@ from termwriter.models.workspace import Workspace
 from termwriter.screens.dialogs import UnsavedChangesDialog
 from termwriter.screens.recent_documents import RecentDocumentsDialog
 from termwriter.services.recovery import RecoveryJournal
-from termwriter.services.session import DocumentViewState, SessionState, SessionStore
+from termwriter.services.session import (
+    MAX_SESSION_DOCUMENTS,
+    DocumentViewState,
+    SessionState,
+    SessionStore,
+)
 
 
 def _app(
@@ -127,6 +132,29 @@ async def test_recent_switcher_skips_missing_session_paths(tmp_path: Path) -> No
 
         assert isinstance(app.screen, RecentDocumentsDialog)
         assert app.screen.paths == (active,)
+        for _ in range(100):
+            state = store.load(tmp_path).state
+            if state is not None and tuple(view.path for view in state.documents) == (active,):
+                break
+            await pilot.pause(0.01)
+        else:
+            raise AssertionError("pruned MRU session was not persisted")
+
+
+def test_recent_document_cache_evicts_oldest_view_at_limit(tmp_path: Path) -> None:
+    active = tmp_path / "active.md"
+    active.write_text("active", encoding="utf-8")
+    app = _app(active, SessionStore(tmp_path / "sessions"))
+    paths = [tmp_path / f"note-{index}.md" for index in range(MAX_SESSION_DOCUMENTS + 1)]
+
+    for path in paths:
+        app._session_views[path] = DocumentViewState(path)
+        app._mark_document_recent(path)
+
+    assert len(app._recent_paths) == MAX_SESSION_DOCUMENTS
+    assert paths[0] not in app._recent_paths
+    assert paths[0] not in app._session_views
+    assert app._recent_paths[0] == paths[-1]
 
 
 async def test_recent_binding_is_configurable_and_command_is_discoverable(

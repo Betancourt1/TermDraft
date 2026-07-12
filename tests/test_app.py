@@ -151,6 +151,42 @@ async def test_directory_session_restore_still_offers_missing_recovery_drafts(
         assert app.document.path == active
 
 
+async def test_missing_session_active_path_is_pruned_without_opening_another_file(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    missing = workspace / "missing.md"
+    other = workspace / "other.md"
+    other.write_text("other", encoding="utf-8")
+    store = SessionStore(tmp_path / "sessions")
+    store.save(
+        SessionState(
+            workspace,
+            missing,
+            (DocumentViewState(missing), DocumentViewState(other)),
+        )
+    )
+    app = TermWriterApp(
+        Workspace.from_target(workspace),
+        preview_debounce=0.01,
+        recovery_journal=RecoveryJournal(tmp_path / "recovery"),
+        session_store=store,
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        assert app.document is None
+        for _ in range(100):
+            state = store.load(workspace).state
+            if state is not None and state.active_path is None:
+                break
+            await pilot.pause(0.01)
+        else:
+            raise AssertionError("missing active session path was not pruned")
+
+        assert tuple(view.path for view in state.documents) == (other,)
+
+
 async def test_explicit_file_overrides_session_active_path_but_restores_its_view(
     tmp_path: Path,
 ) -> None:

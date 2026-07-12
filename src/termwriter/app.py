@@ -75,8 +75,9 @@ from termwriter.services.recovery import (
     RecoveryScan,
 )
 from termwriter.services.session import (
+    MAX_SESSION_DOCUMENTS,
     DocumentViewState,
-    SessionError,
+    SessionLoadResult,
     SessionState,
     SessionStore,
 )
@@ -183,16 +184,13 @@ class TermWriterApp(App[None]):
         if session_store is None and recovery_journal is not None:
             session_store = SessionStore(recovery_journal.state_root.parent / "sessions")
         self.session_store = session_store or SessionStore()
-        session_result = self.session_store.load(workspace.root)
-        session = session_result.state
-        self._session_warning = session_result.warning
-        self._session_views = {
-            view.path: view for view in (() if session is None else session.documents)
-        }
-        self._session_active_path = None if session is None else session.active_path
-        self._recent_paths = [view.path for view in (() if session is None else session.documents)]
-        if self._session_active_path is not None:
-            self._mark_document_recent(self._session_active_path)
+        self._session_warning: str | None = None
+        self._session_views: dict[Path, DocumentViewState] = {}
+        self._session_active_path: Path | None = None
+        self._recent_paths: list[Path] = []
+        self._session_save_in_flight = False
+        self._pending_session_state: SessionState | None = None
+        self._exit_requested = False
         self.workspace_files: tuple[Path, ...] = ()
         self._preview_timer: Timer | None = None
         self._external_watch_timer: Timer | None = None
@@ -239,6 +237,7 @@ class TermWriterApp(App[None]):
         yield TermWriterStatusBar()
 
     async def on_mount(self) -> None:
+        await self._load_session_worker().wait()
         self._refresh_workspace_index()
         self._external_watch_timer = self.set_interval(
             self.external_poll_interval,
@@ -258,6 +257,16 @@ class TermWriterApp(App[None]):
         if initial_file is None and self._session_active_path is not None:
             try:
                 initial_file = self.workspace.validate_document_path(self._session_active_path)
+            except WorkspaceNotFoundError as error:
+                missing_path = self._session_active_path
+                self._session_active_path = None
+                self._forget_session_path(missing_path)
+                self._persist_session()
+                self.notify(
+                    escape(str(error)),
+                    severity="warning",
+                    title="Previous session document unavailable",
+                )
             except WorkspaceError as error:
                 self.notify(
                     escape(str(error)),
@@ -277,6 +286,26 @@ class TermWriterApp(App[None]):
             self.explorer.directory_tree.focus()
             self._refresh_status()
             await self._scan_orphan_recoveries().wait()
+
+    @work(group="session-load", thread=True, exit_on_error=False)
+    def _load_session_worker(self) -> None:
+        try:
+            result = self.session_store.load(self.workspace.root)
+        except Exception as error:
+            result = SessionLoadResult(warning=f"Cannot read session state: {error}")
+        self.call_from_thread(self._apply_session_result, result)
+
+    def _apply_session_result(self, result: SessionLoadResult) -> None:
+        """Install one bounded, content-free session result on the UI thread."""
+        session = result.state
+        self._session_warning = result.warning
+        self._session_views = {
+            view.path: view for view in (() if session is None else session.documents)
+        }
+        self._session_active_path = None if session is None else session.active_path
+        self._recent_paths = [view.path for view in (() if session is None else session.documents)]
+        if self._session_active_path is not None:
+            self._mark_document_recent(self._session_active_path)
 
     def on_resize(self, event: events.Resize) -> None:
         was_narrow = self._narrow
@@ -429,46 +458,86 @@ class TermWriterApp(App[None]):
 
     def _mark_document_recent(self, path: Path) -> None:
         """Move one exact workspace path to the front of the MRU order."""
-        self._recent_paths = [
+        recent_paths = [
             path,
             *(candidate for candidate in self._recent_paths if candidate != path),
         ]
+        self._recent_paths = recent_paths[:MAX_SESSION_DOCUMENTS]
+        for evicted in recent_paths[MAX_SESSION_DOCUMENTS:]:
+            self._session_views.pop(evicted, None)
 
-    def _recent_document_paths(self) -> tuple[Path, ...]:
-        """Return still-valid MRU entries without surfacing stale session paths."""
+    def _forget_session_path(self, path: Path) -> None:
+        self._recent_paths = [candidate for candidate in self._recent_paths if candidate != path]
+        self._session_views.pop(path, None)
+
+    def _recent_document_paths(self, *, prune_missing: bool = False) -> tuple[Path, ...]:
+        """Return valid MRU entries and optionally forget confirmed missing paths."""
         available: list[Path] = []
+        missing: list[Path] = []
         for path in self._recent_paths:
             try:
                 safe_path = self.workspace.validate_document_path(path)
+            except WorkspaceNotFoundError:
+                if prune_missing:
+                    missing.append(path)
+                continue
             except WorkspaceError:
                 continue
             if safe_path not in available:
                 available.append(safe_path)
+        for path in missing:
+            self._forget_session_path(path)
+        if missing:
+            self._persist_session()
         return tuple(available)
 
     def _persist_session(self) -> None:
-        """Best-effort persistence for view state; Markdown is never included."""
+        """Queue best-effort view persistence; Markdown is never included."""
         document = self.document
-        if document is None:
-            return
-        self._remember_document_view(document)
+        if document is not None:
+            self._remember_document_view(document)
         state = SessionState(
             workspace_root=self.workspace.root,
-            active_path=document.path,
+            active_path=None if document is None else document.path,
             documents=tuple(
                 self._session_views[path]
                 for path in self._recent_paths
                 if path in self._session_views
             ),
         )
+        self._queue_session_save(state)
+
+    def _queue_session_save(self, state: SessionState) -> None:
+        """Serialize writes and retain only the newest waiting session snapshot."""
+        if self._session_save_in_flight:
+            self._pending_session_state = state
+            return
+        self._session_save_in_flight = True
+        self._session_save_worker(state)
+
+    @work(group="session-save", thread=True, exit_on_error=False)
+    def _session_save_worker(self, state: SessionState) -> None:
         try:
             self.session_store.save(state)
-        except SessionError as error:
+            error_message = None
+        except Exception as error:
+            error_message = str(error)
+        self.call_from_thread(self._handle_session_save_result, error_message)
+
+    def _handle_session_save_result(self, error_message: str | None) -> None:
+        self._session_save_in_flight = False
+        if error_message is not None:
             self.notify(
-                escape(str(error)),
+                escape(error_message),
                 severity="warning",
                 title="Session position not saved",
             )
+        pending = self._pending_session_state
+        self._pending_session_state = None
+        if pending is not None:
+            self._queue_session_save(pending)
+            return
+        self._maybe_finish_exit()
 
     @on(TextArea.Changed, "#markdown-editor")
     def editor_changed(self, event: TextArea.Changed) -> None:
@@ -1918,8 +1987,19 @@ class TermWriterApp(App[None]):
 
     def _exit_with_session(self) -> None:
         self._sync_editor_state()
+        if self.document is not None:
+            self.editor.read_only = True
+        self._exit_requested = True
         self._persist_session()
-        self.exit()
+        self._maybe_finish_exit()
+
+    def _maybe_finish_exit(self) -> None:
+        if (
+            self._exit_requested
+            and not self._session_save_in_flight
+            and self._pending_session_state is None
+        ):
+            self.exit()
 
     async def action_quit(self) -> None:
         """Defensively route Textual's inherited quit action through the safety gate."""
@@ -1965,7 +2045,7 @@ class TermWriterApp(App[None]):
             self.notify("Wait for the current file operation to finish", severity="warning")
             return
         self._sync_editor_state()
-        paths = self._recent_document_paths()
+        paths = self._recent_document_paths(prune_missing=True)
         if not paths:
             self.notify("No recent Markdown documents are available", severity="warning")
             return

@@ -22,13 +22,20 @@ from termwriter.screens.dialogs import (
 from termwriter.services.external_changes import DiskProbe, probe_file
 from termwriter.services.persistence import LoadedFile, SaveResult, atomic_save, load_file
 from termwriter.services.recovery import RecoveryJournal
+from termwriter.services.session import DocumentViewState, SessionState, SessionStore
 
 
-def _app(path: Path, *, journal: RecoveryJournal | None = None) -> TermWriterApp:
+def _app(
+    path: Path,
+    *,
+    journal: RecoveryJournal | None = None,
+    session_store: SessionStore | None = None,
+) -> TermWriterApp:
     return TermWriterApp(
         Workspace.from_target(path),
         preview_debounce=0.01,
         recovery_journal=journal or RecoveryJournal(path.parent / ".test-recovery"),
+        session_store=session_store,
     )
 
 
@@ -66,6 +73,81 @@ async def test_initial_document_load_runs_off_the_ui_thread(
         assert app.document.text == "base"
         assert load_threads
         assert all(thread != ui_thread for thread in load_threads)
+
+
+async def test_session_load_runs_off_the_ui_thread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    store = SessionStore(tmp_path / "sessions")
+    store.save(SessionState(tmp_path, path, (DocumentViewState(path),)))
+    ui_thread = get_ident()
+    load_threads: list[int] = []
+    real_load = store.load
+
+    def tracked_load(workspace_root: Path):
+        load_threads.append(get_ident())
+        return real_load(workspace_root)
+
+    monkeypatch.setattr(store, "load", tracked_load)
+    app = _app(path, session_store=store)
+
+    async with app.run_test(size=(100, 30)):
+        assert app.document is not None
+        assert load_threads
+        assert all(thread != ui_thread for thread in load_threads)
+
+
+async def test_session_saves_are_serialized_and_coalesce_to_latest_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    store = SessionStore(tmp_path / "sessions")
+    app = _app(path, session_store=store)
+    started = Event()
+    release = Event()
+    saved_states: list[SessionState] = []
+    save_threads: list[int] = []
+    real_save = store.save
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _wait_until(pilot, lambda: not app._session_save_in_flight)
+
+        def blocked_save(state: SessionState) -> None:
+            save_threads.append(get_ident())
+            saved_states.append(state)
+            if len(saved_states) == 1:
+                started.set()
+                assert release.wait(2)
+            real_save(state)
+
+        monkeypatch.setattr(store, "save", blocked_save)
+        states = tuple(
+            SessionState(
+                tmp_path,
+                tmp_path / f"state-{index}.md",
+                (DocumentViewState(tmp_path / f"state-{index}.md"),),
+            )
+            for index in range(3)
+        )
+        app._queue_session_save(states[0])
+        await _wait_until(pilot, started.is_set)
+        app._queue_session_save(states[1])
+        app._queue_session_save(states[2])
+
+        release.set()
+        await _wait_until(
+            pilot,
+            lambda: not app._session_save_in_flight and app._pending_session_state is None,
+        )
+
+        assert saved_states == [states[0], states[2]]
+        assert all(thread != get_ident() for thread in save_threads)
+        assert store.load(tmp_path).state == states[2]
 
 
 async def test_watcher_probe_allows_edit_and_classifies_result_against_latest_dirty_state(
