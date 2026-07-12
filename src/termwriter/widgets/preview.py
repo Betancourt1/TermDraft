@@ -89,6 +89,8 @@ class MarkdownPreview(Markdown):
 
         if href.startswith(FOOTNOTE_BACKREF_PREFIX):
             label = href.removeprefix(FOOTNOTE_BACKREF_PREFIX)
+            if not label.isascii() or not label.isdecimal():
+                return
             origin = self._footnote_origins.get(label)
             if origin is not None:
                 self.scroll_to(y=origin, animate=False)
@@ -102,6 +104,8 @@ class MarkdownPreview(Markdown):
             return
 
         label = href.removeprefix(target_prefix)
+        if not label.isascii() or not label.isdecimal():
+            return
         self._footnote_origins[label] = self.scroll_y
         if self._selected_link is not None and self._links[self._selected_link].href == href:
             self._footnote_link_origins[label] = self._selected_link

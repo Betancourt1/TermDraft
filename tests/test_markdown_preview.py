@@ -410,3 +410,28 @@ async def test_keyboard_link_navigation_leaves_preview_at_each_boundary() -> Non
         await pilot.press("shift+tab")
         assert app.focused is app.query_one("#before", Button)
         assert not preview.query(".keyboard-link-selected")
+
+
+async def test_malformed_reserved_fragment_stays_inert() -> None:
+    class PreviewApp(App[None]):
+        def __init__(self) -> None:
+            super().__init__()
+            self.opened_urls: list[str] = []
+
+        def compose(self) -> ComposeResult:
+            yield MarkdownPreview()
+
+        def open_url(self, url: str, *, new_tab: bool = True) -> None:
+            self.opened_urls.append(url)
+
+    app = PreviewApp()
+    async with app.run_test() as pilot:
+        preview = app.query_one(MarkdownPreview)
+        await preview.render_source("[boom](#termwriter-footnote-%5B)\n")
+        preview.focus()
+
+        await pilot.press("tab", "enter")
+        await pilot.pause()
+
+        assert app.opened_urls == []
+        assert preview.query(".keyboard-link-selected")
