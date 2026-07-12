@@ -12,9 +12,10 @@ from textual.widgets import Button, Input, TextArea
 
 from termwriter.app import TermWriterApp
 from termwriter.models.document import FileSnapshot
-from termwriter.models.workspace import Workspace
+from termwriter.models.workspace import ScanResult, Workspace
 from termwriter.screens.dialogs import (
     ConflictDialog,
+    FileSearchDialog,
     MixedLineEndingsDialog,
     RecoveryDialog,
     SaveAsDialog,
@@ -74,6 +75,72 @@ async def test_initial_document_load_runs_off_the_ui_thread(
         assert app.document.text == "base"
         assert load_threads
         assert all(thread != ui_thread for thread in load_threads)
+
+
+async def test_workspace_index_runs_off_the_ui_thread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    ui_thread = get_ident()
+    scan_threads: list[int] = []
+    real_scan = Workspace.scan
+
+    def tracked_scan(
+        self: Workspace,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> ScanResult:
+        scan_threads.append(get_ident())
+        return real_scan(self, should_cancel=should_cancel)
+
+    monkeypatch.setattr(Workspace, "scan", tracked_scan)
+    app = _app(path)
+
+    async with app.run_test(size=(100, 30)):
+        assert app.workspace_files == (path,)
+        assert scan_threads
+        assert all(thread != ui_thread for thread in scan_threads)
+
+
+async def test_blocked_file_index_keeps_editor_responsive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    started = Event()
+    release = Event()
+    calls = 0
+    real_scan = Workspace.scan
+
+    def blocked_scan(
+        self: Workspace,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> ScanResult:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            started.set()
+            assert release.wait(2)
+        return real_scan(self, should_cancel=should_cancel)
+
+    monkeypatch.setattr(Workspace, "scan", blocked_scan)
+    app = _app(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        app.action_find_file()
+        await _wait_until(pilot, started.is_set)
+        try:
+            await pilot.press("x")
+            assert app.document is not None
+            assert app.document.text == "xbase"
+            assert not isinstance(app.screen, FileSearchDialog)
+        finally:
+            release.set()
+        await _wait_until(pilot, lambda: isinstance(app.screen, FileSearchDialog))
 
 
 async def test_session_load_runs_off_the_ui_thread(

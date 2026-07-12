@@ -25,6 +25,7 @@ from termwriter.bindings import (
 from termwriter.config import ConfigError, TermWriterConfig, load_config
 from termwriter.models.document import Document, FileSnapshot
 from termwriter.models.workspace import (
+    ScanResult,
     Workspace,
     WorkspaceError,
     WorkspaceNotFoundError,
@@ -131,6 +132,13 @@ class _SaveAsWorkerResult:
 
 
 @dataclass(frozen=True, slots=True)
+class _WorkspaceIndexResult:
+    revision: int
+    scan: ScanResult | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class _OrphanWorkerResult:
     scan: RecoveryScan
     unavailable: tuple[RecoveryEntry, ...]
@@ -232,6 +240,8 @@ class TermWriterApp(App[None]):
         self._pending_session_state: SessionState | None = None
         self._exit_requested = False
         self.workspace_files: tuple[Path, ...] = ()
+        self._workspace_index_revision = 0
+        self._file_search_requested = False
         self._preview_timer: Timer | None = None
         self._external_watch_timer: Timer | None = None
         self._recovery_timer: Timer | None = None
@@ -290,7 +300,7 @@ class TermWriterApp(App[None]):
 
     async def on_mount(self) -> None:
         await self._load_session_worker().wait()
-        self._refresh_workspace_index()
+        await self._refresh_workspace_index().wait()
         self._external_watch_timer = self.set_interval(
             self.external_poll_interval,
             self._check_external_in_background,
@@ -458,14 +468,47 @@ class TermWriterApp(App[None]):
         self._critical_previous_status = None
         self._refresh_status()
 
-    def _refresh_workspace_index(self) -> None:
-        result = self.workspace.scan()
-        self.workspace_files = result.files
-        if result.warnings:
+    def _refresh_workspace_index(self, *, open_search: bool = False) -> Worker[None]:
+        self._workspace_index_revision += 1
+        if open_search:
+            self._file_search_requested = True
+        return self._workspace_index_worker(self._workspace_index_revision)
+
+    @work(group="workspace-index", exclusive=True, thread=True, exit_on_error=False)
+    def _workspace_index_worker(self, revision: int) -> None:
+        worker = get_current_worker()
+        try:
+            scan = self.workspace.scan(should_cancel=lambda: worker.is_cancelled)
+            result = _WorkspaceIndexResult(revision, scan=scan)
+        except Exception as error:
+            result = _WorkspaceIndexResult(revision, error=str(error))
+        if not worker.is_cancelled:
+            self.call_from_thread(self._apply_workspace_index, result)
+
+    def _apply_workspace_index(self, result: _WorkspaceIndexResult) -> None:
+        if result.revision != self._workspace_index_revision:
+            return
+        if result.error is not None or result.scan is None:
             self.notify(
-                f"Skipped {len(result.warnings)} unreadable workspace location(s)",
+                escape(result.error or "Workspace indexing failed"),
+                severity="warning",
+                title="Workspace index unavailable",
+            )
+            self._file_search_requested = False
+            return
+        self.workspace_files = result.scan.files
+        if result.scan.warnings:
+            self.notify(
+                f"Skipped {len(result.scan.warnings)} unreadable workspace location(s)",
                 severity="warning",
             )
+        if self._file_search_requested:
+            self._file_search_requested = False
+            if not self._has_modal and not self._exit_requested:
+                self.push_screen(
+                    FileSearchDialog(self.workspace_files, self.workspace.root),
+                    self._handle_search_result,
+                )
 
     def _apply_panel_visibility(self) -> None:
         self.explorer.display = self._explorer_visible
@@ -2694,11 +2737,7 @@ class TermWriterApp(App[None]):
     def action_find_file(self) -> None:
         if self._has_modal:
             return
-        self._refresh_workspace_index()
-        self.push_screen(
-            FileSearchDialog(self.workspace_files, self.workspace.root),
-            self._handle_search_result,
-        )
+        self._refresh_workspace_index(open_search=True)
 
     def action_open_recent(self) -> None:
         if self._has_modal:
