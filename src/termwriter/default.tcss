@@ -101,7 +101,7 @@ ModalScreen {
 }
 
 #search-dialog, #text-search-dialog {
-    height: 28;
+    height: 31;
 }
 
 #search-input, #text-search-input {
@@ -109,16 +109,17 @@ ModalScreen {
 }
 
 #text-search-options {
-    height: 3;
+    height: 6;
 }
 
 #text-search-mode {
     width: 1fr;
+    height: 3;
 }
 
 #text-search-case {
-    width: auto;
-    margin-left: 1;
+    width: 1fr;
+    height: 3;
 }
 
 #text-search-filter {

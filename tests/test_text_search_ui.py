@@ -119,6 +119,25 @@ async def test_text_search_dialog_reports_invalid_regex(tmp_path: Path) -> None:
         assert "Invalid regular expression" in str(status.render())
 
 
+async def test_text_search_options_remain_visible_in_a_narrow_terminal(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "active.md"
+    path.write_text("text", encoding="utf-8")
+    app = _app(path)
+
+    async with app.run_test(size=(24, 20)) as pilot:
+        await pilot.press("ctrl+shift+f")
+
+        assert isinstance(app.screen, TextSearchDialog)
+        mode = app.screen.query_one("#text-search-mode", Select)
+        case = app.screen.query_one("#text-search-case", Checkbox)
+        assert mode.region.width > 0
+        assert mode.region.height > 0
+        assert case.region.width > 0
+        assert case.region.height > 0
+
+
 async def test_text_search_reads_new_disk_text_for_a_clean_active_document(
     tmp_path: Path,
 ) -> None:

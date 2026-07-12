@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import codecs
 from pathlib import Path
+from time import monotonic
 
 import pytest
 
@@ -59,6 +60,22 @@ def test_whole_word_search_respects_unicode_boundaries_and_casefolding(
 
     assert [(match.line, match.column) for match in result.matches] == [(0, 0), (1, 0)]
     assert result.error is None
+
+
+def test_whole_word_search_treats_combining_marks_as_word_characters(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "unicode.md"
+    standalone = "cafe\N{COMBINING ACUTE ACCENT}"
+    path.write_text(f"{standalone}ine\n{standalone}\n", encoding="utf-8")
+
+    result = search_text(
+        (path,),
+        standalone,
+        options=TextSearchOptions(mode=TextSearchMode.WHOLE_WORD),
+    )
+
+    assert [(match.line, match.column) for match in result.matches] == [(1, 0)]
 
 
 def test_literal_and_whole_word_search_can_be_case_sensitive(tmp_path: Path) -> None:
@@ -141,6 +158,44 @@ def test_invalid_or_oversized_regex_returns_error_without_reading_files(
     assert oversized.error == (f"Regular expression is limited to {MAX_REGEX_LENGTH} characters.")
 
 
+def test_pathological_regex_times_out_without_holding_the_search_worker(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "long.md"
+    path.write_text("a" * 20_000 + "!", encoding="utf-8")
+
+    started = monotonic()
+    result = search_text(
+        (path,),
+        r"(a+)+$",
+        options=TextSearchOptions(mode=TextSearchMode.REGEX),
+    )
+
+    assert monotonic() - started < 1
+    assert result.matches == ()
+    assert result.error == "Regular expression timed out on a source line."
+
+
+def test_regex_search_includes_logical_empty_and_trailing_lines(tmp_path: Path) -> None:
+    empty = tmp_path / "empty.md"
+    trailing = tmp_path / "trailing.md"
+    empty.write_text("", encoding="utf-8")
+    trailing.write_text("alpha\n\n", encoding="utf-8")
+    options = TextSearchOptions(
+        mode=TextSearchMode.REGEX,
+        case_sensitive=True,
+    )
+
+    empty_result = search_text((empty,), r"^$", options=options)
+    trailing_result = search_text((trailing,), r"^$", options=options)
+
+    assert [(match.line, match.column) for match in empty_result.matches] == [(0, 0)]
+    assert [(match.line, match.column) for match in trailing_result.matches] == [
+        (1, 0),
+        (2, 0),
+    ]
+
+
 def test_search_handles_utf8_bom_crlf_and_missing_final_newline(tmp_path: Path) -> None:
     path = tmp_path / "windows.markdown"
     path.write_bytes(codecs.BOM_UTF8 + "First\r\nCafé needle".encode())
@@ -200,9 +255,16 @@ def test_file_filter_matches_case_insensitive_workspace_relative_posix_glob(
         options=TextSearchOptions(file_filter="docs/**/*.md"),
         root=tmp_path,
     )
+    basename_result = search_text(
+        (root_file, nested, direct),
+        "needle",
+        options=TextSearchOptions(file_filter="*.md"),
+        root=tmp_path,
+    )
 
     assert [match.path for match in direct_result.matches] == [direct]
-    assert [match.path for match in nested_result.matches] == [nested]
+    assert {match.path for match in nested_result.matches} == {direct, nested}
+    assert {match.path for match in basename_result.matches} == {direct, nested, root_file}
 
 
 def test_file_filter_is_applied_before_loading_or_using_active_override(

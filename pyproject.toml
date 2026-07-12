@@ -13,6 +13,7 @@ authors = [{ name = "TermWriter contributors" }]
 dependencies = [
     "markdown-it-py>=4.0,<5",
     "mdit-py-plugins>=0.6,<1",
+    "regex>=2025.7,<2027",
     "textual[syntax]>=8.2.8,<9",
 ]
 
@@ -22,6 +23,7 @@ dev = [
     "pytest>=8.4,<9",
     "pytest-asyncio>=1.1,<2",
     "ruff>=0.12,<1",
+    "types-regex>=2025.7,<2027",
 ]
 
 [project.scripts]

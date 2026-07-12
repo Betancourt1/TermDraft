@@ -8,7 +8,7 @@ from threading import Event, get_ident
 
 import pytest
 from textual.pilot import Pilot
-from textual.widgets import Button, Input
+from textual.widgets import Button, Input, TextArea
 
 from termwriter.app import TermWriterApp
 from termwriter.models.document import FileSnapshot
@@ -134,7 +134,11 @@ async def test_edit_during_transition_probe_reenters_unsaved_guard(
         assert app._critical_io
         assert not app.editor.read_only
         app.editor.focus()
-        await pilot.press("x")
+        with app.editor.prevent(TextArea.Changed):
+            app.editor.insert("x", (0, 0))
+        assert app.editor.text == "xfirst"
+        assert app.document is not None
+        assert app.document.text == "first"
         release.set()
         await _wait_until(pilot, lambda: isinstance(app.screen, UnsavedChangesDialog))
 
@@ -176,7 +180,7 @@ async def test_blocked_save_is_read_only_and_cannot_be_quit_mid_publication(
         assert app._critical_io
         assert app.editor.read_only
         before = app.editor.text
-        await pilot.press("x", "ctrl+q")
+        await pilot.press("x", "ctrl+z", "ctrl+y", "ctrl+q")
         assert app.is_running
         assert app.editor.text == before
 
@@ -184,6 +188,10 @@ async def test_blocked_save_is_read_only_and_cannot_be_quit_mid_publication(
         await _wait_until(pilot, lambda: bool(app.document and not app.document.dirty))
 
         assert path.read_text(encoding="utf-8") == "xbase"
+        assert app.document is not None
+        assert app.document.text == "xbase"
+        assert app.document.saved_text == "xbase"
+        assert app.editor.text == "xbase"
         assert not app.editor.read_only
         assert save_threads and all(thread != get_ident() for thread in save_threads)
 

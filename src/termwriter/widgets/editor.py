@@ -34,6 +34,16 @@ class MarkdownEditor(TextArea):
         )
         self.read_only = True
 
+    def undo(self) -> None:
+        """Keep history immutable while a background writer owns the source."""
+        if not self.read_only:
+            super().undo()
+
+    def redo(self) -> None:
+        """Keep history immutable while a background writer owns the source."""
+        if not self.read_only:
+            super().redo()
+
     async def _on_key(self, event: events.Key) -> None:
         """Apply predictable Markdown continuation before TextArea handles Enter."""
         if (

@@ -19,7 +19,12 @@ from termwriter.screens.dialogs import (
     UnsavedChangesDialog,
 )
 from termwriter.services.external_changes import DiskProbe
-from termwriter.services.persistence import SaveResult, atomic_save, load_file
+from termwriter.services.persistence import (
+    PersistenceError,
+    SaveResult,
+    atomic_save,
+    load_file,
+)
 from termwriter.services.recovery import RecoveryJournal
 
 
@@ -269,6 +274,37 @@ async def test_ancestor_swap_during_save_as_cannot_escape_workspace(
         assert app.document.text == "xbase"
 
 
+async def test_dirty_persistence_error_keeps_source_and_disk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    app = app_for_file(path)
+
+    def inaccessible_save(
+        _path: Path,
+        _text: str,
+        *,
+        encoding: str,
+        expected: FileSnapshot,
+    ) -> SaveResult:
+        del encoding, expected
+        raise PersistenceError("permission denied")
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("x")
+        monkeypatch.setattr("termwriter.app.atomic_save", inaccessible_save)
+        await pilot.press("ctrl+s")
+        await pilot.pause(0.1)
+
+        assert app.document is not None
+        assert app.document.text == "xbase"
+        assert app.document.dirty
+        assert app.document.last_save_status == "Save failed"
+        assert path.read_text(encoding="utf-8") == "base"
+
+
 async def test_dirty_inaccessible_file_offers_save_as(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -277,12 +313,23 @@ async def test_dirty_inaccessible_file_offers_save_as(
     path.write_text("base", encoding="utf-8")
     app = app_for_file(path)
 
-    def inaccessible(path: Path) -> DiskProbe:
-        return DiskProbe(path, None, "permission denied")
+    def inaccessible_save(
+        _path: Path,
+        _text: str,
+        *,
+        encoding: str,
+        expected: FileSnapshot,
+    ) -> SaveResult:
+        del encoding, expected
+        raise PersistenceError("permission denied")
+
+    def inaccessible_probe(requested: Path) -> DiskProbe:
+        return DiskProbe(requested, None, "permission denied")
 
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.press("x")
-        monkeypatch.setattr("termwriter.app.probe_file", inaccessible)
+        monkeypatch.setattr("termwriter.app.atomic_save", inaccessible_save)
+        monkeypatch.setattr("termwriter.app.probe_file", inaccessible_probe)
         await pilot.press("ctrl+s")
         await pilot.pause(0.1)
 
@@ -291,6 +338,7 @@ async def test_dirty_inaccessible_file_offers_save_as(
         assert app.document is not None
         assert app.document.text == "xbase"
         assert app.document.dirty
+        assert path.read_text(encoding="utf-8") == "base"
 
         await pilot.click("#conflict-save-as")
         assert isinstance(app.screen, SaveAsDialog)

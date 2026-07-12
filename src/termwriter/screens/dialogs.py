@@ -397,7 +397,7 @@ class TextSearchDialog(ModalScreen[TextSearchMatch | None]):
                 placeholder="Type a query and press Enter…",
                 id="text-search-input",
             )
-            with Horizontal(id="text-search-options"):
+            with Vertical(id="text-search-options"):
                 yield Select(
                     (
                         ("Literal", TextSearchMode.LITERAL.value),

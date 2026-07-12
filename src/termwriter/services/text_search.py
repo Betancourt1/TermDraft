@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-import re
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path, PurePosixPath
+from fnmatch import fnmatchcase
+from functools import cache
+from pathlib import Path
+
+import regex
 
 from termwriter.models.workspace import path_spelling_key, paths_are_spelling_aliases
 from termwriter.services.persistence import PersistenceError, load_file
@@ -14,6 +18,11 @@ from termwriter.services.persistence import PersistenceError, load_file
 DEFAULT_RESULT_LIMIT = 100
 MAX_PREVIEW_LENGTH = 160
 MAX_REGEX_LENGTH = 500
+REGEX_TIMEOUT_SECONDS = 0.05
+
+
+class _RegexTimedOut(Exception):
+    """Raised internally when one source line exceeds the regex budget."""
 
 
 class TextSearchMode(StrEnum):
@@ -129,10 +138,17 @@ def search_text(
         if should_cancel is not None and should_cancel():
             break
 
-        for line_number, line in enumerate(text.splitlines()):
+        for line_number, line in enumerate(_logical_lines(text)):
             if should_cancel is not None and should_cancel():
                 break
-            column = matcher(line)
+            try:
+                column = matcher(line)
+            except _RegexTimedOut:
+                return TextSearchResult(
+                    (),
+                    tuple(warnings),
+                    "Regular expression timed out on a source line.",
+                )
             if column is None:
                 continue
             matches.append(
@@ -156,36 +172,31 @@ def _build_matcher(
     if options.mode is TextSearchMode.REGEX:
         if len(query) > MAX_REGEX_LENGTH:
             return _no_match, f"Regular expression is limited to {MAX_REGEX_LENGTH} characters."
-        flags = 0 if options.case_sensitive else re.IGNORECASE
+        flags = regex.VERSION1
+        if not options.case_sensitive:
+            flags |= regex.IGNORECASE | regex.FULLCASE
         try:
-            pattern = re.compile(query, flags)
-        except re.error as error:
+            pattern = regex.compile(query, flags)
+        except regex.error as error:
             return _no_match, f"Invalid regular expression: {error}"
+        return lambda line: _regex_column(line, pattern), None
+
+    if options.mode is TextSearchMode.WHOLE_WORD:
+        flags = regex.VERSION1 | regex.WORD
+        if not options.case_sensitive:
+            flags |= regex.IGNORECASE | regex.FULLCASE
+        word_character = r"[\w\p{M}]"
+        prefix = f"(?<!{word_character})" if _is_word_character(query[0]) else ""
+        suffix = f"(?!{word_character})" if _is_word_character(query[-1]) else ""
+        pattern = regex.compile(f"{prefix}{regex.escape(query)}{suffix}", flags)
         return lambda line: _regex_column(line, pattern), None
 
     if options.case_sensitive:
         needle = query
-        source_pattern = query
         map_casefolded_column = False
     else:
         needle = query.casefold()
-        source_pattern = needle
         map_casefolded_column = True
-
-    if options.mode is TextSearchMode.WHOLE_WORD:
-        prefix = r"(?<!\w)" if _is_word_character(source_pattern[0]) else ""
-        suffix = r"(?!\w)" if _is_word_character(source_pattern[-1]) else ""
-        pattern = re.compile(f"{prefix}{re.escape(source_pattern)}{suffix}")
-
-        def match_whole_word(line: str) -> int | None:
-            if map_casefolded_column:
-                folded_line, source_columns = _casefold_with_columns(line)
-                match = pattern.search(folded_line)
-                return None if match is None else source_columns[match.start()]
-            match = pattern.search(line)
-            return None if match is None else match.start()
-
-        return match_whole_word, None
 
     if map_casefolded_column:
         return lambda line: _casefolded_column(line, needle), None
@@ -196,8 +207,15 @@ def _no_match(_line: str) -> int | None:
     return None
 
 
-def _regex_column(line: str, pattern: re.Pattern[str]) -> int | None:
-    match = pattern.search(line)
+def _regex_column(line: str, pattern: regex.Pattern[str]) -> int | None:
+    try:
+        match = pattern.search(
+            line,
+            timeout=REGEX_TIMEOUT_SECONDS,
+            concurrent=True,
+        )
+    except TimeoutError as error:
+        raise _RegexTimedOut from error
     return None if match is None else match.start()
 
 
@@ -207,7 +225,9 @@ def _literal_column(line: str, needle: str) -> int | None:
 
 
 def _is_word_character(character: str) -> bool:
-    return re.match(r"\w", character) is not None
+    return (
+        character == "_" or character.isalnum() or unicodedata.category(character).startswith("M")
+    )
 
 
 def _matches_file_filter(path: Path, pattern: str, root: Path | None) -> bool:
@@ -217,7 +237,39 @@ def _matches_file_filter(path: Path, pattern: str, root: Path | None) -> bool:
         relative_path = path.relative_to(root).as_posix()
     except ValueError:
         return False
-    return PurePosixPath(relative_path.casefold()).match(pattern.casefold())
+    path_parts = tuple(part.casefold() for part in relative_path.split("/"))
+    pattern_parts = tuple(part.casefold() for part in pattern.split("/") if part)
+    if not pattern_parts:
+        return False
+    if len(pattern_parts) == 1:
+        return fnmatchcase(path_parts[-1], pattern_parts[0])
+
+    @cache
+    def match(path_index: int, pattern_index: int) -> bool:
+        if pattern_index == len(pattern_parts):
+            return path_index == len(path_parts)
+        part = pattern_parts[pattern_index]
+        if part == "**":
+            return match(path_index, pattern_index + 1) or (
+                path_index < len(path_parts) and match(path_index + 1, pattern_index)
+            )
+        return (
+            path_index < len(path_parts)
+            and fnmatchcase(path_parts[path_index], part)
+            and match(path_index + 1, pattern_index + 1)
+        )
+
+    return match(0, 0)
+
+
+def _logical_lines(text: str) -> list[str]:
+    """Match TextArea's logical empty line at an empty source or trailing newline."""
+    if not text:
+        return [""]
+    lines = text.splitlines()
+    if text.endswith(("\r", "\n")):
+        lines.append("")
+    return lines
 
 
 def _canonical_override(

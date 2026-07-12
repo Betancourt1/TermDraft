@@ -288,12 +288,17 @@ def _sync_directory(directory_descriptor: int) -> bool:
     return True
 
 
-def _matches_expected(current: FileSnapshot, expected: FileSnapshot) -> bool:
+def _matches_expected(
+    current: FileSnapshot,
+    expected: FileSnapshot,
+    *,
+    compare_mode: bool = True,
+) -> bool:
     if not current.has_same_content(expected):
         return False
     if expected.exists and not current.has_same_origin(expected):
         return False
-    if expected.exists and current.mode != expected.mode:
+    if compare_mode and expected.exists and current.mode != expected.mode:
         return False
     if expected.parent_device is not None:
         return (
@@ -333,7 +338,7 @@ def atomic_save(
             )
 
         current = _snapshot_at(directory_descriptor, path.name, parent_stat)
-        if not _matches_expected(current, expected):
+        if not _matches_expected(current, expected, compare_mode=False):
             raise ExternalModificationError(path, current)
 
         try:
@@ -362,7 +367,7 @@ def atomic_save(
                 raise PersistenceError(f"Destination directory changed while saving {path}")
 
             latest = _snapshot_at(directory_descriptor, path.name, parent_stat)
-            if not _matches_expected(latest, expected):
+            if not _matches_expected(latest, current):
                 raise ExternalModificationError(path, latest)
 
             try:

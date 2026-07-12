@@ -77,7 +77,6 @@ class _ProbePurpose(Enum):
     TRANSITION = auto()
     CURRENT_RESULT = auto()
     SAVE_CLEAN = auto()
-    SAVE_DIRTY = auto()
     SAVE_RECOVERY = auto()
 
 
@@ -100,6 +99,7 @@ class _SaveWorkerResult:
     saved: SaveResult | None = None
     external_snapshot: FileSnapshot | None = None
     error: str | None = None
+    inaccessible: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -810,10 +810,12 @@ class TermWriterApp(App[None]):
         ticket = self._document_ticket(document)
         if document.recovery_conflict:
             purpose = _ProbePurpose.SAVE_RECOVERY
-        elif document.dirty:
-            purpose = _ProbePurpose.SAVE_DIRTY
-        else:
+        elif not document.dirty:
             purpose = _ProbePurpose.SAVE_CLEAN
+        else:
+            if self._begin_critical_io(document, freeze_editor=True, status="Saving…"):
+                self._save_document_worker(ticket, document.text, document.encoding)
+            return
         if self._begin_critical_io(document, freeze_editor=False, status="Checking…"):
             self._probe_document_worker(ticket, purpose)
 
@@ -848,6 +850,7 @@ class TermWriterApp(App[None]):
             return
 
         document = ticket.document
+        self._sync_editor_state()
         if purpose is _ProbePurpose.WATCH:
             if (
                 self._critical_io
@@ -927,19 +930,6 @@ class TermWriterApp(App[None]):
             self._show_conflict(change, after=continuation)
             return
 
-        if purpose is _ProbePurpose.SAVE_DIRTY:
-            if change.kind is not ExternalChangeKind.UNCHANGED:
-                self._finish_critical_io()
-                self._show_conflict(change, after=continuation)
-                return
-            if change.snapshot is not None:
-                self._accept_unchanged_snapshot(document, change.snapshot)
-            self._finish_critical_io()
-            ticket = self._document_ticket(document)
-            if self._begin_critical_io(document, freeze_editor=True, status="Saving…"):
-                self._save_document_worker(ticket, document.text, document.encoding)
-            return
-
         if change.kind is ExternalChangeKind.UNCHANGED and change.snapshot is not None:
             self._accept_unchanged_snapshot(document, change.snapshot)
             document.last_save_status = "No changes"
@@ -975,7 +965,11 @@ class TermWriterApp(App[None]):
         except ExternalModificationError as error:
             outcome = _SaveWorkerResult(external_snapshot=error.current)
         except (OSError, PersistenceError) as error:
-            outcome = _SaveWorkerResult(error=str(error))
+            try:
+                inaccessible = probe_file(ticket.path).snapshot is None
+            except Exception:
+                inaccessible = False
+            outcome = _SaveWorkerResult(error=str(error), inaccessible=inaccessible)
         except Exception as error:
             outcome = _SaveWorkerResult(error=f"Unexpected save failure: {error}")
         if not worker.is_cancelled:
@@ -1006,6 +1000,17 @@ class TermWriterApp(App[None]):
             )
             self._finish_critical_io()
             self._show_conflict(change, after=continuation)
+            return
+        if outcome.inaccessible:
+            self._finish_critical_io()
+            self._show_conflict(
+                ExternalChange(
+                    ExternalChangeKind.INACCESSIBLE,
+                    None,
+                    outcome.error,
+                ),
+                after=continuation,
+            )
             return
         if outcome.error is not None or outcome.saved is None:
             document.last_save_status = "Save failed"
@@ -1489,11 +1494,11 @@ class TermWriterApp(App[None]):
             self._request_open_at(result.path, result.line, result.column)
 
     def action_editor_undo(self) -> None:
-        if not self._has_modal and self.document is not None:
+        if not self._has_modal and self.document is not None and not self.editor.read_only:
             self.editor.undo()
 
     def action_editor_redo(self) -> None:
-        if not self._has_modal and self.document is not None:
+        if not self._has_modal and self.document is not None and not self.editor.read_only:
             self.editor.redo()
 
     def action_show_help(self) -> None:
@@ -1542,7 +1547,7 @@ class TermWriterApp(App[None]):
         )
         yield SystemCommand(
             "Search workspace text",
-            "Find literal text in Markdown source",
+            "Find literal, whole-word, or regex matches in Markdown source",
             self.action_search_text,
         )
         yield SystemCommand(
