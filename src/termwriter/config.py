@@ -33,8 +33,8 @@ DEFAULT_KEYBINDINGS: Mapping[str, str] = MappingProxyType(
         BINDING_ID_TOGGLE_EXPLORER: "ctrl+b",
         BINDING_ID_FIND_FILE: "ctrl+p",
         BINDING_ID_TOGGLE_PREVIEW: "ctrl+e",
-        BINDING_ID_UNDO: "ctrl+z",
-        BINDING_ID_REDO: "ctrl+y,ctrl+shift+z",
+        BINDING_ID_UNDO: "ctrl+z,super+z",
+        BINDING_ID_REDO: "ctrl+y,super+y,ctrl+shift+z",
         BINDING_ID_SHOW_HELP: "f1",
         BINDING_ID_COMMAND_PALETTE: "ctrl+backslash",
     }
@@ -56,8 +56,8 @@ show_line_numbers = true
 # toggle_explorer = "ctrl+b"
 # find_file = "ctrl+p"
 # toggle_preview = "ctrl+e"
-# undo = "ctrl+z"
-# redo = "ctrl+y,ctrl+shift+z"
+# undo = "ctrl+z,super+z"
+# redo = "ctrl+y,super+y,ctrl+shift+z"
 # show_help = "f1"
 # command_palette = "ctrl+backslash"
 """

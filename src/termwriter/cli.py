@@ -9,6 +9,13 @@ from pathlib import Path
 
 from termwriter import __version__
 from termwriter.app import TermWriterApp
+from termwriter.bindings import format_command_help
+from termwriter.config import (
+    ConfigError,
+    get_config_root,
+    initialize_config,
+    load_config,
+)
 from termwriter.models.workspace import Workspace, WorkspaceError
 
 
@@ -21,6 +28,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "target", nargs="?", default=".", help="workspace directory or Markdown file"
     )
+    parser.add_argument(
+        "--config-dir",
+        type=Path,
+        help="configuration directory (default: ~/.termwriter)",
+    )
+    utilities = parser.add_mutually_exclusive_group()
+    utilities.add_argument(
+        "--init-config",
+        action="store_true",
+        help="create no-clobber config.toml and theme.tcss templates, then exit",
+    )
+    utilities.add_argument(
+        "--config-path",
+        action="store_true",
+        help="print the resolved configuration paths, then exit",
+    )
+    utilities.add_argument(
+        "--commands",
+        action="store_true",
+        help="show effective shortcuts and command-palette actions, then exit",
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
@@ -29,10 +57,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Validate the target, launch the TUI, and return a shell status."""
     arguments = build_parser().parse_args(argv)
     try:
+        config_root = get_config_root(arguments.config_dir)
+        if arguments.init_config:
+            config = initialize_config(config_root)
+            print(f"Configuration: {config.config_path}")
+            print(f"Theme:         {config.theme_path}")
+            return 0
+        if arguments.config_path:
+            print(config_root / "config.toml")
+            print(config_root / "theme.tcss")
+            return 0
+        config = load_config(config_root)
+    except ConfigError as error:
+        print(f"termwriter: configuration error: {error}", file=sys.stderr)
+        return 2
+
+    if arguments.commands:
+        print(format_command_help(config.keybindings))
+        return 0
+
+    try:
         workspace = Workspace.from_target(Path(str(arguments.target)))
     except WorkspaceError as error:
         print(f"termwriter: error: {error}", file=sys.stderr)
         return 2
 
-    TermWriterApp(workspace).run()
+    TermWriterApp(workspace, config=config).run()
     return 0

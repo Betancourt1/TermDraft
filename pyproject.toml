@@ -11,6 +11,7 @@ requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "TermWriter contributors" }]
 dependencies = [
+    "markdown-it-py>=4.0,<5",
     "textual[syntax]>=8.2.8,<9",
 ]
 
@@ -27,6 +28,9 @@ termwriter = "termwriter.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+termwriter = ["*.tcss"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"
@@ -47,4 +51,3 @@ quote-style = "double"
 python_version = "3.12"
 strict = true
 files = ["src", "tests"]
-

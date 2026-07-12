@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from rich.markup import escape
 from textual import events, on
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SystemCommand
 from textual.containers import Horizontal
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
 from textual.widgets import DirectoryTree, Static, TextArea
 
-from termwriter.bindings import APP_BINDINGS, SHORTCUT_HELP
+from termwriter.bindings import (
+    APP_BINDINGS,
+    MARKDOWN_SYNTAX_HELP,
+    format_shortcut_help,
+)
+from termwriter.config import ConfigError, TermWriterConfig, load_config
 from termwriter.models.document import Document, FileSnapshot
 from termwriter.models.workspace import Workspace, WorkspaceError, WorkspaceNotFoundError
 from termwriter.screens.dialogs import (
@@ -52,74 +57,8 @@ class TermWriterApp(App[None]):
     """Local-first Markdown editor with guarded document transitions."""
 
     TITLE = "TermWriter"
-    ENABLE_COMMAND_PALETTE = False
+    ENABLE_COMMAND_PALETTE = True
     BINDINGS = APP_BINDINGS
-
-    CSS = """
-    Screen {
-        layout: vertical;
-        background: $background;
-    }
-
-    #title-bar {
-        height: 1;
-        padding: 0 1;
-        background: $primary;
-        color: $text;
-        text-style: bold;
-    }
-
-    #workspace {
-        height: 1fr;
-    }
-
-    #file-explorer {
-        width: 28;
-        min-width: 20;
-        height: 1fr;
-        border-right: solid $panel-lighten-2;
-        background: $surface;
-    }
-
-    #explorer-title {
-        height: 1;
-        padding: 0 1;
-        background: $panel;
-        text-style: bold;
-        text-overflow: ellipsis;
-    }
-
-    #file-tree {
-        height: 1fr;
-    }
-
-    #workbench {
-        width: 1fr;
-        height: 1fr;
-    }
-
-    #markdown-editor {
-        width: 1fr;
-        height: 1fr;
-        border: none;
-    }
-
-    #markdown-preview {
-        width: 1fr;
-        height: 1fr;
-        padding: 0 2;
-        border-left: solid $panel-lighten-2;
-        overflow-y: auto;
-    }
-
-    #status-bar {
-        height: 1;
-        padding: 0 1;
-        background: $panel;
-        color: $text-muted;
-        text-overflow: ellipsis;
-    }
-    """
 
     def __init__(
         self,
@@ -129,8 +68,17 @@ class TermWriterApp(App[None]):
         external_poll_interval: float = 2.0,
         recovery_debounce: float = 0.5,
         recovery_journal: RecoveryJournal | None = None,
+        config: TermWriterConfig | None = None,
     ) -> None:
-        super().__init__()
+        self.config = config or TermWriterConfig(root=Path.home() / ".termwriter")
+        self._config_root = config.root if config is not None else None
+        default_css = Path(__file__).with_name("default.tcss")
+        css_paths: list[str | PurePath] = [default_css]
+        watch_user_css = config is not None and self.config.theme_path.is_file()
+        if watch_user_css:
+            css_paths.append(self.config.theme_path)
+        super().__init__(css_path=css_paths, watch_css=watch_user_css)
+        self.set_keymap(dict(self.config.keybindings))
         self.workspace = workspace
         self.document: Document | None = None
         self.preview_debounce = preview_debounce
@@ -162,7 +110,11 @@ class TermWriterApp(App[None]):
         with Horizontal(id="workspace"):
             yield FileExplorer(self.workspace)
             with Horizontal(id="workbench"):
-                yield MarkdownEditor()
+                yield MarkdownEditor(
+                    auto_continue_lists=self.config.editor.auto_continue_lists,
+                    soft_wrap=self.config.editor.soft_wrap,
+                    show_line_numbers=self.config.editor.show_line_numbers,
+                )
                 yield MarkdownPreview()
         yield TermWriterStatusBar()
 
@@ -981,7 +933,76 @@ class TermWriterApp(App[None]):
 
     def action_show_help(self) -> None:
         if not self._has_modal:
-            self.push_screen(HelpDialog(SHORTCUT_HELP))
+            self.push_screen(
+                HelpDialog(
+                    format_shortcut_help(
+                        self.config.keybindings,
+                        auto_continue_lists=self.config.editor.auto_continue_lists,
+                    )
+                )
+            )
+
+    def action_show_markdown_help(self) -> None:
+        if not self._has_modal:
+            self.push_screen(HelpDialog(MARKDOWN_SYNTAX_HELP, title="Markdown syntax"))
+
+    def action_reload_config(self) -> None:
+        if self._has_modal:
+            return
+        if self._config_root is None:
+            self.notify(
+                "No user configuration was loaded for this app instance", severity="warning"
+            )
+            return
+        try:
+            config = load_config(self._config_root)
+        except ConfigError as error:
+            self.notify(escape(str(error)), severity="error", title="Configuration not reloaded")
+            return
+
+        self.config = config
+        self.set_keymap(dict(config.keybindings))
+        self.editor.auto_continue_lists = config.editor.auto_continue_lists
+        self.editor.soft_wrap = config.editor.soft_wrap
+        self.editor.show_line_numbers = config.editor.show_line_numbers
+        self._refresh_status()
+        self.notify("Reloaded config.toml; existing theme.tcss files reload when saved")
+
+    def get_system_commands(self, screen: Screen[object]) -> Iterable[SystemCommand]:
+        """Expose only TermWriter actions in the searchable command palette."""
+        del screen
+        yield SystemCommand("Save document", "Save the open Markdown source", self.action_save)
+        yield SystemCommand(
+            "Find file", "Search Markdown paths in the workspace", self.action_find_file
+        )
+        yield SystemCommand(
+            "Toggle file explorer",
+            "Show or hide the workspace tree",
+            self.action_toggle_explorer,
+        )
+        yield SystemCommand(
+            "Toggle preview",
+            "Show, hide, or switch to the rendered preview",
+            self.action_toggle_preview,
+        )
+        yield SystemCommand("Undo", "Undo the last editor change", self.action_editor_undo)
+        yield SystemCommand("Redo", "Redo the last undone editor change", self.action_editor_redo)
+        yield SystemCommand(
+            "Reload configuration",
+            "Reload config.toml keybindings and editor options",
+            self.action_reload_config,
+        )
+        yield SystemCommand(
+            "Shortcut help", "Show the effective keybindings", self.action_show_help
+        )
+        yield SystemCommand(
+            "Markdown syntax help",
+            "Show supported Markdown and nesting examples",
+            self.action_show_markdown_help,
+        )
+        yield SystemCommand(
+            "Quit safely", "Prompt before discarding changes", self.action_request_quit
+        )
 
     def _focus_mode(self) -> str:
         if self._narrow and self.preview.display:

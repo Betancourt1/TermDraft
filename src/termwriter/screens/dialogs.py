@@ -17,66 +17,6 @@ from textual.widgets.option_list import Option
 
 from termwriter.services.file_search import search_files
 
-_DIALOG_CSS = """
-ModalScreen {
-    align: center middle;
-    background: $background 65%;
-}
-
-.dialog {
-    width: 68;
-    max-width: 94%;
-    height: auto;
-    max-height: 90%;
-    padding: 1 2;
-    background: $surface;
-    border: round $primary;
-}
-
-.dialog-title {
-    height: 1;
-    margin-bottom: 1;
-    text-style: bold;
-}
-
-.dialog-message {
-    height: auto;
-    margin-bottom: 1;
-}
-
-.dialog-buttons {
-    height: 3;
-    align-horizontal: right;
-}
-
-.dialog-buttons Button {
-    margin-left: 1;
-}
-
-#search-dialog {
-    height: 24;
-}
-
-#search-input {
-    margin-bottom: 1;
-}
-
-#search-results {
-    height: 1fr;
-    border: round $panel-lighten-2;
-}
-
-#save-as-error {
-    color: $error;
-    height: auto;
-    min-height: 1;
-}
-
-#help-shortcuts {
-    height: auto;
-}
-"""
-
 
 class UnsavedDecision(Enum):
     SAVE = auto()
@@ -100,7 +40,6 @@ class RecoveryDecision(Enum):
 class RecoveryDialog(ModalScreen[RecoveryDecision | None]):
     """Offer a crash journal without silently replacing the disk version."""
 
-    CSS = _DIALOG_CSS
     BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel", show=False)]
 
     def __init__(
@@ -152,7 +91,6 @@ class RecoveryDialog(ModalScreen[RecoveryDecision | None]):
 class MixedLineEndingsDialog(ModalScreen[bool]):
     """Require consent before an edit can normalize mixed separators."""
 
-    CSS = _DIALOG_CSS
     BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel", show=False)]
 
     def __init__(self, path: Path, target: str, *, cancel_label: str = "Cancel opening") -> None:
@@ -189,7 +127,6 @@ class MixedLineEndingsDialog(ModalScreen[bool]):
 class UnsavedChangesDialog(ModalScreen[UnsavedDecision | None]):
     """Require an actual decision before a dirty document is left behind."""
 
-    CSS = _DIALOG_CSS
     BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel", show=False)]
 
     def __init__(self, path: Path) -> None:
@@ -226,7 +163,6 @@ class UnsavedChangesDialog(ModalScreen[UnsavedDecision | None]):
 class ConflictDialog(ModalScreen[ConflictDecision | None]):
     """Prevent an external version from being silently overwritten."""
 
-    CSS = _DIALOG_CSS
     BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel", show=False)]
 
     def __init__(
@@ -286,7 +222,6 @@ class ConflictDialog(ModalScreen[ConflictDecision | None]):
 class SaveAsDialog(ModalScreen[bool]):
     """Collect a new workspace-relative Markdown path."""
 
-    CSS = _DIALOG_CSS
     BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel", show=False)]
 
     class Submitted(Message):
@@ -348,7 +283,6 @@ class SaveAsDialog(ModalScreen[bool]):
 class FileSearchDialog(ModalScreen[Path | None]):
     """Search and select Markdown files from the validated workspace index."""
 
-    CSS = _DIALOG_CSS
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
         Binding("down", "focus_results", "Results", show=False),
@@ -407,20 +341,20 @@ class FileSearchDialog(ModalScreen[Path | None]):
 class HelpDialog(ModalScreen[None]):
     """Display the centralized shortcut list."""
 
-    CSS = _DIALOG_CSS
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "close", "Close", show=False),
         Binding("f1", "close", "Close", show=False),
     ]
 
-    def __init__(self, shortcuts: str) -> None:
-        self.shortcuts = shortcuts
+    def __init__(self, content: str, *, title: str = "TermWriter shortcuts") -> None:
+        self.content = content
+        self.dialog_title = title
         super().__init__(id="help-dialog-screen")
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog", id="help-dialog"):
-            yield Static("TermWriter shortcuts", classes="dialog-title", markup=False)
-            yield Static(self.shortcuts, id="help-shortcuts", markup=False)
+            yield Static(self.dialog_title, classes="dialog-title", markup=False)
+            yield Static(self.content, id="help-shortcuts", markup=False)
             with Horizontal(classes="dialog-buttons"):
                 yield Button("Close", id="help-close", variant="primary")
 

@@ -14,7 +14,7 @@ def test_cli_reports_missing_path(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    result = main([str(tmp_path / "missing")])
+    result = main(["--config-dir", str(tmp_path / "config"), str(tmp_path / "missing")])
 
     assert result == 2
     assert "does not exist" in capsys.readouterr().err
@@ -31,7 +31,67 @@ def test_cli_launches_valid_workspace(
 
     monkeypatch.setattr(TermWriterApp, "run", fake_run)
 
-    result = main([str(tmp_path)])
+    result = main(["--config-dir", str(tmp_path / "config"), str(tmp_path)])
 
     assert result == 0
     assert launched == [tmp_path.resolve()]
+
+
+def test_cli_initializes_and_prints_configuration_paths(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_root = tmp_path / "config"
+
+    result = main(["--config-dir", str(config_root), "--init-config"])
+
+    assert result == 0
+    assert (config_root / "config.toml").is_file()
+    assert (config_root / "theme.tcss").is_file()
+    output = capsys.readouterr().out
+    assert str(config_root / "config.toml") in output
+    assert str(config_root / "theme.tcss") in output
+
+    result = main(["--config-dir", str(config_root), "--config-path"])
+    assert result == 0
+    assert capsys.readouterr().out.splitlines() == [
+        str(config_root / "config.toml"),
+        str(config_root / "theme.tcss"),
+    ]
+
+
+def test_cli_commands_show_effective_remapped_keys(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    (config_root / "config.toml").write_text(
+        '[keybindings]\nsave = "ctrl+g"\n',
+        encoding="utf-8",
+    )
+
+    result = main(["--config-dir", str(config_root), "--commands"])
+
+    assert result == 0
+    output = capsys.readouterr().out
+    assert "TermWriter commands" in output
+    assert "Ctrl+G" in output
+    assert "Open the command palette" in output
+
+
+def test_cli_rejects_invalid_configuration_before_launch(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    (config_root / "config.toml").write_text(
+        '[keybindings]\nsave = "ctrl+q"\n',
+        encoding="utf-8",
+    )
+
+    result = main(["--config-dir", str(config_root), str(tmp_path)])
+
+    assert result == 2
+    assert "configuration error" in capsys.readouterr().err

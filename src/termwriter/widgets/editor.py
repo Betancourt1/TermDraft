@@ -1,19 +1,58 @@
 """Markdown source editor configured for prose."""
 
+from typing import ClassVar
+
+from textual import events
+from textual.binding import BindingType
 from textual.widgets import TextArea
+
+from termwriter.bindings import EDITOR_BINDINGS
+from termwriter.services.markdown_continuation import continuation_edit
 
 
 class MarkdownEditor(TextArea):
     """A soft-wrapped TextArea that always edits Markdown source."""
 
-    def __init__(self) -> None:
+    BINDINGS: ClassVar[list[BindingType]] = EDITOR_BINDINGS
+
+    def __init__(
+        self,
+        *,
+        auto_continue_lists: bool = True,
+        soft_wrap: bool = True,
+        show_line_numbers: bool = True,
+    ) -> None:
+        self.auto_continue_lists = auto_continue_lists
         super().__init__(
             language="markdown",
-            soft_wrap=True,
+            soft_wrap=soft_wrap,
             tab_behavior="indent",
-            show_line_numbers=True,
+            show_line_numbers=show_line_numbers,
             max_checkpoints=100,
             id="markdown-editor",
             placeholder="Select a Markdown file from the explorer or press Ctrl+P.",
         )
         self.read_only = True
+
+    async def _on_key(self, event: events.Key) -> None:
+        """Apply predictable Markdown continuation before TextArea handles Enter."""
+        if (
+            event.key == "enter"
+            and self.auto_continue_lists
+            and not self.read_only
+            and self.selection.start == self.selection.end
+        ):
+            line, column = self.cursor_location
+            edit = continuation_edit(self.text, line, column)
+            if edit is not None:
+                event.stop()
+                event.prevent_default()
+                self.replace(
+                    edit.text,
+                    (edit.start_line, edit.start_column),
+                    (edit.end_line, edit.end_column),
+                    maintain_selection_offset=False,
+                )
+                self.move_cursor((edit.cursor_line, edit.cursor_column))
+                return
+        await super()._on_key(event)
