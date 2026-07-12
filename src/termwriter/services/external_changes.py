@@ -36,6 +36,9 @@ def detect_external_change(document: Document) -> ExternalChange:
         return ExternalChange(ExternalChangeKind.INACCESSIBLE, None, str(error))
 
     if current.has_same_content(document.snapshot):
+        if current.exists and not current.has_same_origin(document.snapshot):
+            kind = ExternalChangeKind.CONFLICT if document.dirty else ExternalChangeKind.MODIFIED
+            return ExternalChange(kind, current)
         return ExternalChange(ExternalChangeKind.UNCHANGED, current)
     if document.dirty:
         return ExternalChange(ExternalChangeKind.CONFLICT, current)

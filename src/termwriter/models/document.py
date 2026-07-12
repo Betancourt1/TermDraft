@@ -20,11 +20,22 @@ class FileSnapshot:
     mode: int | None = None
     device: int | None = None
     inode: int | None = None
+    parent_device: int | None = None
+    parent_inode: int | None = None
 
     @classmethod
-    def missing(cls) -> FileSnapshot:
+    def missing(
+        cls,
+        *,
+        parent_device: int | None = None,
+        parent_inode: int | None = None,
+    ) -> FileSnapshot:
         """Return the snapshot used for a path that does not exist."""
-        return cls(exists=False)
+        return cls(
+            exists=False,
+            parent_device=parent_device,
+            parent_inode=parent_inode,
+        )
 
     def has_same_content(self, other: FileSnapshot) -> bool:
         """Compare content, ignoring metadata-only changes such as a touch."""
@@ -33,6 +44,22 @@ class FileSnapshot:
         if not self.exists:
             return True
         return self.digest == other.digest
+
+    def has_same_origin(self, other: FileSnapshot) -> bool:
+        """Compare the file and parent directory identities when both exist."""
+        if not self.exists or not other.exists:
+            return self.exists == other.exists
+        return (
+            self.device,
+            self.inode,
+            self.parent_device,
+            self.parent_inode,
+        ) == (
+            other.device,
+            other.inode,
+            other.parent_device,
+            other.parent_inode,
+        )
 
 
 @dataclass(slots=True)
@@ -94,6 +121,13 @@ class Document:
         self.snapshot = snapshot
         self.conflict = False
         self.last_save_status = status
+
+    def accept_unchanged_snapshot(self, snapshot: FileSnapshot) -> None:
+        """Refresh disk metadata and clear a conflict whose content returned to baseline."""
+        self.snapshot = snapshot
+        if self.conflict:
+            self.last_save_status = "Disk matches baseline"
+        self.conflict = False
 
     def replace_from_disk(
         self,

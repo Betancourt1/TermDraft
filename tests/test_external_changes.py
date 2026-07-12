@@ -43,6 +43,19 @@ def test_external_modification_is_detected_even_with_same_metadata(tmp_path: Pat
     assert change.kind is ExternalChangeKind.MODIFIED
 
 
+def test_same_content_replacement_is_detected_by_identity(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    replacement = tmp_path / "replacement.md"
+    path.write_text("same", encoding="utf-8")
+    document = open_document(path)
+    replacement.write_text("same", encoding="utf-8")
+    replacement.replace(path)
+
+    change = detect_external_change(document)
+
+    assert change.kind is ExternalChangeKind.MODIFIED
+
+
 def test_local_and_external_modifications_are_a_conflict(tmp_path: Path) -> None:
     path = tmp_path / "note.md"
     path.write_text("base", encoding="utf-8")

@@ -36,6 +36,7 @@ both panes into an unusable layout. Ctrl+B can reclaim the explorer width at any
 ## Requirements
 
 - Python 3.12 or newer;
+- macOS or Linux with Python's POSIX directory-descriptor APIs;
 - a terminal supported by [Textual](https://textual.textualize.io/);
 - a filesystem on which the selected workspace is readable and its files are writable when saving.
 
@@ -103,12 +104,12 @@ the editor or model.
 An existing file save follows this sequence:
 
 1. hash the current disk bytes and compare them with the last loaded/saved fingerprint;
-2. create a temporary file in the destination directory;
+2. open the destination directory and create a private temporary entry relative to that descriptor;
 3. encode the current source using its detected UTF-8 or UTF-8-with-BOM encoding;
 4. write, flush, and `fsync` the temporary file;
-5. copy the original POSIX permission bits;
+5. attempt to copy the original POSIX permission bits;
 6. hash the destination again to narrow the concurrent-change window;
-7. publish with `os.replace`;
+7. publish with descriptor-relative `os.replace` so a renamed ancestor cannot redirect the write;
 8. attempt to `fsync` the parent directory and verify the visible bytes;
 9. only then update the document's saved/dirty state.
 
@@ -123,6 +124,9 @@ If both local and disk content changed, the only choices are:
 
 Changing files and quitting use a separate Save / Discard / Cancel guard. Save failures keep the
 document dirty and stop the requested transition.
+
+If a clean open file disappears or becomes inaccessible, a guarded transition offers Save local as,
+Continue without copy, or Cancel. Ctrl+S never recreates the missing original path silently.
 
 ## Tests and quality checks
 
@@ -152,7 +156,8 @@ filtering, symlinks, file search, CLI validation, and Textual Pilot workflows.
   on normal local filesystems that honor same-filesystem `os.replace` semantics. It is not a
   universal guarantee for every network or unusual filesystem, and power-loss durability still
   depends on the filesystem despite the file and directory `fsync` attempts.
-- Mode bits are preserved. Ownership, ACLs, extended attributes, Finder metadata, and hard-link
+- Ordinary POSIX permission bits are preserved where the filesystem permits. Special setuid/setgid
+  bits are not guaranteed. Ownership, ACLs, extended attributes, Finder metadata, and hard-link
   identity are not preserved by replacement.
 - Conflict Save As depends on hard-link support in the destination filesystem and fails cleanly when
   that publication mechanism is unavailable. It is currently available only from conflict recovery.
@@ -160,7 +165,9 @@ filtering, symlinks, file search, CLI validation, and Textual Pilot workflows.
   another process writes at exactly that moment. Cooperative file locking would not protect against
   editors that ignore the lock.
 - Path validation rejects symlinks and resolved workspace escapes, but it is not hardened against a
-  hostile process swapping intermediate path components between validation and I/O.
+  hostile process swapping intermediate path components during the initial open or a new Save As.
+  Existing-file saves additionally compare file and parent identities and keep all temporary,
+  cleanup, and replacement operations attached to the opened parent directory.
 - Cursor and scroll coordinates are recorded for the active document, but there is no multi-document
   cache or restart restoration yet.
 - Preview links are deliberately non-opening. Raw document HTML, JavaScript, and shell text are not

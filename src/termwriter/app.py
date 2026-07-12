@@ -15,7 +15,7 @@ from textual.timer import Timer
 from textual.widgets import DirectoryTree, Static, TextArea
 
 from termwriter.bindings import APP_BINDINGS, SHORTCUT_HELP
-from termwriter.models.document import Document, FileSnapshot
+from termwriter.models.document import Document
 from termwriter.models.workspace import Workspace, WorkspaceError
 from termwriter.screens.dialogs import (
     ConflictDecision,
@@ -36,6 +36,7 @@ from termwriter.services.persistence import (
     PersistenceError,
     atomic_save,
     load_file,
+    snapshot_file,
 )
 from termwriter.widgets.editor import MarkdownEditor
 from termwriter.widgets.file_tree import FileExplorer
@@ -270,9 +271,18 @@ class TermWriterApp(App[None]):
             self.push_screen(UnsavedChangesDialog(document.path), self._handle_unsaved_decision)
             return
         if document is not None:
+            try:
+                document.path = self.workspace.validate_document_path(document.path)
+            except WorkspaceError as error:
+                self._pending_transition = continuation
+                self._show_conflict(
+                    ExternalChange(ExternalChangeKind.INACCESSIBLE, None, str(error)),
+                    after=self._complete_pending_transition,
+                )
+                return
             change = detect_external_change(document)
             if change.kind is ExternalChangeKind.UNCHANGED and change.snapshot is not None:
-                document.snapshot = change.snapshot
+                document.accept_unchanged_snapshot(change.snapshot)
             elif change.kind in {ExternalChangeKind.DELETED, ExternalChangeKind.INACCESSIBLE}:
                 self._pending_transition = continuation
                 self._show_conflict(change, after=self._complete_pending_transition)
@@ -300,13 +310,14 @@ class TermWriterApp(App[None]):
 
     def _open_file_now(self, path: Path) -> None:
         try:
-            loaded = load_file(path)
-        except (OSError, PersistenceError) as error:
+            safe_path = self.workspace.validate_document_path(path)
+            loaded = load_file(safe_path)
+        except (OSError, PersistenceError, WorkspaceError) as error:
             self.notify(escape(str(error)), severity="error", title="Cannot open file")
             return
 
         document = Document(
-            path=path,
+            path=safe_path,
             text=loaded.text,
             saved_text=loaded.text,
             snapshot=loaded.snapshot,
@@ -318,7 +329,7 @@ class TermWriterApp(App[None]):
         self._editor_baseline_text = self.editor.text
         self.editor.read_only = False
         self.editor.scroll_to(0, 0, animate=False, immediate=True)
-        self.explorer.set_active(path)
+        self.explorer.set_active(safe_path)
         self._narrow_pane = "editor"
         self._apply_panel_visibility()
         self._schedule_preview(immediate=True)
@@ -361,10 +372,19 @@ class TermWriterApp(App[None]):
             self.notify("No Markdown file is open", severity="warning")
             return
 
+        try:
+            document.path = self.workspace.validate_document_path(document.path)
+        except WorkspaceError as error:
+            self._show_conflict(
+                ExternalChange(ExternalChangeKind.INACCESSIBLE, None, str(error)),
+                after=after,
+            )
+            return
+
         change = detect_external_change(document)
         if change.kind is ExternalChangeKind.UNCHANGED:
             if change.snapshot is not None:
-                document.snapshot = change.snapshot
+                document.accept_unchanged_snapshot(change.snapshot)
             if not document.dirty:
                 document.last_save_status = "No changes"
                 self._refresh_status()
@@ -376,14 +396,7 @@ class TermWriterApp(App[None]):
             self._reload_current_from_disk(automatic=True)
             return
         elif change.kind is ExternalChangeKind.INACCESSIBLE:
-            document.conflict = True
-            document.last_save_status = "Disk check failed"
-            self.notify(
-                escape(change.detail or "The file cannot be inspected"),
-                severity="error",
-                title="Save stopped",
-            )
-            self._cancel_pending_transition()
+            self._show_conflict(change, after=after)
             return
         else:
             self._show_conflict(change, after=after)
@@ -429,12 +442,14 @@ class TermWriterApp(App[None]):
         document.last_save_status = "Conflict"
         self._save_continuation = after
         can_reload = change.snapshot is not None and change.snapshot.exists
+        allow_discard = after is not None and not document.dirty and not can_reload
         self._refresh_status()
         self.push_screen(
             ConflictDialog(
                 document.path,
                 can_reload=can_reload,
                 unavailable=change.kind is ExternalChangeKind.INACCESSIBLE,
+                allow_discard=allow_discard,
             ),
             self._handle_conflict_decision,
         )
@@ -444,6 +459,11 @@ class TermWriterApp(App[None]):
             self._open_save_as_dialog()
         elif decision is ConflictDecision.RELOAD:
             self._reload_current_from_disk(automatic=False)
+        elif decision is ConflictDecision.DISCARD:
+            continuation = self._save_continuation
+            self._save_continuation = None
+            if continuation is not None:
+                continuation()
         else:
             self._cancel_pending_transition()
 
@@ -454,23 +474,30 @@ class TermWriterApp(App[None]):
             return
         relative = document.path.relative_to(self.workspace.root)
         suggested = relative.with_name(f"{relative.stem}-local{relative.suffix}").as_posix()
-        self.push_screen(SaveAsDialog(suggested, error), self._handle_save_as_path)
+        self.push_screen(SaveAsDialog(suggested, error), self._handle_save_as_closed)
 
-    def _handle_save_as_path(self, value: str | None) -> None:
+    @on(SaveAsDialog.Submitted)
+    def _handle_save_as_submission(self, event: SaveAsDialog.Submitted) -> None:
         document = self.document
-        if value is None or document is None:
+        if document is None:
+            event.dialog.dismiss(False)
             self._cancel_pending_transition()
             return
-        if not value:
-            self._open_save_as_dialog("Enter a Markdown filename.")
+        if not event.value:
+            event.dialog.show_error("Enter a Markdown filename.")
             return
         try:
-            target = self.workspace.validate_document_path(Path(value), must_exist=False)
+            target = self.workspace.validate_document_path(Path(event.value), must_exist=False)
+            expected_target = snapshot_file(target)
+            target = self.workspace.validate_document_path(target, must_exist=False)
         except WorkspaceError as error:
-            self._open_save_as_dialog(str(error))
+            event.dialog.show_error(str(error))
             return
-        if target.exists() or target.is_symlink():
-            self._open_save_as_dialog("That path already exists; choose a new filename.")
+        except (OSError, PersistenceError) as error:
+            event.dialog.show_error(str(error))
+            return
+        if expected_target.exists or target.exists() or target.is_symlink():
+            event.dialog.show_error("That path already exists; choose a new filename.")
             return
 
         try:
@@ -478,10 +505,10 @@ class TermWriterApp(App[None]):
                 target,
                 document.text,
                 encoding=document.encoding,
-                expected=FileSnapshot.missing(),
+                expected=expected_target,
             )
         except (OSError, PersistenceError) as error:
-            self._open_save_as_dialog(str(error))
+            event.dialog.show_error(str(error))
             return
 
         document.retarget(target)
@@ -492,7 +519,16 @@ class TermWriterApp(App[None]):
         self._refresh_workspace_index()
         self.explorer.directory_tree.reload()
         self._refresh_status()
-        self.notify(f"Saved local version as {escape(target.name)}")
+        if result.warning:
+            self.notify(result.warning, severity="warning")
+        else:
+            self.notify(f"Saved local version as {escape(target.name)}")
+        event.dialog.dismiss(True)
+
+    def _handle_save_as_closed(self, saved: bool | None) -> None:
+        if not saved:
+            self._cancel_pending_transition()
+            return
         continuation = self._save_continuation
         self._save_continuation = None
         if continuation is not None:
@@ -504,8 +540,9 @@ class TermWriterApp(App[None]):
             self._cancel_pending_transition()
             return
         try:
+            document.path = self.workspace.validate_document_path(document.path)
             loaded = load_file(document.path)
-        except (OSError, PersistenceError) as error:
+        except (OSError, PersistenceError, WorkspaceError) as error:
             self.notify(escape(str(error)), severity="error", title="Reload failed")
             self._cancel_pending_transition()
             return
@@ -528,20 +565,22 @@ class TermWriterApp(App[None]):
         if document is None or self._has_modal:
             return
         self._sync_editor_state()
+        try:
+            document.path = self.workspace.validate_document_path(document.path)
+        except WorkspaceError as error:
+            self._show_conflict(
+                ExternalChange(ExternalChangeKind.INACCESSIBLE, None, str(error)),
+                after=None,
+            )
+            return
         change = detect_external_change(document)
         if change.kind is ExternalChangeKind.UNCHANGED:
             if change.snapshot is not None:
-                document.snapshot = change.snapshot
+                document.accept_unchanged_snapshot(change.snapshot)
         elif change.kind is ExternalChangeKind.MODIFIED:
             self._reload_current_from_disk(automatic=True)
         elif change.kind is ExternalChangeKind.INACCESSIBLE:
-            document.conflict = True
-            document.last_save_status = "Disk check failed"
-            self.notify(
-                escape(change.detail or "The file cannot be inspected"),
-                severity="warning",
-                title="External check failed",
-            )
+            self._show_conflict(change, after=None)
         else:
             self._show_conflict(change, after=None)
         self._refresh_status()

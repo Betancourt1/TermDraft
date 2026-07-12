@@ -83,15 +83,18 @@ and indexes only `.md` and `.markdown` files.
 The MVP rejects all explorer symlinks and Markdown file symlinks. This is more restrictive than
 following links that happen to resolve inside the root, but keeps both selection and replacement
 behavior understandable. Resolved containment and final-file checks are repeated before application
-I/O. Path-based checks do not fully defend against a hostile concurrent symlink swap; descriptor-
-relative traversal would be a separate hardening project.
+I/O. Existing-file saves also compare the loaded file and parent-directory identities, then perform
+temporary creation, cleanup, and publication relative to an open parent descriptor. Initial loads
+and new Save As validation are not a complete adversarial sandbox; fully closing their validation/use
+window would require descriptor-relative traversal from the workspace root.
 
 ## Persistence strategy
 
 `FileSnapshot` contains existence, SHA-256 content digest, byte size, nanosecond modification time,
-mode, device, and inode. The digest decides whether content changed; metadata is retained for
-diagnostics and permissions. A same-size edit with a restored timestamp is still detected. Touching
-identical bytes is not a content conflict.
+mode, file device/inode, and parent-directory device/inode. The digest is the primary content check;
+replacing the file or parent identity is also treated as an external change even when bytes match.
+An existing save requires both content and origin to match its loaded baseline. A same-size edit with
+a restored timestamp is still detected. Touching identical bytes in place is not a content conflict.
 
 `load_file` uses `os.open` with `O_NOFOLLOW` where available, verifies a regular file with `fstat`,
 reads bytes without universal-newline conversion, and compares pre/post-read identity and metadata.
@@ -99,18 +102,20 @@ It retries a moving file once, then fails rather than claiming a stable baseline
 
 For an existing destination, `atomic_save`:
 
-1. hashes the destination and compares it to the expected snapshot;
-2. uses `tempfile.mkstemp` in the same directory;
-3. writes encoded bytes, flushes, and calls `fsync`;
-4. applies the current destination mode bits to the temporary file;
-5. hashes the destination again;
-6. calls `os.replace`;
-7. attempts a parent-directory `fsync`;
-8. hashes the published file and verifies the intended digest.
+1. opens the parent directory and verifies its identity against the loaded snapshot;
+2. hashes the destination through that descriptor and compares content and origin;
+3. creates a random mode-0600 temporary entry relative to the open directory;
+4. writes encoded bytes, flushes, and calls `fsync`;
+5. hashes the destination again and verifies the lexical parent still has the open identity;
+6. attempts to apply the current destination mode bits to the temporary file;
+7. calls descriptor-relative `os.replace`;
+8. attempts a parent-directory `fsync`;
+9. hashes the published file and verifies the intended digest and parent identity.
 
-Temporary paths are cleaned on every failure before publication. A failed `os.replace` leaves the
-original name and bytes intact. A failure after publication is different: the name may already point
-to the new bytes, so the application reports uncertainty and does not advance its in-memory baseline.
+Temporary entries are unlinked through the retained parent descriptor on every safe failure before
+publication, even if that directory is renamed. A failed `os.replace` leaves the original name and
+bytes intact. A failure after publication is different: the name may already point to the new bytes,
+so the application reports uncertainty and does not advance its in-memory baseline.
 
 For a new Save As destination, the fully written temporary file is hard-linked to the final name.
 Hard-link creation fails if the name exists, providing no-clobber publication. The temporary name is
@@ -118,7 +123,8 @@ then removed.
 
 Same-directory `os.replace` provides atomic namespace replacement on normal local POSIX filesystems;
 it does not prove identical behavior on every network filesystem. `fsync` improves crash durability
-but the filesystem and storage stack retain the final say. Replacement preserves mode bits but not
+but the filesystem and storage stack retain the final say. Replacement preserves ordinary mode bits
+where the filesystem permits, but special setuid/setgid bits are not guaranteed. It does not preserve
 the old inode, ownership differences, ACLs, extended attributes, or hard-link identity.
 
 There remains a small check-to-replace race: a non-cooperating process can modify the destination
@@ -130,7 +136,7 @@ instead of claiming an absolute guarantee.
 
 `detect_external_change` returns one of:
 
-- `UNCHANGED`: identical bytes or identical missing state;
+- `UNCHANGED`: identical bytes at the same file/parent identity, or identical missing state;
 - `MODIFIED`: disk changed and the local document is clean;
 - `DELETED`: disk path disappeared and the local document is clean;
 - `CONFLICT`: disk and local document both changed;
@@ -152,7 +158,8 @@ dirty open/quit ──► Save ──► save succeeds ──► continue
 
 No dialog merely displays a warning and then ignores the answer. A save failure or cancellation
 clears the continuation, leaves the source in memory, and stops the transition. External deletion of
-a clean file is also guarded before transition because the in-memory source may be the last copy.
+a clean file is also guarded before transition because the in-memory source may be the last copy; the
+user may save that copy under a new name, explicitly continue without it, or cancel.
 
 ## Widget/domain limits
 
@@ -175,4 +182,3 @@ The implementation targets Textual 8.2.8 and relies on documented APIs:
 - [`DirectoryTree`](https://textual.textualize.io/widgets/directory_tree/)
 - [screens and typed results](https://textual.textualize.io/guide/screens/)
 - [Pilot testing](https://textual.textualize.io/guide/testing/)
-

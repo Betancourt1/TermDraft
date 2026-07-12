@@ -54,22 +54,37 @@ class Workspace:
             requested = Path.cwd() / requested
         requested = Path(os.path.abspath(requested))
 
-        if requested.is_symlink() and not requested.is_dir():
-            raise UnsafePathError(f"Symbolic-link files are not supported: {requested}")
-        if not requested.exists():
-            raise WorkspaceNotFoundError(f"Path does not exist: {requested}")
+        try:
+            requested_stat = requested.stat()
+        except FileNotFoundError:
+            raise WorkspaceNotFoundError(f"Path does not exist: {requested}") from None
+        except OSError as error:
+            raise WorkspaceAccessError(f"Cannot inspect path {requested}: {error}") from error
 
-        if requested.is_dir():
-            root = requested.resolve(strict=True)
+        if requested.is_symlink() and not stat.S_ISDIR(requested_stat.st_mode):
+            raise UnsafePathError(f"Symbolic-link files are not supported: {requested}")
+
+        if stat.S_ISDIR(requested_stat.st_mode):
+            try:
+                root = requested.resolve(strict=True)
+            except OSError as error:
+                raise WorkspaceAccessError(
+                    f"Cannot resolve workspace {requested}: {error}"
+                ) from error
             cls._verify_root_access(root)
             return cls(root=root)
 
-        if not requested.is_file():
+        if not stat.S_ISREG(requested_stat.st_mode):
             raise UnsupportedFileError(f"Not a regular file or directory: {requested}")
         if requested.suffix.casefold() not in MARKDOWN_SUFFIXES:
             raise UnsupportedFileError(f"Not a Markdown file: {requested}")
 
-        root = requested.parent.resolve(strict=True)
+        try:
+            root = requested.parent.resolve(strict=True)
+        except OSError as error:
+            raise WorkspaceAccessError(
+                f"Cannot resolve workspace {requested.parent}: {error}"
+            ) from error
         cls._verify_root_access(root)
         workspace = cls(root=root)
         initial_file = workspace.validate_document_path(requested)
@@ -155,7 +170,8 @@ class Workspace:
         while pending:
             directory = pending.pop()
             try:
-                entries = sorted(os.scandir(directory), key=lambda entry: entry.name.casefold())
+                with os.scandir(directory) as iterator:
+                    entries = sorted(iterator, key=lambda entry: entry.name.casefold())
             except OSError as error:
                 warnings.append(f"Cannot read {directory}: {error}")
                 continue

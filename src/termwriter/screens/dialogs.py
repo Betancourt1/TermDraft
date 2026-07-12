@@ -10,6 +10,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, OptionList, Static
 from textual.widgets.option_list import Option
@@ -86,6 +87,7 @@ class UnsavedDecision(Enum):
 class ConflictDecision(Enum):
     SAVE_AS = auto()
     RELOAD = auto()
+    DISCARD = auto()
     CANCEL = auto()
 
 
@@ -132,10 +134,18 @@ class ConflictDialog(ModalScreen[ConflictDecision | None]):
     CSS = _DIALOG_CSS
     BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel", show=False)]
 
-    def __init__(self, path: Path, *, can_reload: bool, unavailable: bool = False) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        can_reload: bool,
+        unavailable: bool = False,
+        allow_discard: bool = False,
+    ) -> None:
         self.path = path
         self.can_reload = can_reload
         self.unavailable = unavailable
+        self.allow_discard = allow_discard
         super().__init__(id="conflict-dialog-screen")
 
     def compose(self) -> ComposeResult:
@@ -153,11 +163,14 @@ class ConflictDialog(ModalScreen[ConflictDecision | None]):
             yield Static(message, classes="dialog-message", markup=False)
             with Horizontal(classes="dialog-buttons"):
                 yield Button("Save local as…", id="conflict-save-as", variant="primary")
-                yield Button(
-                    "Reload external",
-                    id="conflict-reload",
-                    disabled=not self.can_reload,
-                )
+                if self.allow_discard:
+                    yield Button("Continue without copy", id="conflict-discard", variant="warning")
+                else:
+                    yield Button(
+                        "Reload external",
+                        id="conflict-reload",
+                        disabled=not self.can_reload,
+                    )
                 yield Button("Cancel", id="conflict-cancel")
 
     @on(Button.Pressed)
@@ -165,6 +178,7 @@ class ConflictDialog(ModalScreen[ConflictDecision | None]):
         decisions = {
             "conflict-save-as": ConflictDecision.SAVE_AS,
             "conflict-reload": ConflictDecision.RELOAD,
+            "conflict-discard": ConflictDecision.DISCARD,
             "conflict-cancel": ConflictDecision.CANCEL,
         }
         if event.button.id in decisions:
@@ -174,16 +188,28 @@ class ConflictDialog(ModalScreen[ConflictDecision | None]):
         self.dismiss(ConflictDecision.CANCEL)
 
 
-class SaveAsDialog(ModalScreen[str | None]):
+class SaveAsDialog(ModalScreen[bool]):
     """Collect a new workspace-relative Markdown path."""
 
     CSS = _DIALOG_CSS
     BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel", show=False)]
 
+    class Submitted(Message):
+        """Request that the coordinator validate and save the entered path."""
+
+        def __init__(self, dialog: SaveAsDialog, value: str) -> None:
+            self.dialog = dialog
+            self.value = value
+            super().__init__()
+
+        @property
+        def control(self) -> SaveAsDialog:
+            return self.dialog
+
     def __init__(self, suggested_path: str, error: str | None = None) -> None:
         self.suggested_path = suggested_path
         self.error = error
-        super().__init__(id="save-as-dialog-screen")
+        super().__init__()
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog", id="save-as-dialog"):
@@ -203,18 +229,25 @@ class SaveAsDialog(ModalScreen[str | None]):
 
     @on(Input.Submitted, "#save-as-input")
     def submit_input(self, event: Input.Submitted) -> None:
-        self.dismiss(event.value.strip())
+        self.post_message(self.Submitted(self, event.value.strip()))
 
     @on(Button.Pressed, "#save-as-confirm")
     def submit_button(self) -> None:
-        self.dismiss(self.query_one("#save-as-input", Input).value.strip())
+        value = self.query_one("#save-as-input", Input).value.strip()
+        self.post_message(self.Submitted(self, value))
 
     @on(Button.Pressed, "#save-as-cancel")
     def cancel_button(self) -> None:
-        self.dismiss(None)
+        self.dismiss(False)
 
     def action_cancel(self) -> None:
-        self.dismiss(None)
+        self.dismiss(False)
+
+    def show_error(self, error: str) -> None:
+        """Keep the modal open and report a recoverable validation/save error."""
+        self.error = error
+        self.query_one("#save-as-error", Static).update(error)
+        self.query_one("#save-as-input", Input).focus()
 
 
 class FileSearchDialog(ModalScreen[Path | None]):
