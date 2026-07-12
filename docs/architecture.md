@@ -101,12 +101,16 @@ transforms change `Document.text`.
 
 ## Workspace text search
 
-`services/text_search.py` performs bounded, literal, case-insensitive searches over the validated
-workspace scan. It uses the same safe `load_file` path as document opening, returns zero-based
-source coordinates and short line previews, and converts individual read/decode failures into
-warnings instead of aborting the search. The active `Document.text` is passed as a fallback: dirty
-source always wins, while a clean document prefers current disk content and still remains searchable
-if its path disappeared.
+`services/text_search.py` performs bounded literal, whole-word, or regular-expression searches over
+the validated workspace scan. Matching is case-insensitive by default, with an explicit case option
+and one case-insensitive workspace-relative POSIX glob. It uses the same safe `load_file` path as
+document opening, returns zero-based source coordinates and short line previews, and converts
+individual read/decode failures into warnings instead of aborting the search. Invalid and oversized
+regexes become result errors before file contents are read. The `regex` engine provides Unicode-aware
+whole-word boundaries, full case folding, GIL-releasing immutable-string searches, and a 50 ms
+per-line timeout for pathological expressions. The active `Document.text` is passed as a fallback:
+dirty source always wins, while a clean document prefers current disk content and still remains
+searchable if its path disappeared.
 
 The modal starts search only when Enter is submitted and runs both the recursive scan and file reads
 through a Textual thread worker. Cancellation is checked between workspace entries, files, and source
@@ -116,6 +120,31 @@ at most one result. Selecting a different file revalidates its path and enters t
 transition used by the explorer and file search; a dirty current document therefore still requires
 Save / Discard / Cancel. A pending line/column target survives recovery and mixed-line-ending dialogs
 and is applied only after the new document is installed.
+
+## Background document I/O
+
+Full Markdown reads, disk probes, content hashes, existing-file publication, Save As publication,
+and orphan-source validation run through explicit Textual thread workers. Workers receive immutable
+paths, source strings, encodings, snapshots, and document tickets; they never mutate `Document` or a
+widget. Expected and unexpected failures are converted into result values, and
+`App.call_from_thread` is the only route back to coordinator callbacks.
+
+A document ticket contains the active `Document` identity, canonical path, saved snapshot, and a
+monotonic generation. The generation advances when a document is installed, retargeted, reloaded,
+saved, or accepts a changed metadata snapshot. Every callback verifies the whole ticket before it
+can apply a result. Watcher probes classify their snapshot against the document's *current* dirty
+state on the UI thread. The callback first synchronizes visible editor source because Textual's
+`Changed` message may still be queued; therefore typing while a slow probe runs turns an external
+edit into a conflict instead of an automatic reload. A transition probe that observes a new local
+edit re-enters the normal Save / Discard / Cancel guard.
+
+Actual publication and reload/open installation are critical operations. The editor becomes
+temporarily read-only, duplicate save/switch/quit actions are rejected, and Save As disables its
+input and dismissal controls. This is intentional because cancelling a Textual thread worker does
+not stop an operating-system write already in progress. Read/probe workers may finish after
+cancellation, but a cancelled or stale worker cannot pass its ticket check. `atomic_save` remains one
+indivisible worker operation so its initial check, temporary write, second check, replacement, and
+verification retain their existing ordering.
 
 ## User configuration
 
@@ -247,10 +276,11 @@ permissions.
 - `INACCESSIBLE`: the current disk state cannot be established.
 
 Checks run before save, before guarded file/quit transitions, on `AppFocus`, and every two seconds
-through Textual's interval timer. The background path never opens a modal: it reloads a clean
-external edit, or marks dirty/deleted/inaccessible state as a persistent conflict with one warning.
-Polling pauses while a modal or continuation is active. Save and transition checks remain
-authoritative and revalidate immediately before acting.
+through Textual's interval timer. Probing occurs in a worker and classification occurs against the
+latest UI-thread document state. The watcher path never opens a modal: it reloads a clean external
+edit, or marks dirty/deleted/inaccessible state as a persistent conflict with one warning. Polling
+pauses while a modal, critical operation, or continuation is active. Save and transition checks
+remain authoritative and revalidate immediately before acting.
 
 The `TermWriterApp` coordinator owns pending transition and save continuations. Typed modal callbacks
 implement these paths:
@@ -274,12 +304,13 @@ user may save that copy under a new name, explicitly continue without it, or can
 - `Document` and `Workspace` contain state/invariants without Textual imports.
 - Persistence and external-change modules perform filesystem work without UI calls.
 - File search ranks only the scanner's validated in-process index and has no `ripgrep` dependency.
-- Text search reads validated Markdown through a thread worker and never invokes workspace commands.
+- Text search and document content I/O use thread workers and never invoke workspace commands.
 - Configuration contains data only; document/workspace contents never define commands or CSS.
 
-Synchronous hashing and writes may briefly block the UI for very large Markdown files. Moving I/O to
-a worker is a future performance improvement, but it must preserve ordered callbacks and all current
-conflict checks.
+Recovery-journal writes and workspace-index scans remain synchronous and may briefly block the UI for
+an unusually large dirty document or workspace. Markdown document hashing, stable reads, reloads, and
+publication are worker-backed; generation tickets and critical-operation locks preserve callback
+ordering and conflict checks.
 
 ## Textual API baseline
 
@@ -288,6 +319,7 @@ The implementation targets Textual 8.2.8 and relies on documented APIs:
 - [`TextArea`](https://textual.textualize.io/widgets/text_area/)
 - [`Markdown`](https://textual.textualize.io/widgets/markdown/)
 - [`mdit-py-plugins`](https://mdit-py-plugins.readthedocs.io/en/latest/)
+- [`regex`](https://pypi.org/project/regex/)
 - [`App.set_keymap`](https://textual.textualize.io/api/app/#textual.app.App.set_keymap)
 - [command palette](https://textual.textualize.io/guide/command_palette/)
 - [workers](https://textual.textualize.io/guide/workers/)

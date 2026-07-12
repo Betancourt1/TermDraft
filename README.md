@@ -46,8 +46,9 @@ both panes into an unusable layout. Ctrl+B can reclaim the explorer width at any
 - a filesystem where workspace files are readable and their parent directories are writable and
   searchable when saving.
 
-TermWriter currently targets Textual 8.x, installs its Markdown syntax-highlighting extra, and uses
-`markdown-it-py` plus `mdit-py-plugins` for the preview parser.
+TermWriter currently targets Textual 8.x, installs its Markdown syntax-highlighting extra, uses
+`markdown-it-py` plus `mdit-py-plugins` for the preview parser, and uses the small `regex` package for
+Unicode-aware whole-word matching and time-limited regular expressions.
 
 ## Installation
 
@@ -197,7 +198,7 @@ TermWriter is already running, restart once so it can be added to the watched st
 | Ctrl+Q | Quit through the unsaved-change guard |
 | Ctrl+B | Show or hide the file explorer |
 | Ctrl+P | Find and open a workspace Markdown file |
-| Ctrl+Shift+F | Search literal text across workspace Markdown files |
+| Ctrl+Shift+F | Search workspace Markdown source |
 | Ctrl+E | Show/hide preview, or switch editor/preview when narrow |
 | Ctrl+Z | Undo |
 | Ctrl+Y or Ctrl+Shift+Z | Redo |
@@ -209,9 +210,11 @@ help key so a literal `?` remains editable Markdown. Some terminals do not disti
 Ctrl+Shift+Z from Ctrl+Z; Ctrl+Y remains the portable redo binding. On a bullet, numbered item,
 task, or blockquote, Enter inserts the next marker; Enter on an empty marker ends that structure.
 
-Workspace text search runs only after Enter is pressed in its dialog. It is literal,
-case-insensitive, capped at 100 matching lines, and includes the active document's unsaved source.
-Selecting another file still passes through Save / Discard / Cancel before leaving dirty work.
+Workspace text search runs only after Enter is pressed in its dialog. Choose literal, whole-word, or
+regular-expression matching; optionally match case and restrict paths with one workspace-relative
+glob such as `notes/**/*.md`. Results are capped at 100 matching lines and include the active
+document's unsaved source. Selecting another file still passes through Save / Discard / Cancel before
+leaving dirty work.
 
 ## Data-safety behavior
 
@@ -244,6 +247,13 @@ An existing file save follows this sequence:
 7. publish with descriptor-relative `os.replace` so a renamed ancestor cannot redirect the write;
 8. attempt to `fsync` the parent directory and verify the visible bytes;
 9. only then update the document's saved/dirty state.
+
+Stable document reads, disk probes, all content hashing, atomic publication, Save As, and orphan
+source validation run in Textual thread workers. A completed probe is classified on the UI thread
+against the latest dirty state, so an edit made during a watcher or transition check cannot be
+silently reloaded or left behind. During actual publication the editor is temporarily read-only;
+quit, switching, duplicate saves, and Save As dismissal wait until the non-cancellable writer has
+finished. Stale worker results are rejected with a document-generation ticket.
 
 Save As publishes a fully written temporary file with a no-clobber hard-link step. If the target
 appears concurrently, TermWriter reports a conflict instead of replacing it.
@@ -285,7 +295,9 @@ files, missing final newlines, recovery round trips and failures, restart recove
 failures, metadata and permission bits, watcher reload/conflict/deletion behavior, workspace
 filtering, symlinks, file and workspace-text search, CLI validation, and Textual Pilot workflows.
 Customization tests also exercise remapped keys, runtime TOML reload, user-TCSS precedence, command
-discovery, task continuation, termination, and undo grouping.
+discovery, task continuation, termination, and undo grouping. Race-focused worker tests block probes,
+loads, saves, and Save As publication to verify UI responsiveness, stale-result rejection, conflict
+preservation, and non-cancellable writer locking.
 
 ## Known limitations
 
@@ -295,7 +307,8 @@ discovery, task continuation, termination, and undo grouping.
   a backup, or an autosave of the Markdown path. Recovery entries contain the draft's plaintext
   source in a private per-user state directory.
 - The watcher polls only the active file every two seconds. It is not an operating-system event
-  watcher, and synchronous hashing can briefly pause input for unusually large files.
+  watcher. Hashing runs in a worker, so a completed check can arrive after the disk changed again;
+  save and transition checks remain authoritative.
 - Files must be valid UTF-8, with or without a UTF-8 BOM.
 - Uniform LF and CRLF sources round-trip through edits. Textual prefers CRLF when it is present,
   otherwise LF and then CR. After explicit consent and an edit, a deliberately mixed file is
@@ -329,14 +342,20 @@ discovery, task continuation, termination, and undo grouping.
   source prefix through the cursor, so Enter may have a small delay in extremely large files.
 - A malformed `theme.tcss` can prevent startup until the file is corrected. Only a theme present at
   launch is watched; create the templates with `--init-config` before opening the TUI.
-- Workspace text search is literal rather than regex/fuzzy search, returns one match per source line,
-  and caps results at 100. A thread already reading a file may finish that read after cancellation.
+- Workspace text search is not fuzzy, accepts one include glob rather than a compound filter
+  expression, returns one match per source line, and caps results at 100. Regexes are limited to 500
+  characters and 50 ms per source line; a timed-out expression returns an error instead of results.
+- Thread workers cannot stop an in-progress operating-system read or write. TermWriter ignores stale
+  read/probe results; an atomic writer is deliberately allowed to finish while the UI stays locked.
+- Recovery-journal publication and workspace index refreshes remain synchronous. They can briefly
+  pause input for an unusually large dirty document or workspace even though Markdown-file hashing
+  and publication now run outside the UI thread.
 
 ## Near-term roadmap
 
-1. Broaden preview support only where Textual can render tokens safely.
+1. Add internal footnote navigation and improve definition-list presentation.
 2. Add recovery-entry management for renamed files and manual cleanup of corrupt/stale entries.
-3. Add optional regex and whole-word modes to workspace text search.
+3. Add fuzzy path/text ranking and compound include/exclude search filters.
 4. Add a multi-document cache and restart restoration for cursor/scroll state.
 5. Prototype read-only semantic block mapping before attempting hybrid block editing.
 
