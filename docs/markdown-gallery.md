@@ -88,7 +88,8 @@ def greeting(name: str) -> str:
 ## Footnotes
 
 A statement can refer to a named footnote.[^source] Click its rendered number to reach the
-definition, then use `↩` to return.
+definition, then use `↩` to return. With the preview focused, Tab/Shift+Tab selects links and Enter
+activates the selected reference or backlink.
 
 [^source]: Footnote definitions render at the end with a visible number.
 

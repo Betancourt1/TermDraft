@@ -12,6 +12,7 @@ The current release is a functional MVP focused on a dependable writing loop:
 - search source text across the workspace without an external command;
 - search commands from a palette;
 - customize editor options, keybindings, and Textual CSS without reinstalling;
+- reopen the last workspace document and remember cursor/scroll positions for previously visited files;
 - save through a same-directory temporary file;
 - keep an atomic per-user crash-recovery journal for dirty source;
 - poll the active file for external changes while the application is running;
@@ -133,11 +134,13 @@ The repository also includes a complete [Markdown syntax gallery](docs/markdown-
 with `termwriter docs/markdown-gallery.md` to compare its editable syntax and preview side by side.
 
 Clicking a footnote label scrolls to its definition; `↩` returns to the most recently followed
-reference for that note. Unreferenced definitions are omitted by the footnote parser, and definition
-lists use bold terms plus quoted bodies rather than a dedicated `<dl>` layout. Alerts use a
-conservative titled-blockquote presentation rather than GitHub's color and icon treatment. Math,
-underline, subscript, superscript, and rendered raw HTML are not supported. Preview rendering never
-writes back to the source editor.
+reference for that note. Keyboard users can focus the preview with Ctrl+E or Tab, use Tab/Shift+Tab
+to select links, and press Enter to activate the selection. Internal footnotes navigate; external
+URLs remain inert. Unreferenced definitions are omitted by the footnote parser, and definition lists
+use bold terms plus quoted bodies rather than a dedicated `<dl>` layout. Alerts use a conservative
+titled-blockquote presentation rather than GitHub's color and icon treatment. Math, underline,
+subscript, superscript, and rendered raw HTML are not supported. Preview rendering never writes back
+to the source editor.
 
 ## Configuration
 
@@ -207,8 +210,9 @@ TermWriter is already running, restart once so it can be added to the watched st
 | Ctrl+\ | Open the searchable command palette |
 | F1 | Shortcut help |
 
-Tab and Shift+Tab move focus where the focused control does not use Tab for indentation. F1 is the
-help key so a literal `?` remains editable Markdown. Some terminals do not distinguish
+Tab and Shift+Tab move focus; inside the focused preview they select links, and Enter activates the
+selection. Reaching either end returns to the normal focus chain. F1 is the help key so a literal `?`
+remains editable Markdown. Some terminals do not distinguish
 Ctrl+Shift+Z from Ctrl+Z; Ctrl+Y remains the portable redo binding. On a bullet, numbered item,
 task, or blockquote, Enter inserts the next marker; Enter on an empty marker ends that structure.
 
@@ -224,6 +228,13 @@ path queries.
 
 `Document` is the in-memory source of truth for the active file. The preview never writes back to
 the editor or model.
+
+Workspace session JSON stores only the last active Markdown path and per-document cursor/scroll
+coordinates. Opening a directory restores the last active readable file; an explicit CLI file takes
+precedence. Positions for other visited files are restored when those files are reopened. Session
+state is atomically replaced outside the workspace and never contains Markdown source. Missing or
+corrupt session state cannot prevent the workspace from opening; missing state is silent and corrupt
+state produces a warning.
 
 The first dirty edit schedules a recovery write for 500 ms later; continued typing updates the
 pending payload without postponing that deadline. Each JSON entry is mode 0600, written through
@@ -244,7 +255,10 @@ Use **Manage recovery drafts** from the command palette to inspect the current w
 entries and any corrupt journals. Trusted drafts can be reopened or retargeted after a Markdown file
 is renamed. Retarget never replaces an existing recovery entry. **Archive** removes a stale or
 corrupt entry from the active inventory while preserving its exact journal bytes under the recovery
-directory's `quarantine/` folder. The active dirty document's draft cannot be moved or archived.
+directory's `quarantine/` folder. Quarantined trusted entries can be restored without replacing an
+active draft. **Delete forever** requires a separate irreversible confirmation and also handles
+corrupt quarantine entries. The active dirty document's draft cannot be moved, archived, or replaced
+by a quarantine restore.
 
 An existing file save follows this sequence:
 
@@ -303,7 +317,8 @@ mypy
 The suite covers the document model, UTF-8/BOM/LF/CRLF preservation, mixed-ending consent, empty
 files, missing final newlines, recovery round trips and failures, restart recovery, atomic-save
 failures, metadata and permission bits, watcher reload/conflict/deletion behavior, workspace
-filtering, symlinks, file and workspace-text search, CLI validation, and Textual Pilot workflows.
+filtering, symlinks, file and workspace-text search, content-free workspace sessions, quarantine
+restore/deletion, CLI validation, and Textual Pilot workflows.
 Customization tests also exercise remapped keys, runtime TOML reload, user-TCSS precedence, command
 discovery, task continuation, termination, and undo grouping. Race-focused worker tests block probes,
 loads, saves, and Save As publication to verify UI responsiveness, stale-result rejection, conflict
@@ -311,13 +326,12 @@ preservation, and non-cancellable writer locking.
 
 ## Known limitations
 
-- One document is active at a time; there are no tabs or session restoration yet.
+- One document is active at a time. Sessions remember visited document views, but there are no tabs
+  or recent-document switcher yet.
 - Recovery has a nominal 500 ms first-write delay. Termination before the timer runs, a blocked event
   loop, or a failed journal write can lose the latest unsaved keystrokes. It is not version history,
   a backup, or an autosave of the Markdown path. Recovery entries contain the draft's plaintext
   source in a private per-user state directory.
-- Archived recovery entries are retained as opaque files in `quarantine/`; TermWriter does not yet
-  provide a permanent-delete or restore-from-quarantine UI.
 - Recovery mutations use advisory per-journal locks between cooperating TermWriter processes. An
   unrelated program can ignore them, and lock behavior on unusual or network filesystems remains
   filesystem-dependent.
@@ -336,9 +350,9 @@ preservation, and non-cancellable writer locking.
 - Ordinary POSIX permission bits are preserved where the filesystem permits. Special setuid/setgid
   bits are not guaranteed. Ownership, ACLs, extended attributes, Finder metadata, and hard-link
   identity are not preserved by replacement.
-- Conflict Save As, recovery retargeting, and recovery archiving depend on hard-link support in the
-  relevant filesystem and fail cleanly when that publication mechanism is unavailable. Conflict
-  Save As is currently available only from conflict recovery.
+- Conflict Save As, recovery retargeting, recovery archiving, and quarantine restoration depend on
+  hard-link support in the relevant filesystem and fail cleanly when that publication mechanism is
+  unavailable. Conflict Save As is currently available only from conflict recovery.
 - A second hash check narrows but cannot eliminate the race between that check and `os.replace` if
   another process writes at exactly that moment. Cooperative file locking would not protect against
   editors that ignore the lock.
@@ -346,10 +360,11 @@ preservation, and non-cancellable writer locking.
   hostile process swapping intermediate path components during the initial open or a new Save As.
   Existing-file saves additionally compare file and parent identities and keep all temporary,
   cleanup, and replacement operations attached to the opened parent directory.
-- Cursor and scroll coordinates are recorded for the active document, but there is no multi-document
-  cache or restart restoration yet.
+- Session metadata is last-writer-wins between concurrent TermWriter instances. Missing or renamed
+  paths remain harmless stale view entries because automatic pruning is not implemented yet.
 - Preview links are deliberately non-opening. Raw document HTML, JavaScript, and shell text are not
-  executed.
+  executed. Inline Markdown links are not native focusable Textual widgets, so TermWriter indexes
+  their rendered action metadata within the pinned Textual 8.x compatibility range.
 - Alerts use titled blockquotes without GitHub's colors or icons. Preview intentionally omits math,
   underline, subscript, and superscript. A repeated footnote's back arrow returns to the most recently
   followed reference, definition lists use quoted bodies, and images do not render terminal graphics.
@@ -372,9 +387,9 @@ preservation, and non-cancellable writer locking.
 
 ## Near-term roadmap
 
-1. Add a multi-document cache and restart restoration for cursor/scroll state.
-2. Add restore/permanent-delete controls for quarantined recovery entries.
-3. Add keyboard-first navigation for preview links and footnotes.
+1. Add a recent-document switcher or tabs on top of the content-free session cache.
+2. Add optional quarantine export and retention controls without automatic deletion defaults.
+3. Add keyboard heading navigation and accessible announcements for preview selections.
 4. Prototype read-only semantic block mapping before attempting hybrid block editing.
 
 Implementation boundaries and tradeoffs are documented in

@@ -56,6 +56,22 @@ The `TextArea` is the editable view, not a second domain model. Its `Changed` me
 the coordinator also reads the widget synchronously so a queued message cannot omit the latest
 keypress.
 
+## Content-free workspace sessions
+
+`services/session.py` stores one versioned JSON file per canonical workspace under the per-user
+state directory. It contains only workspace-relative Markdown paths, the last active path, and
+nonnegative cursor/scroll coordinates. It never stores source text, saved baselines, undo history,
+or recovery content. The workspace hash keeps filenames opaque; mode-0600 temporary publication,
+`fsync`, and same-directory `os.replace` preserve the previous complete session on write failure.
+
+The app loads session metadata before mounting. An explicit CLI file overrides the stored active
+path; otherwise a valid readable active path is reopened. Each guarded file transition caches the
+outgoing view, the incoming document restores its own view, and clean quit persists the latest
+coordinates. Save As moves the cached view to the new path. Missing entries are ignored when chosen,
+corrupt session JSON is preserved and reported, and normal orphan-recovery scanning still runs after
+a directory session is restored. Concurrent TermWriter instances use last-writer-wins metadata
+because session coordinates are non-authoritative and cannot change Markdown.
+
 Textual reconstructs multiline text by preferring CRLF when present, then LF, then CR. TermWriter retains
 both Textual's normalized editor baseline and the exact source represented by that baseline. Merely
 loading, recovering, focusing, or saving a deliberately mixed-ending source therefore does not dirty
@@ -101,6 +117,14 @@ followed reference for `↩` navigation. Definition bodies become supported bloc
 terms. Unknown alert kinds remain ordinary blockquotes. Other Markdown links render but do not
 launch a browser or another external application. None of these preview transforms change
 `Document.text`.
+
+Textual renders inline links as action metadata inside `Content`, not as focusable child widgets.
+`MarkdownPreview` is therefore one explicit focus stop. While it has focus, Tab/Shift+Tab indexes and
+visibly selects those allow-listed `link(...)` spans, Enter dispatches the same `Markdown.LinkClicked`
+message as a pointer click, and moving beyond either end returns to the screen focus chain. Footnote
+references and backlinks transfer selection to each other; external URLs remain inert because
+`open_links=False` and the handler stops every noninternal link. This representation dependency is
+contained in the preview widget and covered by Pilot tests under the Textual `<9` version pin.
 
 ## Workspace text search
 
@@ -279,9 +303,12 @@ The command-palette recovery manager inventories journals in a worker and return
 visible because their metadata cannot be trusted enough to associate them. A fingerprint binds every
 mutation to the exact listed bytes. Retarget validates workspace containment, publishes the new
 journal with a no-clobber hard link, then removes the old record. Archive uses the same no-clobber
-rule to preserve exact bytes under `quarantine/` before removing the active entry. The manager does
-not expose permanent deletion. It revalidates resolved path containment when loading records and
-rechecks the active dirty document immediately before moving or archiving its journal.
+rule to preserve exact bytes under `quarantine/` before removing the active entry. Quarantine
+inventory retains corrupt entries but only valid trusted entries can be restored. Restore hard-links
+the exact archived bytes back into the active inventory without replacing an existing journal;
+permanent deletion requires a separate confirmation and fingerprints the selected quarantine version
+again. The manager revalidates resolved path containment and rechecks the active dirty document
+immediately before moving, archiving, or restoring a journal.
 
 The journal narrows crash loss but is not autosave or history. The 500 ms window, state-directory
 write failures, forced termination during the timer, and storage failure can still lose unsaved text.
