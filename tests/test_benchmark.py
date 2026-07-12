@@ -2,6 +2,7 @@
 
 import json
 import math
+import tracemalloc
 from dataclasses import asdict
 
 import pytest
@@ -62,7 +63,15 @@ async def test_tiny_end_to_end_report_is_finite_and_serializable() -> None:
         warmup=0,
     )
 
-    report = await run_benchmarks(config)
+    owns_tracing = not tracemalloc.is_tracing()
+    if owns_tracing:
+        tracemalloc.start()
+    try:
+        report = await run_benchmarks(config)
+        assert tracemalloc.is_tracing()
+    finally:
+        if owns_tracing:
+            tracemalloc.stop()
     payload = asdict(report)
     encoded = json.dumps(payload, allow_nan=False)
 

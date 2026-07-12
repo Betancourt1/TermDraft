@@ -65,7 +65,7 @@ class BenchmarkConfig:
     tab_kib: int = 32
     tabs: int = 10
     watch_kib: int = 256
-    iterations: int = 5
+    iterations: int = 20
     warmup: int = 1
 
     def __post_init__(self) -> None:
@@ -103,8 +103,10 @@ class TabMemoryBenchmark:
     all_tabs_traced_bytes: int
     added_tabs_traced_bytes: int
     traced_bytes_per_added_tab: float
-    traced_peak_bytes: int
-    process_peak_rss_growth_bytes: int
+    traced_peak_growth_bytes: int
+    process_peak_rss_before_bytes: int
+    process_peak_rss_after_bytes: int
+    process_peak_rss_high_water_delta_bytes: int
     mount_seconds: float
 
 
@@ -201,15 +203,17 @@ async def _benchmark_mounted_tabs(config: BenchmarkConfig, root: Path) -> TabMem
         path.write_text(source, encoding="utf-8", newline="")
 
     app = _benchmark_app(paths[0], root)
-    if tracemalloc.is_tracing():
-        tracemalloc.stop()
-    tracemalloc.start()
+    owns_tracing = not tracemalloc.is_tracing()
+    if owns_tracing:
+        tracemalloc.start()
+    traced_baseline, traced_peak_baseline = tracemalloc.get_traced_memory()
     rss_before = _process_peak_rss_bytes()
     try:
         async with app.run_test(size=(100, 30)):
             await _wait_for_idle(app)
             gc.collect()
-            one_tab_bytes, _ = tracemalloc.get_traced_memory()
+            one_tab_total, _ = tracemalloc.get_traced_memory()
+            one_tab_bytes = max(0, one_tab_total - traced_baseline)
             started = time.perf_counter()
             for path in paths[1:]:
                 worker = app._open_file_now(path)
@@ -219,14 +223,17 @@ async def _benchmark_mounted_tabs(config: BenchmarkConfig, root: Path) -> TabMem
                 await _wait_for_idle(app)
             mount_seconds = time.perf_counter() - started
             gc.collect()
-            all_tabs_bytes, traced_peak_bytes = tracemalloc.get_traced_memory()
+            all_tabs_total, traced_peak_total = tracemalloc.get_traced_memory()
+            all_tabs_bytes = max(0, all_tabs_total - traced_baseline)
+            traced_peak_growth = max(0, traced_peak_total - traced_peak_baseline)
             if len(app._open_documents) != config.tabs:
                 raise RuntimeError("benchmark did not mount every requested tab")
     finally:
-        tracemalloc.stop()
+        if owns_tracing:
+            tracemalloc.stop()
 
     added_tabs_bytes = max(0, all_tabs_bytes - one_tab_bytes)
-    rss_growth = max(0, _process_peak_rss_bytes() - rss_before)
+    rss_after = _process_peak_rss_bytes()
     return TabMemoryBenchmark(
         tabs=config.tabs,
         bytes_per_tab_source=len(source.encode("utf-8")),
@@ -234,8 +241,10 @@ async def _benchmark_mounted_tabs(config: BenchmarkConfig, root: Path) -> TabMem
         all_tabs_traced_bytes=all_tabs_bytes,
         added_tabs_traced_bytes=added_tabs_bytes,
         traced_bytes_per_added_tab=added_tabs_bytes / (config.tabs - 1),
-        traced_peak_bytes=traced_peak_bytes,
-        process_peak_rss_growth_bytes=rss_growth,
+        traced_peak_growth_bytes=traced_peak_growth,
+        process_peak_rss_before_bytes=rss_before,
+        process_peak_rss_after_bytes=rss_after,
+        process_peak_rss_high_water_delta_bytes=max(0, rss_after - rss_before),
         mount_seconds=mount_seconds,
     )
 
