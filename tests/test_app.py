@@ -1631,7 +1631,12 @@ async def test_recovery_manager_permanently_deletes_quarantine_after_confirmatio
         assert isinstance(app.screen, RecoveryDeleteDialog)
         assert quarantine_path.exists()
         await pilot.click("#recovery-delete-cancel")
+        for _ in range(100):
+            if not isinstance(app.screen, (RecoveryDeleteDialog, RecoveryManagerDialog)):
+                break
+            await pilot.pause(0.01)
         assert quarantine_path.exists()
+        assert not isinstance(app.screen, (RecoveryDeleteDialog, RecoveryManagerDialog))
 
         app.action_manage_recovery()
         for _ in range(100):
@@ -1639,7 +1644,11 @@ async def test_recovery_manager_permanently_deletes_quarantine_after_confirmatio
                 break
             await pilot.pause(0.01)
         assert isinstance(app.screen, RecoveryManagerDialog)
-        app.screen.query_one("#recovery-manager-retarget").focus()
+        await pilot.pause()
+        delete_button = app.screen.query_one("#recovery-manager-retarget")
+        delete_button.focus()
+        await pilot.pause()
+        assert delete_button.has_focus
         await pilot.press("enter")
         for _ in range(100):
             if isinstance(app.screen, RecoveryDeleteDialog):
