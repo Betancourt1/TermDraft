@@ -8,10 +8,14 @@ from threading import Event
 
 import pytest
 from textual.pilot import Pilot
+from textual.widgets import Markdown
 
 from termwriter.app import TermWriterApp
 from termwriter.models.workspace import Workspace
-from termwriter.screens.semantic_reader import SemanticReaderDialog
+from termwriter.screens.semantic_reader import (
+    SemanticReaderDialog,
+    SemanticReadingCandidate,
+)
 from termwriter.services.recovery import RecoveryJournal
 from termwriter.services.semantic_blocks import SemanticBlockMap, map_semantic_blocks
 
@@ -59,6 +63,10 @@ async def test_reader_renders_only_simple_blocks_and_returns_to_exact_source(
 
         dialog = app.screen
         assert isinstance(dialog, SemanticReaderDialog)
+        await _wait_until(
+            pilot,
+            lambda: all(candidate.rendered for candidate in dialog.query(SemanticReadingCandidate)),
+        )
         assert [segment.kind for segment in dialog.rendered_segments] == [
             "heading",
             "paragraph",
@@ -71,7 +79,8 @@ async def test_reader_renders_only_simple_blocks_and_returns_to_exact_source(
             "- list item\n\n```python\nprint('source')\n```\n"
         )
         assert len(dialog.query(".semantic-rendered-block")) == 2
-        assert len(dialog.query(".semantic-source-fallback")) == 2
+        assert sum(fallback.display for fallback in dialog.query(".semantic-source-fallback")) == 2
+        assert dialog.source_text == source
         assert app.document is not None
         assert app.document.text == source
         assert not app.document.dirty
@@ -80,6 +89,7 @@ async def test_reader_renders_only_simple_blocks_and_returns_to_exact_source(
         await _wait_until(pilot, lambda: not isinstance(app.screen, SemanticReaderDialog))
 
         assert app.editor.cursor_location == (2, 5)
+        assert app.focused is app.editor
         assert app.document.text == source
         assert path.read_text(encoding="utf-8") == source
 
@@ -133,3 +143,58 @@ async def test_stale_reader_result_is_discarded_after_edit(
         await pilot.pause(0.05)
 
         assert not isinstance(app.screen, SemanticReaderDialog)
+
+
+async def test_reader_retains_exact_dirty_source_and_editor_undo(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "dirty.md"
+    path.write_text("Paragraph\n", encoding="utf-8")
+    app = _app(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("x")
+        assert app.document is not None and app.document.dirty
+        app.action_read_semantic_blocks()
+        await _wait_until(pilot, lambda: isinstance(app.screen, SemanticReaderDialog))
+        dialog = app.screen
+        assert isinstance(dialog, SemanticReaderDialog)
+        assert dialog.source_text == "xParagraph\n"
+
+        await pilot.press("escape", "ctrl+z")
+
+        assert app.focused is app.editor
+        assert app.editor.text == "Paragraph\n"
+        assert not app.document.dirty
+        assert path.read_text(encoding="utf-8") == "Paragraph\n"
+
+
+async def test_reader_keeps_source_fallback_when_fragment_rendering_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "failure.md"
+    source = "# Heading\n"
+    path.write_text(source, encoding="utf-8")
+    app = _app(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        real_update = Markdown.update
+
+        async def failed_update(markdown: Markdown, source_text: str) -> None:
+            if source_text:
+                raise RuntimeError("parser failed")
+            await real_update(markdown, source_text)
+
+        monkeypatch.setattr(Markdown, "update", failed_update)
+        app.action_read_semantic_blocks()
+        await _wait_until(pilot, lambda: isinstance(app.screen, SemanticReaderDialog))
+        await pilot.pause(0.05)
+
+        dialog = app.screen
+        assert isinstance(dialog, SemanticReaderDialog)
+        candidate = dialog.query_one(SemanticReadingCandidate)
+        assert not candidate.rendered
+        assert candidate.source_text == source
+        assert candidate.current is not None and "fallback" in candidate.current
+        assert app.document is not None and app.document.text == source

@@ -7,12 +7,51 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Markdown, Static
+from textual.widgets import Button, ContentSwitcher, Markdown, Static
 
 from termwriter.services.markdown_preview import preview_parser
 from termwriter.services.semantic_blocks import SemanticBlock, SemanticBlockMap
 
 _RENDERED_KINDS = frozenset({"heading", "paragraph"})
+
+
+class SemanticReadingCandidate(ContentSwitcher):
+    """Keep exact source visible until one simple block renders successfully."""
+
+    def __init__(self, segment: SemanticBlock, index: int) -> None:
+        self.source_text = segment.source
+        self.rendered = False
+        self._render_id = f"semantic-rendered-{index}"
+        fallback_id = f"semantic-render-fallback-{index}"
+        super().__init__(
+            Static(
+                segment.source,
+                id=fallback_id,
+                classes="semantic-source-fallback",
+                markup=False,
+            ),
+            initial=fallback_id,
+            classes="semantic-render-candidate",
+        )
+
+    def on_mount(self) -> None:
+        self.call_after_refresh(self._render_source)
+
+    async def _render_source(self) -> None:
+        rendered = Markdown(
+            "",
+            id=self._render_id,
+            classes="semantic-rendered-block",
+            parser_factory=preview_parser,
+            open_links=False,
+        )
+        try:
+            await self.add_content(rendered)
+            await rendered.update(self.source_text)
+        except Exception:
+            return
+        self.current = self._render_id
+        self.rendered = True
 
 
 class SemanticReaderDialog(ModalScreen[None]):
@@ -23,8 +62,10 @@ class SemanticReaderDialog(ModalScreen[None]):
     ]
 
     def __init__(self, mapping: SemanticBlockMap) -> None:
+        self.source_segments = mapping.segments
+        self.source_text = "".join(segment.source for segment in self.source_segments)
         self.segments = tuple(
-            segment for segment in mapping.segments if segment.kind != "separator"
+            segment for segment in self.source_segments if segment.kind != "separator"
         )
         self.rendered_segments = tuple(
             segment for segment in self.segments if segment.kind in _RENDERED_KINDS
@@ -50,13 +91,7 @@ class SemanticReaderDialog(ModalScreen[None]):
                     with Vertical(classes="semantic-reading-block"):
                         yield Static(self._label(segment), classes="semantic-reading-label")
                         if segment.kind in _RENDERED_KINDS:
-                            yield Markdown(
-                                segment.source,
-                                id=f"semantic-rendered-{index}",
-                                classes="semantic-rendered-block",
-                                parser_factory=preview_parser,
-                                open_links=False,
-                            )
+                            yield SemanticReadingCandidate(segment, index)
                         else:
                             yield Static(
                                 segment.source,

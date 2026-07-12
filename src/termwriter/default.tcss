@@ -147,8 +147,11 @@ ModalScreen {
     color: $text-muted;
 }
 
-.semantic-rendered-block, .semantic-source-fallback {
+.semantic-render-candidate, .semantic-rendered-block, .semantic-source-fallback {
     height: auto;
+}
+
+.semantic-rendered-block, .semantic-source-fallback {
     padding: 0 1;
 }
 
