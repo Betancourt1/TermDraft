@@ -172,7 +172,8 @@ def format_command_help(
         + f"Press {palette} in the TUI to search all commands, including:\n"
         + "  Save, find file, search workspace text, toggle files, toggle preview,\n"
         + "  undo, redo,\n"
-        + "  reload configuration, shortcut help, Markdown syntax help, and safe quit."
+        + "  reload configuration, manage recovery drafts, shortcut help,\n"
+        + "  Markdown syntax help, and safe quit."
     )
 
 

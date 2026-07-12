@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from textual.widgets import Input
 
 from termwriter.app import TermWriterApp
 from termwriter.models.document import FileSnapshot
@@ -15,6 +16,7 @@ from termwriter.screens.dialogs import (
     HelpDialog,
     MixedLineEndingsDialog,
     RecoveryDialog,
+    RecoveryManagerDialog,
     SaveAsDialog,
     UnsavedChangesDialog,
 )
@@ -1210,3 +1212,93 @@ async def test_failed_open_after_discard_rejournals_the_active_dirty_document(
         recovered = journal.load(first)
         assert recovered is not None
         assert recovered.text == "xfirst"
+
+
+async def test_recovery_manager_retargets_a_renamed_draft_and_opens_it(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    old_path = workspace / "old.md"
+    new_path = workspace / "renamed.md"
+    old_path.write_text("base", encoding="utf-8")
+    loaded = load_file(old_path)
+    journal = RecoveryJournal(tmp_path / "state")
+    journal.save(
+        document_path=old_path,
+        workspace_root=workspace,
+        text="unsaved renamed draft",
+        encoding="utf-8",
+        base_snapshot=loaded.snapshot,
+    )
+    old_path.rename(new_path)
+    app = app_for_file(new_path, recovery_journal=journal)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        app.action_manage_recovery()
+        for _ in range(100):
+            if isinstance(app.screen, RecoveryManagerDialog):
+                break
+            await pilot.pause(0.01)
+        assert isinstance(app.screen, RecoveryManagerDialog)
+
+        app.screen.query_one("#recovery-manager-target", Input).value = "renamed.md"
+        await pilot.click("#recovery-manager-retarget")
+        for _ in range(100):
+            if journal.load(new_path) is not None:
+                break
+            await pilot.pause(0.01)
+
+        assert journal.load(old_path) is None
+        moved = journal.load(new_path)
+        assert moved is not None
+        assert moved.text == "unsaved renamed draft"
+
+        app.action_manage_recovery()
+        for _ in range(100):
+            if isinstance(app.screen, RecoveryManagerDialog):
+                break
+            await pilot.pause(0.01)
+        assert isinstance(app.screen, RecoveryManagerDialog)
+        await pilot.click("#recovery-manager-open")
+        for _ in range(150):
+            if isinstance(app.screen, RecoveryDialog):
+                break
+            await pilot.pause(0.01)
+
+        assert isinstance(app.screen, RecoveryDialog)
+        await pilot.click("#recovery-restore")
+        assert app.document is not None
+        assert app.document.path == new_path
+        assert app.document.text == "unsaved renamed draft"
+        assert app.document.dirty
+
+
+async def test_recovery_manager_archives_corrupt_entry_without_changing_bytes(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "active.md"
+    path.write_text("base", encoding="utf-8")
+    journal = RecoveryJournal(tmp_path / "state")
+    journal.state_root.mkdir()
+    corrupt_path = journal.state_root / f"{'e' * 64}.json"
+    corrupt_bytes = b"corrupt recovery bytes\x00\xff"
+    corrupt_path.write_bytes(corrupt_bytes)
+    app = app_for_file(path, recovery_journal=journal)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        app.action_manage_recovery()
+        for _ in range(100):
+            if isinstance(app.screen, RecoveryManagerDialog):
+                break
+            await pilot.pause(0.01)
+        assert isinstance(app.screen, RecoveryManagerDialog)
+        await pilot.click("#recovery-manager-archive")
+        quarantine_path = journal.state_root / "quarantine" / corrupt_path.name
+        for _ in range(100):
+            if quarantine_path.exists():
+                break
+            await pilot.pause(0.01)
+
+        assert not corrupt_path.exists()
+        assert quarantine_path.read_bytes() == corrupt_bytes

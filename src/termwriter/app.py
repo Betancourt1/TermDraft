@@ -38,6 +38,9 @@ from termwriter.screens.dialogs import (
     MixedLineEndingsDialog,
     RecoveryDecision,
     RecoveryDialog,
+    RecoveryManagerAction,
+    RecoveryManagerDialog,
+    RecoveryManagerRequest,
     SaveAsDialog,
     TextSearchDialog,
     UnsavedChangesDialog,
@@ -63,6 +66,7 @@ from termwriter.services.recovery import (
     RecoveryEntry,
     RecoveryError,
     RecoveryJournal,
+    RecoveryRecord,
     RecoveryScan,
 )
 from termwriter.services.text_search import TextSearchMatch, TextSearchOverride
@@ -113,6 +117,15 @@ class _SaveAsWorkerResult:
 class _OrphanWorkerResult:
     scan: RecoveryScan
     unavailable: tuple[RecoveryEntry, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _RecoveryManagementResult:
+    action: RecoveryManagerAction
+    entry: RecoveryEntry | None = None
+    quarantine_path: Path | None = None
+    source_unavailable: bool = False
+    error: str | None = None
 
 
 class TermWriterApp(App[None]):
@@ -222,7 +235,8 @@ class TermWriterApp(App[None]):
 
     @property
     def _has_modal(self) -> bool:
-        return isinstance(self.screen, ModalScreen)
+        screens = self.screen_stack
+        return bool(screens and isinstance(screens[-1], ModalScreen))
 
     @property
     def editor(self) -> MarkdownEditor:
@@ -561,6 +575,151 @@ class TermWriterApp(App[None]):
 
     def _scan_orphan_recoveries(self) -> Worker[None]:
         return self._scan_orphan_recoveries_worker()
+
+    @work(group="recovery-inventory", exclusive=True, thread=True, exit_on_error=False)
+    def _load_recovery_inventory_worker(self) -> None:
+        worker = get_current_worker()
+        try:
+            records = self.recovery_journal.list_entries(self.workspace.root)
+            error_message = None
+        except Exception as error:
+            records = ()
+            error_message = str(error)
+        if not worker.is_cancelled:
+            self.call_from_thread(
+                self._show_recovery_inventory,
+                records,
+                error_message,
+            )
+
+    def _show_recovery_inventory(
+        self,
+        records: tuple[RecoveryRecord, ...],
+        error_message: str | None,
+    ) -> None:
+        if error_message is not None:
+            self.notify(
+                escape(error_message),
+                severity="error",
+                title="Recovery inventory unavailable",
+            )
+            return
+        if self._has_modal or self._critical_io:
+            return
+        document = self.document
+        protected_path = document.path if document is not None and document.dirty else None
+        protected_journal_path = (
+            self.recovery_journal.path_for(protected_path) if protected_path is not None else None
+        )
+        self.push_screen(
+            RecoveryManagerDialog(
+                records,
+                self.workspace.root,
+                protected_journal_path=protected_journal_path,
+            ),
+            self._handle_recovery_manager_request,
+        )
+
+    def _handle_recovery_manager_request(
+        self,
+        request: RecoveryManagerRequest | None,
+    ) -> None:
+        if request is None:
+            return
+        document = self.document
+        protected_path = document.path if document is not None and document.dirty else None
+        if self._begin_critical_io(None, freeze_editor=False):
+            self._manage_recovery_worker(request, protected_path)
+
+    @work(group="recovery-management", exclusive=True, thread=True, exit_on_error=False)
+    def _manage_recovery_worker(
+        self,
+        request: RecoveryManagerRequest,
+        protected_path: Path | None,
+    ) -> None:
+        worker = get_current_worker()
+        try:
+            if request.action is RecoveryManagerAction.RETARGET:
+                target = self.workspace.validate_document_path(
+                    Path(request.target or ""),
+                    must_exist=False,
+                )
+                if protected_path is not None and paths_are_spelling_aliases(
+                    target,
+                    protected_path,
+                ):
+                    raise RecoveryError(
+                        "Cannot retarget a recovery draft onto the active dirty document"
+                    )
+                entry = self.recovery_journal.retarget(
+                    request.record,
+                    document_path=target,
+                    workspace_root=self.workspace.root,
+                )
+                result = _RecoveryManagementResult(request.action, entry=entry)
+            elif request.action is RecoveryManagerAction.QUARANTINE:
+                quarantine_path = self.recovery_journal.quarantine(request.record)
+                result = _RecoveryManagementResult(
+                    request.action,
+                    quarantine_path=quarantine_path,
+                )
+            else:
+                selected = request.record.entry
+                loaded_entry = (
+                    None if selected is None else self.recovery_journal.load(selected.document_path)
+                )
+                if loaded_entry is None:
+                    result = _RecoveryManagementResult(
+                        request.action,
+                        error="The selected recovery draft is no longer available.",
+                    )
+                else:
+                    result = _RecoveryManagementResult(
+                        request.action,
+                        entry=loaded_entry,
+                        source_unavailable=self._recovery_source_is_unavailable(loaded_entry),
+                    )
+        except (OSError, PersistenceError, RecoveryError, WorkspaceError) as error:
+            result = _RecoveryManagementResult(request.action, error=str(error))
+        except Exception as error:
+            result = _RecoveryManagementResult(
+                request.action,
+                error=f"Unexpected recovery-management failure: {error}",
+            )
+        if not worker.is_cancelled:
+            self.call_from_thread(self._handle_recovery_management_result, result)
+
+    def _handle_recovery_management_result(
+        self,
+        result: _RecoveryManagementResult,
+    ) -> None:
+        self._finish_critical_io()
+        if result.error is not None:
+            self.notify(
+                escape(result.error),
+                severity="error",
+                title="Recovery entry unchanged",
+            )
+            return
+        if result.action is RecoveryManagerAction.RETARGET and result.entry is not None:
+            relative = result.entry.document_path.relative_to(self.workspace.root).as_posix()
+            self.notify(f"Recovery draft now follows {escape(relative)}")
+            return
+        if result.action is RecoveryManagerAction.QUARANTINE:
+            name = result.quarantine_path.name if result.quarantine_path is not None else "entry"
+            self.notify(f"Archived recovery {escape(name)}")
+            return
+        entry = result.entry
+        if entry is None:
+            return
+        if result.source_unavailable:
+            self._request_transition(lambda: self._open_managed_orphan_recovery(entry))
+        else:
+            self._request_transition(lambda: self._open_file_now(entry.document_path))
+
+    def _open_managed_orphan_recovery(self, entry: RecoveryEntry) -> None:
+        self._orphan_recoveries.insert(0, entry)
+        self._offer_next_orphan_recovery()
 
     def _finish_orphan_recovery_scan(self, result: _OrphanWorkerResult) -> None:
         scan = result.scan
@@ -1489,6 +1648,12 @@ class TermWriterApp(App[None]):
             self._handle_text_search_result,
         )
 
+    def action_manage_recovery(self) -> None:
+        if self._has_modal or self._critical_io:
+            return
+        self._sync_editor_state()
+        self._load_recovery_inventory_worker()
+
     def _handle_text_search_result(self, result: TextSearchMatch | None) -> None:
         if result is not None:
             self._request_open_at(result.path, result.line, result.column)
@@ -1566,6 +1731,11 @@ class TermWriterApp(App[None]):
             "Reload configuration",
             "Reload config.toml keybindings and editor options",
             self.action_reload_config,
+        )
+        yield SystemCommand(
+            "Manage recovery drafts",
+            "Open, retarget, or archive crash-recovery entries",
+            self.action_manage_recovery,
         )
         yield SystemCommand(
             "Shortcut help", "Show the effective keybindings", self.action_show_help

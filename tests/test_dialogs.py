@@ -1,10 +1,19 @@
 """Focused interaction tests for reusable modal behavior."""
 
+from pathlib import Path
+
 from textual import on
 from textual.app import App
-from textual.widgets import Button, Input, Static
+from textual.widgets import Button, Input, OptionList, Static
 
-from termwriter.screens.dialogs import SaveAsDialog
+from termwriter.models.document import FileSnapshot
+from termwriter.screens.dialogs import (
+    RecoveryManagerAction,
+    RecoveryManagerDialog,
+    RecoveryManagerRequest,
+    SaveAsDialog,
+)
+from termwriter.services.recovery import RecoveryJournal
 
 
 class SaveAsHarness(App[None]):
@@ -21,6 +30,21 @@ class SaveAsHarness(App[None]):
     @on(SaveAsDialog.Submitted)
     def record_submission(self, event: SaveAsDialog.Submitted) -> None:
         self.submissions.append(event.value)
+
+
+class RecoveryManagerHarness(App[None]):
+    """Mount the inventory dialog and retain its typed result."""
+
+    def __init__(self, dialog: RecoveryManagerDialog) -> None:
+        self.dialog = dialog
+        self.result: RecoveryManagerRequest | None = None
+        super().__init__()
+
+    def on_mount(self) -> None:
+        self.push_screen(self.dialog, self._store_result)
+
+    def _store_result(self, result: RecoveryManagerRequest | None) -> None:
+        self.result = result
 
 
 async def test_save_as_busy_state_blocks_edit_submit_cancel_and_escape() -> None:
@@ -72,3 +96,84 @@ async def test_save_as_error_restores_editable_focused_state() -> None:
         await pilot.press("escape")
         await pilot.pause()
         assert app.screen is not dialog
+
+
+async def test_recovery_manager_protects_active_draft_and_can_archive_corrupt_entry(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    journal = RecoveryJournal(tmp_path / "state")
+    active = workspace / "active.md"
+    journal.save(
+        document_path=active,
+        workspace_root=workspace,
+        text="active draft",
+        encoding="utf-8",
+        base_snapshot=FileSnapshot.missing(),
+    )
+    corrupt_path = journal.state_root / f"{'f' * 64}.json"
+    corrupt_path.write_bytes(b"not json")
+    records = journal.list_entries(workspace)
+    dialog = RecoveryManagerDialog(
+        records,
+        workspace,
+        protected_journal_path=journal.path_for(active),
+    )
+    app = RecoveryManagerHarness(dialog)
+
+    async with app.run_test(size=(90, 32)) as pilot:
+        await pilot.pause()
+        options = dialog.query_one("#recovery-manager-records", OptionList)
+        valid_index = next(
+            index for index, record in enumerate(records) if record.entry is not None
+        )
+        corrupt_index = next(index for index, record in enumerate(records) if record.entry is None)
+
+        options.highlighted = valid_index
+        await pilot.pause()
+        assert dialog.query_one("#recovery-manager-open", Button).disabled
+        assert dialog.query_one("#recovery-manager-retarget", Button).disabled
+        assert dialog.query_one("#recovery-manager-archive", Button).disabled
+
+        options.highlighted = corrupt_index
+        await pilot.pause()
+        assert dialog.query_one("#recovery-manager-open", Button).disabled
+        assert dialog.query_one("#recovery-manager-retarget", Button).disabled
+        assert not dialog.query_one("#recovery-manager-archive", Button).disabled
+
+        await pilot.click("#recovery-manager-archive")
+        await pilot.pause()
+
+        assert app.result is not None
+        assert app.result.action is RecoveryManagerAction.QUARANTINE
+        assert app.result.record.entry is None
+
+
+async def test_recovery_manager_returns_explicit_retarget_request(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    journal = RecoveryJournal(tmp_path / "state")
+    old_path = workspace / "old.md"
+    journal.save(
+        document_path=old_path,
+        workspace_root=workspace,
+        text="draft",
+        encoding="utf-8",
+        base_snapshot=FileSnapshot.missing(),
+    )
+    records = journal.list_entries(workspace)
+    dialog = RecoveryManagerDialog(records, workspace)
+    app = RecoveryManagerHarness(dialog)
+
+    async with app.run_test(size=(90, 32)) as pilot:
+        await pilot.pause()
+        dialog.query_one("#recovery-manager-target", Input).value = "renamed.md"
+        await pilot.click("#recovery-manager-retarget")
+        await pilot.pause()
+
+        assert app.result is not None
+        assert app.result.action is RecoveryManagerAction.RETARGET
+        assert app.result.target == "renamed.md"
+        assert app.result.record.entry is not None
+        assert app.result.record.entry.document_path == old_path

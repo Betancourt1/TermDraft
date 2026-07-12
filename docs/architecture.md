@@ -260,8 +260,16 @@ When a workspace directory starts without an explicit initial file, the journal 
 hashed filenames, entry schemas, workspace containment, and Markdown suffixes. Entries whose source
 path is missing, no longer a regular file, inaccessible, or invalid UTF-8 are offered as orphan
 recovery. Restoring one installs an unavailable-path conflict: Ctrl+S cannot recreate or replace the
-original name, while Save As can publish a new workspace-relative copy. Corrupt entries are skipped
-with a warning; entries belonging to another workspace are ignored.
+original name, while Save As can publish a new workspace-relative copy. Entries belonging to another
+workspace are ignored.
+
+The command-palette recovery manager inventories journals in a worker and returns structured
+`RecoveryRecord` values. Valid records are filtered to the current workspace; corrupt records stay
+visible because their metadata cannot be trusted enough to associate them. A fingerprint binds every
+mutation to the exact listed bytes. Retarget validates workspace containment, publishes the new
+journal with a no-clobber hard link, then removes the old record. Archive uses the same no-clobber
+rule to preserve exact bytes under `quarantine/` before removing the active entry. The manager does
+not expose permanent deletion, and it protects the active dirty document's journal.
 
 The journal narrows crash loss but is not autosave or history. The 500 ms window, state-directory
 write failures, forced termination during the timer, and storage failure can still lose unsaved text.

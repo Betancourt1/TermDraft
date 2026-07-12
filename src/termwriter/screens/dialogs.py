@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from enum import Enum, auto
 from pathlib import Path
 from typing import ClassVar
@@ -18,6 +20,7 @@ from textual.worker import get_current_worker
 
 from termwriter.models.workspace import Workspace
 from termwriter.services.file_search import search_files
+from termwriter.services.recovery import RecoveryRecord
 from termwriter.services.text_search import (
     TextSearchMatch,
     TextSearchMode,
@@ -45,6 +48,23 @@ class RecoveryDecision(Enum):
     RESTORE = auto()
     DISCARD = auto()
     CANCEL = auto()
+
+
+class RecoveryManagerAction(Enum):
+    """Explicit operations available from the recovery inventory."""
+
+    OPEN = auto()
+    RETARGET = auto()
+    QUARANTINE = auto()
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryManagerRequest:
+    """One recovery operation chosen by the user."""
+
+    action: RecoveryManagerAction
+    record: RecoveryRecord
+    target: str | None = None
 
 
 class RecoveryDialog(ModalScreen[RecoveryDecision | None]):
@@ -96,6 +116,156 @@ class RecoveryDialog(ModalScreen[RecoveryDecision | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(RecoveryDecision.CANCEL)
+
+
+class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | None]):
+    """Inspect, reopen, retarget, or safely archive recovery journals."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "close", "Close", show=False),
+    ]
+
+    def __init__(
+        self,
+        records: tuple[RecoveryRecord, ...],
+        workspace_root: Path,
+        *,
+        protected_journal_path: Path | None = None,
+    ) -> None:
+        self.records = records
+        self.workspace_root = workspace_root
+        self.protected_journal_path = protected_journal_path
+        super().__init__(id="recovery-manager-screen")
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog", id="recovery-manager-dialog"):
+            yield Static("Manage recovery drafts", classes="dialog-title", markup=False)
+            yield Static(
+                "Archive removes an entry from TermWriter while preserving its exact journal "
+                "bytes in the recovery quarantine.",
+                classes="dialog-message",
+                markup=False,
+            )
+            options = [
+                Option(self._record_label(record), id=str(index))
+                for index, record in enumerate(self.records)
+            ]
+            if not options:
+                options = [Option("No recovery entries", disabled=True)]
+            yield OptionList(*options, id="recovery-manager-records", markup=False)
+            yield Static("", id="recovery-manager-detail", markup=False)
+            yield Input(
+                placeholder="Retarget to a workspace path, e.g. notes/renamed.md",
+                id="recovery-manager-target",
+            )
+            with Horizontal(classes="dialog-buttons", id="recovery-manager-buttons"):
+                yield Button("Open draft", id="recovery-manager-open", variant="primary")
+                yield Button("Retarget", id="recovery-manager-retarget")
+                yield Button("Archive", id="recovery-manager-archive", variant="warning")
+                yield Button("Close", id="recovery-manager-close")
+
+    def on_mount(self) -> None:
+        records = self.query_one("#recovery-manager-records", OptionList)
+        records.highlighted = 0 if self.records else None
+        records.focus()
+        self._refresh_selection()
+
+    def _record_label(self, record: RecoveryRecord) -> str:
+        if record.entry is None:
+            active = " · active" if record.journal_path == self.protected_journal_path else ""
+            return f"CORRUPT · {record.journal_path.name}{active}"
+        entry = record.entry
+        try:
+            label = entry.document_path.relative_to(self.workspace_root).as_posix()
+        except ValueError:
+            label = str(entry.document_path)
+        flags: list[str] = []
+        if record.journal_path == self.protected_journal_path:
+            flags.append("active")
+        if not entry.document_path.exists():
+            flags.append("missing")
+        if entry.updated_at < datetime.now(UTC) - timedelta(days=30):
+            flags.append("old")
+        suffix = f" · {', '.join(flags)}" if flags else ""
+        return f"{label}{suffix}"
+
+    def _selected_record(self) -> RecoveryRecord | None:
+        index = self.query_one("#recovery-manager-records", OptionList).highlighted
+        if index is None or not 0 <= index < len(self.records):
+            return None
+        return self.records[index]
+
+    def _refresh_selection(self) -> None:
+        record = self._selected_record()
+        detail = self.query_one("#recovery-manager-detail", Static)
+        target = self.query_one("#recovery-manager-target", Input)
+        open_button = self.query_one("#recovery-manager-open", Button)
+        retarget_button = self.query_one("#recovery-manager-retarget", Button)
+        archive_button = self.query_one("#recovery-manager-archive", Button)
+        if record is None:
+            detail.update("Nothing to manage in this recovery directory.")
+            target.disabled = True
+            open_button.disabled = True
+            retarget_button.disabled = True
+            archive_button.disabled = True
+            return
+
+        entry = record.entry
+        protected = record.journal_path == self.protected_journal_path
+        target.disabled = entry is None or protected
+        open_button.disabled = entry is None or protected
+        retarget_button.disabled = entry is None or protected
+        archive_button.disabled = protected
+        if protected:
+            detail.update("This draft belongs to the active dirty document and cannot be moved.")
+        elif entry is None:
+            detail.update(record.error or "This recovery entry could not be validated.")
+        else:
+            updated = entry.updated_at.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+            detail.update(f"{entry.document_path} · updated {updated}")
+
+    @on(OptionList.OptionHighlighted, "#recovery-manager-records")
+    def highlight_record(self) -> None:
+        self._refresh_selection()
+
+    @on(Button.Pressed, "#recovery-manager-open")
+    def open_record(self) -> None:
+        record = self._selected_record()
+        if record is not None and record.entry is not None:
+            self.dismiss(RecoveryManagerRequest(RecoveryManagerAction.OPEN, record))
+
+    @on(Button.Pressed, "#recovery-manager-retarget")
+    @on(Input.Submitted, "#recovery-manager-target")
+    def retarget_record(self) -> None:
+        record = self._selected_record()
+        target = self.query_one("#recovery-manager-target", Input).value.strip()
+        if record is None or record.entry is None:
+            return
+        if not target:
+            self.query_one("#recovery-manager-detail", Static).update(
+                "Enter a new workspace-relative Markdown path."
+            )
+            return
+        self.dismiss(
+            RecoveryManagerRequest(
+                RecoveryManagerAction.RETARGET,
+                record,
+                target,
+            )
+        )
+
+    @on(Button.Pressed, "#recovery-manager-archive")
+    def archive_record(self) -> None:
+        record = self._selected_record()
+        if record is not None:
+            self.dismiss(RecoveryManagerRequest(RecoveryManagerAction.QUARANTINE, record))
+
+    @on(Button.Pressed, "#recovery-manager-close")
+    def close_button(self) -> None:
+        self.dismiss(None)
+
+    def action_close(self) -> None:
+        self.dismiss(None)
 
 
 class MixedLineEndingsDialog(ModalScreen[bool]):

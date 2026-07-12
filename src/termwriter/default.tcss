@@ -104,6 +104,28 @@ ModalScreen {
     height: 31;
 }
 
+#recovery-manager-dialog {
+    height: 32;
+}
+
+#recovery-manager-records {
+    height: 1fr;
+    min-height: 5;
+    border: round $panel-lighten-2;
+    margin-bottom: 1;
+}
+
+#recovery-manager-detail {
+    height: auto;
+    min-height: 2;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#recovery-manager-target {
+    margin-bottom: 1;
+}
+
 #search-input, #text-search-input {
     margin-bottom: 1;
 }

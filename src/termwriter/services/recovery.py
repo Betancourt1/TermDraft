@@ -42,6 +42,21 @@ class RecoveryScan:
     warnings: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class RecoveryRecord:
+    """One journal observed during an inventory scan."""
+
+    journal_path: Path
+    fingerprint: str
+    entry: RecoveryEntry | None = None
+    error: str | None = None
+
+    @property
+    def is_corrupt(self) -> bool:
+        """Return whether the journal could not be validated."""
+        return self.entry is None
+
+
 def default_recovery_root() -> Path:
     """Return a platform-appropriate per-user state directory."""
     if state_home := os.environ.get("XDG_STATE_HOME"):
@@ -85,6 +100,7 @@ class RecoveryJournal:
             updated_at=datetime.now(UTC),
         )
         _validate_entry(entry)
+        _validate_target_path(entry.document_path, entry.workspace_root)
         data = _serialize(entry)
 
         try:
@@ -155,30 +171,130 @@ class RecoveryJournal:
         """Find trusted journals for a workspace, including entries whose file vanished."""
         expected_root = _absolute_path(workspace_root)
         try:
-            journal_paths = sorted(self.state_root.glob("*.json"))
-        except OSError as error:
+            records = self.list_entries(expected_root)
+        except RecoveryError as error:
             return RecoveryScan((), (f"Cannot scan recovery directory: {error}",))
 
         entries: list[RecoveryEntry] = []
         warnings: list[str] = []
-        for journal_path in journal_paths:
-            try:
-                if journal_path.is_symlink() or not journal_path.is_file():
-                    raise RecoveryError("Recovery entry is not a regular file")
-                entry = _read_entry(journal_path)
-                if self.path_for(entry.document_path) != journal_path:
-                    raise RecoveryError("Recovery journal filename does not match its document")
-                if entry.workspace_root != expected_root:
-                    continue
-                entry.document_path.relative_to(expected_root)
-                if entry.document_path.suffix.casefold() not in {".md", ".markdown"}:
-                    raise RecoveryError("Recovery document is not Markdown")
-            except (OSError, RecoveryError, ValueError) as error:
-                warnings.append(f"Cannot use recovery entry {journal_path.name}: {error}")
+        for record in records:
+            if record.entry is None:
+                warnings.append(
+                    f"Cannot use recovery entry {record.journal_path.name}: {record.error}"
+                )
                 continue
-            entries.append(entry)
+            if record.entry.workspace_root == expected_root:
+                entries.append(record.entry)
         entries.sort(key=lambda entry: entry.updated_at, reverse=True)
         return RecoveryScan(tuple(entries), tuple(warnings))
+
+    def list_entries(
+        self,
+        workspace_root: Path | None = None,
+    ) -> tuple[RecoveryRecord, ...]:
+        """List journals, always retaining corrupt records when filtering a workspace."""
+        try:
+            journal_paths = sorted(self.state_root.glob("*.json"))
+        except OSError as error:
+            raise RecoveryError(f"Cannot scan recovery directory: {error}") from error
+        records = tuple(self._inspect(journal_path) for journal_path in journal_paths)
+        if workspace_root is None:
+            return records
+        expected_root = _absolute_path(workspace_root)
+        return tuple(
+            record
+            for record in records
+            if record.entry is None or record.entry.workspace_root == expected_root
+        )
+
+    def list_stale(
+        self,
+        *,
+        before: datetime,
+        workspace_root: Path | None = None,
+    ) -> tuple[RecoveryRecord, ...]:
+        """List valid entries older than an explicit timezone-aware cutoff."""
+        if before.tzinfo is None or before.utcoffset() is None:
+            raise RecoveryError("Recovery stale cutoff must include a timezone")
+        expected_root = None if workspace_root is None else _absolute_path(workspace_root)
+        return tuple(
+            record
+            for record in self.list_entries(workspace_root)
+            if record.entry is not None
+            and record.entry.updated_at < before
+            and (expected_root is None or record.entry.workspace_root == expected_root)
+        )
+
+    def delete_record(self, record: RecoveryRecord) -> None:
+        """Delete exactly the journal version represented by ``record``."""
+        self._verify_record(record)
+        self._unlink_record(record)
+
+    def retarget(
+        self,
+        record: RecoveryRecord,
+        *,
+        document_path: Path,
+        workspace_root: Path,
+    ) -> RecoveryEntry:
+        """Move a trusted draft to a new Markdown path without replacing another draft."""
+        current = self._verify_record(record)
+        if current.entry is None:
+            raise RecoveryError("Cannot retarget a corrupt recovery entry")
+
+        entry = RecoveryEntry(
+            document_path=_absolute_path(document_path),
+            workspace_root=_absolute_path(workspace_root),
+            text=current.entry.text,
+            encoding=current.entry.encoding,
+            base_snapshot=current.entry.base_snapshot,
+            updated_at=current.entry.updated_at,
+        )
+        _validate_entry(entry)
+        _validate_target_path(entry.document_path, entry.workspace_root)
+        destination = self.path_for(entry.document_path)
+        if destination == record.journal_path:
+            if entry.workspace_root == current.entry.workspace_root:
+                return current.entry
+            raise RecoveryError("Retarget destination already contains this recovery entry")
+
+        self._publish_new(destination, _serialize(entry))
+        self._verify_record(record)
+        self._unlink_record(record)
+        return entry
+
+    def quarantine(self, record: RecoveryRecord) -> Path:
+        """Move an unchanged journal aside while preserving its exact bytes."""
+        self._verify_record(record)
+        quarantine_root = self.state_root / "quarantine"
+        try:
+            quarantine_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as error:
+            raise RecoveryError(f"Cannot create recovery quarantine: {error}") from error
+        destination = quarantine_root / record.journal_path.name
+        try:
+            os.link(record.journal_path, destination, follow_symlinks=False)
+        except FileExistsError as error:
+            raise RecoveryError(
+                f"Recovery quarantine already contains {destination.name}"
+            ) from error
+        except OSError as error:
+            raise RecoveryError(
+                f"Cannot quarantine recovery entry {record.journal_path.name}: {error}"
+            ) from error
+
+        try:
+            self._verify_record(record)
+            record.journal_path.unlink()
+            _sync_directory(quarantine_root)
+            _sync_directory(self.state_root)
+        except (OSError, RecoveryError) as error:
+            if isinstance(error, RecoveryError):
+                raise
+            raise RecoveryError(
+                f"Cannot finish quarantining {record.journal_path.name}: {error}"
+            ) from error
+        return destination
 
     def delete(self, document_path: Path) -> None:
         """Delete a recovery journal after a successful save or explicit discard."""
@@ -197,6 +313,91 @@ class RecoveryJournal:
             raise RecoveryError(
                 f"Recovery journal was deleted, but its directory could not be synced: {error}"
             ) from error
+
+    def _inspect(self, journal_path: Path) -> RecoveryRecord:
+        try:
+            if journal_path.is_symlink() or not journal_path.is_file():
+                raise RecoveryError("Recovery entry is not a regular file")
+            data = journal_path.read_bytes()
+        except (OSError, RecoveryError) as error:
+            return RecoveryRecord(
+                journal_path,
+                _path_fingerprint(journal_path),
+                error=str(error),
+            )
+
+        fingerprint = _fingerprint(data)
+        try:
+            entry = _entry_from_bytes(data, journal_path.name)
+            if self.path_for(entry.document_path) != journal_path:
+                raise RecoveryError("Recovery journal filename does not match its document")
+            return RecoveryRecord(journal_path, fingerprint, entry=entry)
+        except RecoveryError as error:
+            return RecoveryRecord(
+                journal_path,
+                fingerprint,
+                error=str(error),
+            )
+
+    def _verify_record(self, record: RecoveryRecord) -> RecoveryRecord:
+        if record.journal_path.parent != self.state_root:
+            raise RecoveryError("Recovery entry is outside the recovery directory")
+        current = self._inspect(record.journal_path)
+        if current.fingerprint != record.fingerprint:
+            raise RecoveryError("Recovery entry changed after it was listed")
+        return current
+
+    def _unlink_record(self, record: RecoveryRecord) -> None:
+        try:
+            record.journal_path.unlink()
+            _sync_directory(self.state_root)
+        except FileNotFoundError as error:
+            raise RecoveryError("Recovery entry disappeared after it was listed") from error
+        except OSError as error:
+            raise RecoveryError(
+                f"Cannot delete recovery entry {record.journal_path.name}: {error}"
+            ) from error
+
+    def _publish_new(self, destination: Path, data: bytes) -> None:
+        try:
+            self.state_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as error:
+            raise RecoveryError(
+                f"Cannot create recovery directory {self.state_root}: {error}"
+            ) from error
+
+        temporary: Path | None = None
+        descriptor = -1
+        try:
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{destination.stem}.",
+                suffix=".tmp",
+                dir=self.state_root,
+            )
+            temporary = Path(temporary_name)
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "wb") as stream:
+                descriptor = -1
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.link(temporary, destination, follow_symlinks=False)
+            _sync_directory(self.state_root)
+        except FileExistsError as error:
+            raise RecoveryError(f"Recovery entry already exists for {destination.name}") from error
+        except OSError as error:
+            raise RecoveryError(f"Cannot create retargeted recovery entry: {error}") from error
+        finally:
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+            if temporary is not None:
+                try:
+                    temporary.unlink()
+                except OSError:
+                    pass
 
 
 def _absolute_path(path: Path) -> Path:
@@ -227,13 +428,17 @@ def _serialize(entry: RecoveryEntry) -> bytes:
 
 def _read_entry(journal_path: Path) -> RecoveryEntry:
     data = journal_path.read_bytes()
+    return _entry_from_bytes(data, journal_path.name)
+
+
+def _entry_from_bytes(data: bytes, name: str) -> RecoveryEntry:
     try:
         payload = json.loads(data.decode("utf-8"))
         return _entry_from_payload(payload)
     except (UnicodeDecodeError, json.JSONDecodeError, RecoveryError) as error:
         if isinstance(error, RecoveryError):
             raise
-        raise RecoveryError(f"Invalid recovery journal {journal_path.name}: {error}") from error
+        raise RecoveryError(f"Invalid recovery journal {name}: {error}") from error
 
 
 def _entry_from_payload(payload: Any) -> RecoveryEntry:
@@ -287,6 +492,7 @@ def _validate_entry(entry: RecoveryEntry) -> None:
         raise RecoveryError("Recovery workspace root must be absolute")
     if entry.encoding not in _SUPPORTED_ENCODINGS:
         raise RecoveryError(f"Unsupported recovery encoding: {entry.encoding}")
+    _validate_workspace_path(entry.document_path, entry.workspace_root)
     _validate_snapshot(entry.base_snapshot)
     if entry.updated_at.tzinfo is None or entry.updated_at.utcoffset() is None:
         raise RecoveryError("Recovery updated timestamp must include a timezone")
@@ -346,6 +552,39 @@ def _validate_snapshot(snapshot: FileSnapshot) -> None:
         raise RecoveryError("Recovery base digest must be a lowercase SHA-256 digest")
     if not snapshot.exists and digest is not None:
         raise RecoveryError("A missing recovery baseline cannot have a digest")
+
+
+def _validate_workspace_path(document_path: Path, workspace_root: Path) -> None:
+    if document_path.suffix.casefold() not in {".md", ".markdown"}:
+        raise RecoveryError("Recovery document is not Markdown")
+    try:
+        document_path.relative_to(workspace_root)
+    except ValueError as error:
+        raise RecoveryError("Recovery document is outside its workspace") from error
+
+
+def _validate_target_path(document_path: Path, workspace_root: Path) -> None:
+    try:
+        resolved_root = workspace_root.resolve(strict=False)
+        document_path.resolve(strict=False).relative_to(resolved_root)
+    except (OSError, RuntimeError, ValueError) as error:
+        raise RecoveryError("Recovery document resolves outside its workspace") from error
+
+
+def _fingerprint(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _path_fingerprint(path: Path) -> str:
+    try:
+        if path.is_symlink():
+            data = b"symlink\0" + os.fsencode(os.readlink(path))
+        else:
+            metadata = path.lstat()
+            data = (f"special\0{metadata.st_mode}\0{metadata.st_dev}\0{metadata.st_ino}").encode()
+    except OSError as error:
+        data = f"unreadable\0{type(error).__name__}\0{error}".encode()
+    return _fingerprint(data)
 
 
 def _sync_directory(directory: Path) -> None:

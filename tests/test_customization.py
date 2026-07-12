@@ -199,6 +199,7 @@ async def test_command_palette_and_help_expose_product_actions(tmp_path: Path) -
             "Save document",
             "Search workspace text",
             "Reload configuration",
+            "Manage recovery drafts",
             "Shortcut help",
             "Markdown syntax help",
             "Quit safely",

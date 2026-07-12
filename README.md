@@ -238,6 +238,12 @@ The journal is recovery state, not a document format or database. Markdown remai
 truth. The default recovery location is `~/Library/Application Support/TermWriter/recovery` on
 macOS and `$XDG_STATE_HOME/termwriter/recovery` or `~/.local/state/termwriter/recovery` on Linux.
 
+Use **Manage recovery drafts** from the command palette to inspect the current workspace's trusted
+entries and any corrupt journals. Trusted drafts can be reopened or retargeted after a Markdown file
+is renamed. Retarget never replaces an existing recovery entry. **Archive** removes a stale or
+corrupt entry from the active inventory while preserving its exact journal bytes under the recovery
+directory's `quarantine/` folder. The active dirty document's draft cannot be moved or archived.
+
 An existing file save follows this sequence:
 
 1. hash the current disk bytes and compare them with the last loaded/saved fingerprint;
@@ -308,6 +314,8 @@ preservation, and non-cancellable writer locking.
   loop, or a failed journal write can lose the latest unsaved keystrokes. It is not version history,
   a backup, or an autosave of the Markdown path. Recovery entries contain the draft's plaintext
   source in a private per-user state directory.
+- Archived recovery entries are retained as opaque files in `quarantine/`; TermWriter does not yet
+  provide a permanent-delete or restore-from-quarantine UI.
 - The watcher polls only the active file every two seconds. It is not an operating-system event
   watcher. Hashing runs in a worker, so a completed check can arrive after the disk changed again;
   save and transition checks remain authoritative.
