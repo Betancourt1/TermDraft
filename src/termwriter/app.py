@@ -196,6 +196,7 @@ class TermWriterApp(App[None]):
         self._pending_recovery_entry: RecoveryEntry | None = None
         self._pending_recovery_is_orphan = False
         self._orphan_recoveries: list[RecoveryEntry] = []
+        self._scan_orphans_after_session_open = False
         self._mixed_reload_continuation: Callable[[], None] | None = None
         self._pending_open_location: tuple[Path, int, int] | None = None
         self._pending_focus_location: tuple[int, int] | None = None
@@ -237,6 +238,7 @@ class TermWriterApp(App[None]):
                 title="Session state ignored",
             )
         initial_file = self.workspace.initial_file
+        restoring_session = initial_file is None and self._session_active_path is not None
         if initial_file is None and self._session_active_path is not None:
             try:
                 initial_file = self.workspace.validate_document_path(self._session_active_path)
@@ -250,6 +252,11 @@ class TermWriterApp(App[None]):
             worker = self._open_file_now(initial_file)
             if worker is not None:
                 await worker.wait()
+            if restoring_session:
+                if self._has_modal:
+                    self._scan_orphans_after_session_open = True
+                else:
+                    await self._scan_orphan_recoveries().wait()
         else:
             self.explorer.directory_tree.focus()
             self._refresh_status()
@@ -971,6 +978,7 @@ class TermWriterApp(App[None]):
             self.editor.focus()
             if self.document.dirty:
                 self._schedule_recovery()
+        self._continue_session_orphan_scan()
         self._refresh_status()
 
     def _install_document(self, document: Document) -> None:
@@ -1023,7 +1031,13 @@ class TermWriterApp(App[None]):
                 self.editor.scroll_to(0, 0, animate=False, immediate=True)
         self.editor.focus()
         self._persist_session()
+        self._continue_session_orphan_scan()
         self._refresh_status()
+
+    def _continue_session_orphan_scan(self) -> None:
+        if self._scan_orphans_after_session_open:
+            self._scan_orphans_after_session_open = False
+            self.call_after_refresh(self._scan_orphan_recoveries)
 
     def _schedule_preview(self, *, immediate: bool = False) -> None:
         self._preview_revision += 1

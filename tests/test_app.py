@@ -100,6 +100,50 @@ async def test_directory_session_reopens_last_document_and_view(tmp_path: Path) 
         assert app.editor.scroll_offset.y == 9
 
 
+async def test_directory_session_restore_still_offers_missing_recovery_drafts(
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    active = workspace_root / "active.md"
+    active.write_text("active", encoding="utf-8")
+    missing = workspace_root / "missing.md"
+    store = SessionStore(tmp_path / "sessions")
+    store.save(
+        SessionState(
+            workspace_root,
+            active,
+            (DocumentViewState(active),),
+        )
+    )
+    journal = RecoveryJournal(tmp_path / "recovery")
+    journal.save(
+        document_path=missing,
+        workspace_root=workspace_root,
+        text="missing draft",
+        encoding="utf-8",
+        base_snapshot=FileSnapshot.missing(),
+    )
+    app = TermWriterApp(
+        Workspace.from_target(workspace_root),
+        preview_debounce=0.01,
+        recovery_journal=journal,
+        session_store=store,
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        for _ in range(150):
+            if isinstance(app.screen, RecoveryDialog):
+                break
+            await pilot.pause(0.01)
+
+        assert isinstance(app.screen, RecoveryDialog)
+        assert app.screen.path == missing
+        assert app.screen.source_missing
+        assert app.document is not None
+        assert app.document.path == active
+
+
 async def test_explicit_file_overrides_session_active_path_but_restores_its_view(
     tmp_path: Path,
 ) -> None:
@@ -1595,7 +1639,8 @@ async def test_recovery_manager_permanently_deletes_quarantine_after_confirmatio
                 break
             await pilot.pause(0.01)
         assert isinstance(app.screen, RecoveryManagerDialog)
-        await pilot.click("#recovery-manager-retarget")
+        app.screen.query_one("#recovery-manager-retarget").focus()
+        await pilot.press("enter")
         for _ in range(100):
             if isinstance(app.screen, RecoveryDeleteDialog):
                 break
