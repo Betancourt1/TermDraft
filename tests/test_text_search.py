@@ -157,7 +157,8 @@ def test_clean_active_override_prefers_disk_and_falls_back_if_missing(
 
     assert [match.preview for match in disk_result.matches] == ["fresh disk needle"]
     assert [match.path for match in fallback_result.matches] == [missing]
-    assert fallback_result.warnings == ()
+    assert len(fallback_result.warnings) == 1
+    assert "Using open source" in fallback_result.warnings[0]
 
 
 def test_long_preview_is_bounded_and_keeps_the_match_visible(tmp_path: Path) -> None:

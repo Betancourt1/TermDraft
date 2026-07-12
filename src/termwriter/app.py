@@ -21,7 +21,12 @@ from termwriter.bindings import (
 )
 from termwriter.config import ConfigError, TermWriterConfig, load_config
 from termwriter.models.document import Document, FileSnapshot
-from termwriter.models.workspace import Workspace, WorkspaceError, WorkspaceNotFoundError
+from termwriter.models.workspace import (
+    Workspace,
+    WorkspaceError,
+    WorkspaceNotFoundError,
+    path_spelling_key,
+)
 from termwriter.screens.dialogs import (
     ConflictDecision,
     ConflictDialog,
@@ -262,6 +267,11 @@ class TermWriterApp(App[None]):
                     self._save_continuation = lambda: self._focus_editor_at(line, column)
                     self._reload_current_from_disk(automatic=True, failure_dialog=True)
                     return
+                if change.kind in {
+                    ExternalChangeKind.DELETED,
+                    ExternalChangeKind.INACCESSIBLE,
+                }:
+                    self._mark_external_warning(change)
             self._focus_editor_at(line, column)
             return
         try:
@@ -284,6 +294,8 @@ class TermWriterApp(App[None]):
             return False
         if path == document.path:
             return True
+        if path_spelling_key(path) != path_spelling_key(document.path):
+            return False
         try:
             return path.samefile(document.path)
         except OSError:

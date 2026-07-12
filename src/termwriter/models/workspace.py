@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import os
 import stat
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
 IGNORED_DIRECTORIES = frozenset({".git", ".venv", "node_modules", "__pycache__"})
+
+
+def path_spelling_key(path: Path) -> str:
+    """Normalize spelling aliases without treating arbitrary hardlinks as one path."""
+    return unicodedata.normalize("NFC", path.as_posix()).casefold()
 
 
 class WorkspaceError(Exception):

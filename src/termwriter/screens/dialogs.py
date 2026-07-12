@@ -436,7 +436,8 @@ class TextSearchDialog(ModalScreen[TextSearchMatch | None]):
         match_word = "match" if len(self.matches) == 1 else "matches"
         status = f"{len(self.matches)} {match_word}"
         if result.warnings:
-            status += f" · skipped {len(result.warnings)} unreadable path(s)"
+            warning_word = "warning" if len(result.warnings) == 1 else "warnings"
+            status += f" · {len(result.warnings)} {warning_word}"
         self.query_one("#text-search-status", Static).update(status)
 
     def _show_error(self, query: str, error: str) -> None:

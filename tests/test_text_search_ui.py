@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from textual.widgets import Static
 
 from termwriter.app import TermWriterApp
 from termwriter.models.workspace import Workspace
@@ -170,3 +171,68 @@ async def test_case_insensitive_alias_is_one_active_result(tmp_path: Path) -> No
         assert app.document.path == alias_path
         assert app.document.text == "xneedle"
         assert app.document.dirty
+
+
+async def test_unicode_normalization_alias_is_one_active_result(tmp_path: Path) -> None:
+    real_path = tmp_path / "café.md"
+    alias_path = tmp_path / "cafe\N{COMBINING ACUTE ACCENT}.md"
+    real_path.write_text("needle", encoding="utf-8")
+    if not alias_path.exists():
+        pytest.skip("requires a Unicode-normalizing filesystem")
+    app = _app(alias_path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("x", "ctrl+shift+f")
+        await pilot.press("n", "e", "e", "d", "l", "e", "enter")
+        await pilot.pause(0.15)
+
+        assert isinstance(app.screen, TextSearchDialog)
+        assert [(match.path, match.preview) for match in app.screen.matches] == [
+            (real_path, "xneedle")
+        ]
+
+
+async def test_distinct_hardlink_result_uses_unsaved_transition_guard(tmp_path: Path) -> None:
+    first = tmp_path / "a.md"
+    second = tmp_path / "b.md"
+    first.write_text("needle", encoding="utf-8")
+    second.hardlink_to(first)
+    app = _app(first)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("x", "ctrl+shift+f")
+        await pilot.press("n", "e", "e", "d", "l", "e", "enter")
+        await pilot.pause(0.15)
+
+        assert isinstance(app.screen, TextSearchDialog)
+        assert [match.path for match in app.screen.matches] == [first, second]
+
+        await pilot.press("down", "enter")
+
+        assert isinstance(app.screen, UnsavedChangesDialog)
+        assert app.document is not None
+        assert app.document.path == first
+
+
+async def test_clean_missing_active_search_marks_conflict_on_selection(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "missing.md"
+    path.write_text("needle", encoding="utf-8")
+    app = _app(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        path.unlink()
+        await pilot.press("ctrl+shift+f")
+        await pilot.press("n", "e", "e", "d", "l", "e", "enter")
+        await pilot.pause(0.15)
+
+        assert isinstance(app.screen, TextSearchDialog)
+        status = app.screen.query_one("#text-search-status", Static)
+        assert "1 warning" in str(status.render())
+        await pilot.press("enter")
+
+        assert app.document is not None
+        assert app.document.text == "needle"
+        assert app.document.conflict
+        assert app.document.last_save_status == "Deleted externally"
