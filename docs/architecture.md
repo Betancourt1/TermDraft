@@ -131,7 +131,11 @@ to exact Python-string offsets for LF/CRLF/CR source, and records every uncovere
 separator or unmapped source. The command-palette inspector parses in a worker, rejects results if
 the active document or captured text changed, and discards results while a modal, critical
 operation, or exit is active. It can only move the source cursor. Nested containers remain one outer
-top-level block, and the map is explicitly not sufficient for source splicing.
+top-level block. Valid top-level link-reference definitions are added from `parse` environment line
+maps after defensive shape and bounds checks; nested definitions are absorbed by their outer
+container and malformed reference-like source remains ordinary Markdown. The environment's exact
+reference dictionary shape is pinned by the lossless diagnostic corpus but is not treated as an
+editing contract. The map is explicitly not sufficient for source splicing.
 
 The preview is constructed with `open_links=False` and a dedicated `markdown-it-py` parser factory.
 The `gfm-like2` preset provides tables, task metadata, five GFM alert kinds, and

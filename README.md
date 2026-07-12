@@ -385,9 +385,11 @@ writer locking.
   restored tabs begin with empty histories after restart. Keeping one mounted `TextArea` per tab also
   means unusually large tab sets consume more memory. Session metadata restores at most 100 views.
 - The semantic inspector is line-level diagnostics, not an editing-grade AST. Nested containers are
-  represented by their outer block, reference definitions may appear as explicit unmapped source,
-  and the detail pane truncates very large block previews. It provides no inline delimiter offsets,
-  stable block identity, visual-position map, incremental parsing, or hybrid editing.
+  represented by their outer block. Valid top-level link-reference definitions use parser
+  environment line maps, while malformed or unknown source remains explicit gaps; this metadata is
+  tested for diagnostics but not trusted for source splicing. The detail pane truncates very large
+  block previews. It provides no inline delimiter offsets, stable block identity, visual-position
+  map, incremental parsing, or hybrid editing.
 - Recovery has a nominal 500 ms first-write delay. Cooperative `SIGTERM` and `SIGHUP` requests are
   polled every 50 ms and drain exact dirty-tab journals before exit; a failed shutdown publication
   cancels exit and restores editing. `SIGKILL`, power loss, native crashes, a blocked event loop, or
@@ -457,8 +459,12 @@ writer locking.
 
 ## Near-term roadmap
 
-1. Validate nested semantic ranges and reference definitions against a larger lossless corpus before
-   considering any rendered-block experiment.
+1. Prototype opt-in read-only rendering for simple paragraphs and headings with an immediate
+   full-source fallback.
+2. Validate cursor and viewport mapping under wrapping, combining characters, CJK, and emoji before
+   exposing any active-block editing.
+3. Benchmark semantic parsing and mounted-tab memory on large documents and workspaces before
+   expanding the supported block set.
 
 Implementation boundaries and tradeoffs are documented in
 [`docs/architecture.md`](docs/architecture.md).

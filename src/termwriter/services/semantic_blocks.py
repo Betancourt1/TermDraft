@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from markdown_it import MarkdownIt
@@ -57,10 +58,12 @@ def map_semantic_blocks(source: str) -> SemanticBlockMap:
     """Map conservative top-level parser tokens without changing source bytes."""
     offsets = _line_offsets(source)
     candidates: list[SemanticBlock] = []
-    for token in _semantic_parser().parse(source):
+    environment: dict[str, object] = {}
+    for token in _semantic_parser().parse(source, environment):
         block = _block_from_token(token, source, offsets)
         if block is not None:
             candidates.append(block)
+    candidates.extend(_reference_definition_blocks(environment, source, offsets))
 
     blocks: list[SemanticBlock] = []
     gaps: list[SemanticBlock] = []
@@ -113,12 +116,64 @@ def _block_from_token(
     source: str,
     offsets: tuple[int, ...],
 ) -> SemanticBlock | None:
-    source_map = token.map
-    if token.level != 0 or token.nesting < 0 or source_map is None:
+    if token.level != 0 or token.nesting < 0:
+        return None
+    kind = _KINDS.get(token.type, token.type.removesuffix("_open").replace("_", " "))
+    return _source_block(
+        kind,
+        token.map,
+        source,
+        offsets,
+        detail=_token_detail(token),
+    )
+
+
+def _reference_definition_blocks(
+    environment: Mapping[str, object],
+    source: str,
+    offsets: tuple[int, ...],
+) -> list[SemanticBlock]:
+    metadata: list[tuple[object, object]] = []
+    references = environment.get("references")
+    if isinstance(references, Mapping):
+        metadata.extend(references.items())
+    duplicates = environment.get("duplicate_refs")
+    if isinstance(duplicates, (list, tuple)):
+        for duplicate in duplicates:
+            if isinstance(duplicate, Mapping):
+                metadata.append((duplicate.get("label"), duplicate))
+
+    blocks: list[SemanticBlock] = []
+    for label, entry in metadata:
+        if not isinstance(entry, Mapping):
+            continue
+        block = _source_block(
+            "link reference definition",
+            entry.get("map"),
+            source,
+            offsets,
+            detail=f"[{label}]" if isinstance(label, str) else None,
+        )
+        if block is not None:
+            blocks.append(block)
+    return blocks
+
+
+def _source_block(
+    kind: str,
+    source_map: object,
+    source: str,
+    offsets: tuple[int, ...],
+    *,
+    detail: str | None = None,
+) -> SemanticBlock | None:
+    if not isinstance(source_map, (list, tuple)) or len(source_map) != 2:
         return None
     start_line, end_line = source_map
     if (
-        start_line < 0
+        type(start_line) is not int
+        or type(end_line) is not int
+        or start_line < 0
         or end_line <= start_line
         or start_line >= len(offsets)
         or end_line >= len(offsets)
@@ -126,7 +181,6 @@ def _block_from_token(
         return None
     start_offset = offsets[start_line]
     end_offset = offsets[end_line]
-    kind = _KINDS.get(token.type, token.type.removesuffix("_open").replace("_", " "))
     return SemanticBlock(
         kind=kind,
         start_line=start_line,
@@ -134,7 +188,7 @@ def _block_from_token(
         start_offset=start_offset,
         end_offset=end_offset,
         source=source[start_offset:end_offset],
-        detail=_token_detail(token),
+        detail=detail,
     )
 
 

@@ -38,9 +38,10 @@ Mixing these units is a direct route to corrupt splices or misplaced cursors.
 
 The diagnostic prototype uses `markdown-it-py` public block tokens and `Token.map` line ranges. It
 converts logical lines to Python-string offsets without normalizing LF, CRLF, or CR and retains every
-uncovered source slice. This is not yet an editing-grade parser choice: reference definitions,
-inline delimiters, nested identities, and extension-specific exact ranges still require corpus-level
-proof rather than inference from token text.
+uncovered source slice. Valid top-level link-reference definitions use defensively validated line
+maps from the parser environment and are covered by the same lossless corpus. This is not yet an
+editing-grade parser choice: the exact reference metadata shape, inline delimiters, nested
+identities, and extension-specific exact ranges are not stable source-splicing contracts.
 
 ## Active and inactive blocks
 
@@ -87,7 +88,10 @@ missing final newlines, nested lists, block quotes, fences, tables, references, 
 Status: implemented as **Inspect semantic blocks** in the command palette. The worker-backed mapper
 lists non-overlapping top-level ranges and explicit separator/unmapped gaps, rejects stale results,
 and can move the full-source editor cursor. Nested containers deliberately remain one outer block;
-reference definitions may remain unmapped. The inspector never splices, saves, or renders source.
+valid top-level link-reference definitions are mapped from parser metadata, while malformed source
+remains a normal block or explicit gap. A 26-case corpus independently verifies contiguous offsets,
+source and UTF-8 reconstruction, LF/CRLF/CR, Unicode, nested containers, references, extensions, and
+malformed input. The inspector never splices, saves, or renders source.
 
 ### Stage 2: rendered blocks without editing
 
