@@ -30,6 +30,7 @@ def _state(workspace: Path) -> SessionState:
             DocumentViewState(first, line=3, column=8, scroll_x=1.5, scroll_y=12.25),
             DocumentViewState(second, line=9, column=2, scroll_y=40.0),
         ),
+        open_paths=(first, second),
     )
 
 
@@ -63,9 +64,10 @@ def test_serialized_session_contains_paths_and_positions_but_no_markdown_source(
     payload = json.loads(store.path_for(workspace).read_text(encoding="utf-8"))
 
     assert payload == {
-        "version": 1,
+        "version": 2,
         "workspace_root": str(workspace),
         "active_path": "todo.markdown",
+        "open_paths": ["notes/café.md", "todo.markdown"],
         "documents": [
             {
                 "path": "notes/café.md",
@@ -85,6 +87,41 @@ def test_serialized_session_contains_paths_and_positions_but_no_markdown_source(
     }
     assert "text" not in payload
     assert "content" not in payload
+
+
+def test_version_one_session_migrates_only_its_active_document(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = SessionStore(tmp_path / "state")
+    store.save(_state(workspace))
+    state_path = store.path_for(workspace)
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    payload["version"] = 1
+    del payload["open_paths"]
+    state_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    state = store.load(workspace).state
+
+    assert state is not None
+    assert state.open_paths == (workspace / "todo.markdown",)
+
+
+def test_open_tab_order_is_independent_from_recent_document_order(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    first = workspace / "first.md"
+    second = workspace / "second.md"
+    state = SessionState(
+        workspace,
+        second,
+        (DocumentViewState(second), DocumentViewState(first)),
+        (first, second),
+    )
+    store = SessionStore(tmp_path / "state")
+
+    store.save(state)
+
+    assert store.load(workspace).state == state
 
 
 def test_missing_session_is_silent_and_does_not_create_state_directory(tmp_path: Path) -> None:
@@ -326,6 +363,49 @@ def test_active_document_must_have_a_stored_view(tmp_path: Path) -> None:
     )
 
     with pytest.raises(SessionError, match="active document must have a stored view"):
+        SessionStore(tmp_path / "state").save(state)
+
+
+def test_open_documents_must_be_unique_and_have_stored_views(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    first = workspace / "first.md"
+    second = workspace / "second.md"
+
+    with pytest.raises(SessionError, match="duplicate open document path"):
+        SessionStore(tmp_path / "state").save(
+            SessionState(
+                workspace,
+                first,
+                (DocumentViewState(first),),
+                (first, first),
+            )
+        )
+
+    with pytest.raises(SessionError, match="every open document"):
+        SessionStore(tmp_path / "state").save(
+            SessionState(
+                workspace,
+                first,
+                (DocumentViewState(first),),
+                (first, second),
+            )
+        )
+
+
+def test_active_document_must_be_in_open_tab_set(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    first = workspace / "first.md"
+    second = workspace / "second.md"
+    state = SessionState(
+        workspace,
+        first,
+        (DocumentViewState(first), DocumentViewState(second)),
+        (second,),
+    )
+
+    with pytest.raises(SessionError, match="active document must be open"):
         SessionStore(tmp_path / "state").save(state)
 
 

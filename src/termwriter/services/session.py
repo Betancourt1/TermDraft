@@ -15,7 +15,7 @@ from typing import Any
 
 from termwriter.models.workspace import MARKDOWN_SUFFIXES
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 MAX_SESSION_BYTES = 512 * 1024
 MAX_SESSION_DOCUMENTS = 100
 
@@ -37,11 +37,17 @@ class DocumentViewState:
 
 @dataclass(frozen=True, slots=True)
 class SessionState:
-    """The active document and views in most-recently-used order."""
+    """The active tab, open tab order, and recent content-free views."""
 
     workspace_root: Path
     active_path: Path | None
     documents: tuple[DocumentViewState, ...] = ()
+    open_paths: tuple[Path, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Treat older callers with only an active path as one open tab."""
+        if self.active_path is not None and not self.open_paths:
+            object.__setattr__(self, "open_paths", (self.active_path,))
 
     def view_for(self, path: Path) -> DocumentViewState | None:
         """Return the stored view for an exact document path."""
@@ -160,6 +166,7 @@ def _serialize(state: SessionState) -> bytes:
         "version": _SCHEMA_VERSION,
         "workspace_root": str(root),
         "active_path": _relative_path(state.active_path, root),
+        "open_paths": [_relative_path(path, root) for path in state.open_paths],
         "documents": [
             {
                 "path": _relative_path(view.path, root),
@@ -195,10 +202,13 @@ def _state_from_bytes(data: bytes) -> SessionState:
 def _state_from_payload(payload: Any) -> SessionState:
     if not isinstance(payload, dict):
         raise SessionError("expected a JSON object")
-    _require_keys(payload, {"version", "workspace_root", "active_path", "documents"}, "session")
-    version = payload["version"]
-    if not isinstance(version, int) or isinstance(version, bool) or version != _SCHEMA_VERSION:
+    version = payload.get("version")
+    if not isinstance(version, int) or isinstance(version, bool) or version not in {1, 2}:
         raise SessionError("unsupported session version")
+    expected_keys = {"version", "workspace_root", "active_path", "documents"}
+    if version == 2:
+        expected_keys.add("open_paths")
+    _require_keys(payload, expected_keys, "session")
     workspace_value = payload["workspace_root"]
     if not isinstance(workspace_value, str):
         raise SessionError("workspace_root must be a string")
@@ -224,9 +234,28 @@ def _state_from_payload(payload: Any) -> SessionState:
         if active_value is None
         else _document_path_from_relative(active_value, workspace_root, "active_path")
     )
-    state = SessionState(workspace_root, active_path, documents)
+    open_paths: tuple[Path, ...]
+    if version == 1:
+        open_paths = () if active_path is None else (active_path,)
+    else:
+        open_values = payload["open_paths"]
+        if not isinstance(open_values, list):
+            raise SessionError("open_paths must be a list")
+        if len(open_values) > MAX_SESSION_DOCUMENTS:
+            raise SessionError(f"session has more than {MAX_SESSION_DOCUMENTS} open documents")
+        open_paths = tuple(
+            _open_path_from_payload(value, workspace_root, index)
+            for index, value in enumerate(open_values)
+        )
+    state = SessionState(workspace_root, active_path, documents, open_paths)
     _validate_state(state)
     return state
+
+
+def _open_path_from_payload(value: Any, root: Path, index: int) -> Path:
+    if not isinstance(value, str):
+        raise SessionError(f"open_paths[{index}] must be a string")
+    return _document_path_from_relative(value, root, f"open_paths[{index}]")
 
 
 def _view_from_payload(payload: Any, root: Path, index: int) -> DocumentViewState:
@@ -255,6 +284,8 @@ def _validate_state(state: SessionState) -> None:
         raise SessionError("workspace root must be an absolute canonical path")
     if len(state.documents) > MAX_SESSION_DOCUMENTS:
         raise SessionError(f"session has more than {MAX_SESSION_DOCUMENTS} documents")
+    if len(state.open_paths) > MAX_SESSION_DOCUMENTS:
+        raise SessionError(f"session has more than {MAX_SESSION_DOCUMENTS} open documents")
 
     paths: set[Path] = set()
     for view in state.documents:
@@ -271,6 +302,22 @@ def _validate_state(state: SessionState) -> None:
         _validate_document_path(state.active_path, root)
         if state.active_path not in paths:
             raise SessionError("active document must have a stored view")
+
+    open_paths: set[Path] = set()
+    for path in state.open_paths:
+        _validate_document_path(path, root)
+        if path in open_paths:
+            raise SessionError(f"duplicate open document path: {path}")
+        if path not in paths:
+            raise SessionError("every open document must have a stored view")
+        open_paths.add(path)
+
+    if state.active_path is None:
+        if open_paths:
+            raise SessionError("open documents require an active document")
+    else:
+        if state.active_path not in open_paths:
+            raise SessionError("active document must be open")
 
 
 def _validate_document_path(path: Path, root: Path) -> None:
