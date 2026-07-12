@@ -28,6 +28,7 @@ dev = [
 
 [project.scripts]
 termwriter = "termwriter.cli:main"
+termwriter-benchmark = "termwriter.benchmark:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
