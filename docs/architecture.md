@@ -19,9 +19,9 @@ Workspace ───── validated paths / scan index ───── File expl
    │
    ▼
 TermWriterApp coordinator
-   │ owns exactly one
+   │ owns ordered live buffers + one active view
    ▼
-Document  ───────── source text ─────────► Markdown preview
+Document tabs ──► active Document ── source text ──► Markdown preview
    ▲  │
    │  └──── cursor / scroll / status ───► Status bar
    │
@@ -35,7 +35,7 @@ TextArea source edits
 
 ## Document source of truth
 
-`models/document.py` defines the active `Document`. It owns:
+`models/document.py` defines one `Document` per open file. Each instance owns:
 
 - canonical workspace path;
 - current source text;
@@ -44,6 +44,7 @@ TextArea source edits
 - UTF-8 versus UTF-8-with-BOM encoding;
 - cursor and scroll coordinates;
 - conflict and last-save status;
+- its mixed-line-ending read-only decision;
 - current line-ending classification and normalization target;
 - whether a draft is journaled or recovered against a conflicting baseline.
 
@@ -51,8 +52,9 @@ TextArea source edits
 an independently mutable flag. Reverting an ordinary edit to the baseline therefore clears dirty
 state without a special code path.
 
-The `TextArea` is the editable view, not a second domain model. Its `Changed` message updates
-`Document.text`; selection changes update cursor and scroll state. Before save or transition,
+The one shared `TextArea` is the active editable view, not a second domain model. Its `Changed`
+message updates only the active `Document.text`; selection changes update that document's cursor and
+scroll state. Before save, tab activation, or a destructive transition,
 the coordinator also reads the widget synchronously so a queued message cannot omit the latest
 keypress.
 
@@ -64,15 +66,15 @@ nonnegative cursor/scroll coordinates. It never stores source text, saved baseli
 or recovery content. The workspace hash keeps filenames opaque; mode-0600 temporary publication,
 `fsync`, and same-directory `os.replace` preserve the previous complete session on write failure.
 
-The app loads session metadata before mounting. An explicit CLI file overrides the stored active
-path; otherwise a valid readable active path is reopened. Document views are ordered most-recently
-used. Ctrl+O opens that persisted order in a keyboard-first `OptionList`; selection enters the same
-guarded transition as the explorer and file search. Each transition caches the outgoing view, the
-incoming document restores its own view, and clean quit persists the latest coordinates. Save As
-moves the cached view to the new path. Missing entries are omitted from the switcher, corrupt session
-JSON is preserved and reported, and normal orphan-recovery scanning still runs after a directory
-session is restored. Concurrent TermWriter instances use last-writer-wins metadata because session
-coordinates are non-authoritative and cannot change Markdown.
+The store rejects files larger than 512 KiB and states with more than 100 document views. The app
+loads metadata in a thread worker at the start of mounting. An explicit CLI file overrides the stored
+active path; otherwise a valid readable active path is reopened. Writes use one in-flight worker and
+one replaceable pending immutable snapshot, so an older thread cannot finish after newer metadata;
+clean quit waits for the queue to drain. Ctrl+O opens the bounded MRU order. Confirmed missing paths
+are pruned after this explicit use, while access failures are retained. Each activation caches the
+outgoing view, and Save As moves the cached view to the new path. Runtime tabs are intentionally not
+reconstructed. Corrupt session JSON is preserved and reported. Concurrent TermWriter instances use
+last-writer-wins metadata because coordinates are non-authoritative and cannot change Markdown.
 
 Textual reconstructs multiline text by preferring CRLF when present, then LF, then CR. TermWriter retains
 both Textual's normalized editor baseline and the exact source represented by that baseline. Merely
@@ -89,11 +91,16 @@ Opening a file is transactional at the application level:
 2. `load_file` reads and decodes the complete file into a temporary `LoadedFile` value.
 3. A valid recovery journal is offered without mutating the loaded disk baseline.
 4. If the selected current source has mixed separators, normalization consent is required.
-5. Only after those decisions does the app replace its active `Document`.
+5. Only after those decisions does the app register and activate the new `Document`.
 6. `TextArea.load_text` runs while `TextArea.Changed` is suppressed and clears prior undo history.
 7. Exact and normalized editor baselines, explorer label, preview revision, focus, and status update.
 
-If loading fails, the previously active document remains in memory.
+If loading fails, every existing buffer remains in memory. Opening or activating another path is
+non-destructive and therefore does not prompt for dirty work. Closing a tab, replacing its source,
+reloading, and quitting remain guarded. Activating a buffer synchronizes the outgoing exact source,
+cursor, and scroll; queues its dirty recovery source immediately; and restores the incoming state.
+The shared `TextArea.load_text()` call clears undo history, so histories cannot cross buffers but also
+do not survive a tab switch in this iteration.
 
 `MarkdownEditor` intercepts Enter only for an empty selection and delegates the source/cursor
 calculation to the pure `services/markdown_continuation.py` function. It continues bullets, ordered
@@ -148,9 +155,9 @@ source coordinates and short line previews, and converts individual read/decode 
 warnings instead of aborting the search. Invalid filters and invalid or oversized regexes become
 result errors before file contents are read. The `regex` engine provides Unicode-aware whole-word
 boundaries, full case folding, GIL-releasing immutable-string searches, and a 50 ms per-line timeout
-for pathological expressions. The active `Document.text` is passed as a fallback: dirty source always
-wins, while a clean document prefers current disk content and still remains searchable if its path
-disappeared.
+for pathological expressions. Every open `Document.text` is passed as an override: dirty or
+conflicted source wins, while a clean document prefers current disk content and still remains
+searchable if its path disappeared.
 
 The modal starts search only when Enter is submitted and runs both the recursive scan and file reads
 through a Textual thread worker. Cancellation is checked between workspace entries, files, source
@@ -162,15 +169,15 @@ canonically decomposes Unicode while retaining original source columns, keeps a 
 scanning, then orders matches globally by subsequence tightness, word boundary, source position,
 line length, path, and line. File search uses
 the same normalized subsequence idea while preserving prefix and substring priority. Selecting a
-different file revalidates its path and enters the same guarded transition used by the explorer and
-file search; a dirty current document therefore still requires Save / Discard / Cancel. A pending
-line/column target survives recovery and mixed-line-ending dialogs and is applied only after the new
-document is installed.
+different file revalidates its path, activates an existing buffer when present, or opens a new tab.
+A pending line/column target survives recovery and mixed-line-ending dialogs and is applied only
+after the target document is installed.
 
 ## Background document I/O
 
 Full Markdown reads, disk probes, content hashes, existing-file publication, Save As publication,
-and orphan-source validation run through explicit Textual thread workers. Workers receive immutable
+session load/save, recovery-journal mutations, and orphan-source validation run through explicit
+Textual thread workers. Workers receive immutable
 paths, source strings, encodings, snapshots, and document tickets; they never mutate `Document` or a
 widget. Expected and unexpected failures are converted into result values, and
 `App.call_from_thread` is the only route back to coordinator callbacks.
@@ -294,9 +301,13 @@ personal files.
 
 `TermWriterApp` schedules a nominal 500 ms deadline after the first dirty edit. Later edits update
 the in-memory payload without moving that deadline, so sustained typing does not reset the timer.
-Synchronous work that blocks Textual's event loop can still delay callback execution.
-Successful Markdown saves, explicit discards, and reloads delete the entry. The status bar shows
-`RECOVERY STORED` only after journal publication succeeds.
+Tab deactivation queues its exact dirty source immediately. One non-exclusive thread-worker pipeline
+serializes SAVE and DELETE tickets: pending saves for a path coalesce to the newest source, while a
+DELETE removes queued saves and forms an ordering barrier behind any in-flight publication. A save
+completion marks `recovery_saved` only when its document identity, path, exact source, encoding, and
+baseline still match. Successful Markdown saves, explicit discards, and reloads wait for ordered
+cleanup before continuing. The status bar shows `RECOVERY STORED` only after a current publication
+succeeds.
 
 On open, Restore draft keeps the freshly loaded Markdown source as `saved_text` and installs the
 journal source as current `text`, so dirty state remains derived rather than forced. If the journal's
@@ -313,6 +324,11 @@ recovery. Restoring one installs an unavailable-path conflict: Ctrl+S cannot rec
 original name, while Save As can publish a new workspace-relative copy. Entries belonging to another
 workspace are ignored.
 
+Every successful publication returns an exact content fingerprint. Cleanup acquires the same
+per-journal lock and deletes only that observed version; a newer or newly appeared journal is
+preserved and reported instead. This avoids a canceled or delayed worker deleting another instance's
+newer draft.
+
 The command-palette recovery manager inventories journals in a worker and returns structured
 `RecoveryRecord` values. Valid records are filtered to the current workspace; corrupt records stay
 visible because their metadata cannot be trusted enough to associate them. A fingerprint binds every
@@ -322,8 +338,8 @@ rule to preserve exact bytes under `quarantine/` before removing the active entr
 inventory retains corrupt entries but only valid trusted entries can be restored. Restore hard-links
 the exact archived bytes back into the active inventory without replacing an existing journal;
 permanent deletion requires a separate confirmation and fingerprints the selected quarantine version
-again. The manager revalidates resolved path containment and rechecks the active dirty document
-immediately before moving, archiving, or restoring a journal.
+again. The manager revalidates resolved path containment and protects every dirty open document
+immediately before moving, archiving, retargeting, or restoring a journal.
 
 A valid quarantined entry may also be exported to a new workspace-contained Markdown path. Export
 re-verifies the listed fingerprint, preserves the stored UTF-8/UTF-8-SIG source exactly, uses the
@@ -350,7 +366,8 @@ permissions.
 - `CONFLICT`: disk and local document both changed;
 - `INACCESSIBLE`: the current disk state cannot be established.
 
-Checks run before save, before guarded file/quit transitions, on `AppFocus`, and every two seconds
+Checks run before save, before guarded close/quit transitions, when a tab is reactivated, on
+`AppFocus`, and every two seconds
 through Textual's interval timer. Probing occurs in a worker and classification occurs against the
 latest UI-thread document state. The watcher path never opens a modal: it reloads a clean external
 edit, or marks dirty/deleted/inaccessible state as a persistent conflict with one warning. Polling
@@ -361,7 +378,7 @@ The `TermWriterApp` coordinator owns pending transition and save continuations. 
 implement these paths:
 
 ```text
-dirty open/quit ──► Save ──► save succeeds ──► continue
+dirty close/reload/quit ──► Save ──► save succeeds ──► continue
         │             └────► conflict ───────► Save As / Reload / Cancel
         ├────────► Discard ──────────────────► continue
         └────────► Cancel ───────────────────► stay
@@ -375,7 +392,8 @@ user may save that copy under a new name, explicitly continue without it, or can
 ## Widget/domain limits
 
 - Widgets render state and emit Textual messages.
-- `TermWriterApp` coordinates one active document and user decisions.
+- `TermWriterApp` owns ordered live `Document` buffers, coordinates one active view, and resolves
+  user decisions.
 - `Document` and `Workspace` contain state/invariants without Textual imports.
 - Persistence and external-change modules perform filesystem work without UI calls.
 - File search fuzzy-ranks only the scanner's validated in-process index and has no `ripgrep`
@@ -383,16 +401,18 @@ user may save that copy under a new name, explicitly continue without it, or can
 - Text search and document content I/O use thread workers and never invoke workspace commands.
 - Configuration contains data only; document/workspace contents never define commands or CSS.
 
-Recovery-journal writes and workspace-index scans remain synchronous and may briefly block the UI for
-an unusually large dirty document or workspace. Markdown document hashing, stable reads, reloads, and
-publication are worker-backed; generation tickets and critical-operation locks preserve callback
-ordering and conflict checks.
+Workspace-index scans and individual recovery-entry reads during opening remain synchronous and may
+briefly block the UI for an unusually large workspace or journal. Markdown hashing, stable reads,
+reloads, publication, session I/O, and recovery mutation are worker-backed; generation tickets,
+immutable mutation payloads, and critical-operation locks preserve callback ordering and conflict
+checks.
 
 ## Textual API baseline
 
 The implementation targets Textual 8.2.8 and relies on documented APIs:
 
 - [`TextArea`](https://textual.textualize.io/widgets/text_area/)
+- [`Tabs`](https://textual.textualize.io/widgets/tabs/)
 - [`Markdown`](https://textual.textualize.io/widgets/markdown/)
 - [`mdit-py-plugins`](https://mdit-py-plugins.readthedocs.io/en/latest/)
 - [`regex`](https://pypi.org/project/regex/)

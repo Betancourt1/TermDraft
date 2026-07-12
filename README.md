@@ -12,14 +12,15 @@ The current release is a functional MVP focused on a dependable writing loop:
 - search source text across the workspace without an external command;
 - search commands from a palette;
 - customize editor options, keybindings, and Textual CSS without reinstalling;
-- reopen the last workspace document, remember per-file views, and switch through a persisted MRU list;
+- keep several independently dirty documents open in guarded tabs;
+- reopen the last workspace document, remember per-file views, and switch through a bounded MRU list;
 - export quarantined recovery drafts and explicitly clean confirmed entries past a configured age;
 - traverse rendered headings from the keyboard with a visible level and position announcement;
 - save through a same-directory temporary file;
 - keep an atomic per-user crash-recovery journal for dirty source;
 - poll the active file for external changes while the application is running;
 - require consent before editing a file with mixed line endings;
-- require an explicit decision before leaving unsaved work.
+- require an explicit decision before closing, reloading, or replacing unsaved work.
 
 Future WYSIWYM block editing is designed in
 [`docs/semantic-editing.md`](docs/semantic-editing.md), but it is intentionally not implemented.
@@ -28,6 +29,7 @@ Future WYSIWYM block editing is designed in
 
 ```text
 ┌ TermWriter · ~/notes ────────────────────────────────────────────────────────┐
+│ journal/2026-07-11.md │ ● projects/termwriter.md                            │
 │ Files                    │ Markdown source            │ Rendered preview     │
 │  journal/                │ # Friday                   │ Friday               │
 │   2026-07-11.md          │                            │                      │
@@ -177,6 +179,9 @@ quit = "ctrl+q"
 toggle_explorer = "ctrl+b"
 find_file = "ctrl+p"
 recent_documents = "ctrl+o"
+next_tab = "ctrl+pagedown"
+previous_tab = "ctrl+pageup"
+close_tab = "ctrl+f4"
 search_text = "ctrl+shift+f"
 toggle_preview = "ctrl+e"
 preview_next_heading = "alt+down"
@@ -218,6 +223,8 @@ TermWriter is already running, restart once so it can be added to the watched st
 | Ctrl+B | Show or hide the file explorer |
 | Ctrl+P | Find and open a workspace Markdown file |
 | Ctrl+O | Open the recent-document switcher |
+| Ctrl+PageDown / Ctrl+PageUp | Activate next / previous open document tab |
+| Ctrl+F4 | Close the active tab through the safety guard |
 | Ctrl+Shift+F | Search workspace Markdown source |
 | Ctrl+E | Show/hide preview, or switch editor/preview when narrow |
 | Alt+Down / Alt+Up in preview | Select next / previous rendered heading |
@@ -237,29 +244,33 @@ task, or blockquote, Enter inserts the next marker; Enter on an empty marker end
 Workspace text search runs only after Enter is pressed in its dialog. Choose literal, whole-word, or
 regular-expression matching, or fuzzy subsequence ranking; optionally match case and restrict paths
 with comma-separated workspace-relative includes and `!` exclusions such as
-`notes/**/*.md, !notes/archive/**`. Results are capped at 100 matching lines and include the active
-document's unsaved source. Selecting another file still passes through Save / Discard / Cancel
-before leaving dirty work. Ctrl+P uses the same compound filter syntax and fuzzy-ranks abbreviated
-path queries.
+`notes/**/*.md, !notes/archive/**`. Results are capped at 100 matching lines and include unsaved
+source from every open tab. Selecting a result activates an existing tab or opens a new one without
+discarding the current buffer. Ctrl+P uses the same compound filter syntax and fuzzy-ranks
+abbreviated path queries.
 
 ## Data-safety behavior
 
-`Document` is the in-memory source of truth for the active file. The preview never writes back to
-the editor or model.
+Each open file has one live `Document` that remains its in-memory source of truth. One document is
+active in the shared editor and preview; neither rendered output nor tab widgets write source back to
+the model.
 
 Workspace session JSON stores only the last active Markdown path and per-document cursor/scroll
-coordinates. Opening a directory restores the last active readable file; an explicit CLI file takes
-precedence. Views are stored in most-recently-used order; Ctrl+O presents that order and still routes
-selection through Save / Discard / Cancel. Positions for other visited files are restored when those
-files are reopened. Session
-state is atomically replaced outside the workspace and never contains Markdown source. Missing or
-corrupt session state cannot prevent the workspace from opening; missing state is silent and corrupt
-state produces a warning.
+coordinates. It is limited to 100 document views and 512 KiB. Loading and serialized, coalesced
+writes run in workers; clean quit waits for the newest queued snapshot. Opening a directory restores
+the last active readable file, while an explicit CLI file takes precedence. Ctrl+O presents the
+most-recently-used order. Confirmed missing entries are pruned when that switcher is opened;
+temporarily inaccessible entries are retained. Positions are restored when files are opened again,
+but the full runtime tab set is not reconstructed. Session state is atomically replaced outside the
+workspace and never contains Markdown source. Missing or corrupt state cannot prevent startup.
 
 The first dirty edit schedules a recovery write for 500 ms later; continued typing updates the
-pending payload without postponing that deadline. Each JSON entry is mode 0600, written through
-a same-directory temporary file, flushed, replaced, and followed by a directory `fsync`. On the next
-open, TermWriter offers Restore draft / Use disk version / Cancel opening. A recovered draft whose
+pending payload without postponing that deadline. Publications and deletions run through one ordered
+background queue. Pending saves coalesce to the newest exact source, while deletion is an ordering
+barrier and removes only the journal fingerprint that TermWriter observed. Each JSON entry is mode
+0600, written through a same-directory temporary file, flushed, replaced, and followed by a
+directory `fsync`. On the next open, TermWriter offers Restore draft / Use disk version / Cancel
+opening. A recovered draft whose
 saved baseline no longer matches disk is marked as a conflict and cannot be written over the Markdown
 path with Ctrl+S; it must be saved under another name or the disk version must be reloaded. Successful
 saves and explicit discards remove the journal entry.
@@ -280,8 +291,8 @@ active draft. **Export copy** publishes the archived source as a new no-clobber 
 keeping the quarantine intact. **Delete expired** considers only valid quarantined entries older than
 `recovery.retention_days`, lists and confirms the exact path inventory, and reports every failure;
 nothing expires automatically. **Delete forever** requires a separate irreversible confirmation and
-also handles corrupt quarantine entries. The active dirty document's draft cannot be moved,
-archived, or replaced by a quarantine restore.
+also handles corrupt quarantine entries. A draft belonging to any dirty open document cannot be
+moved, archived, retargeted onto, or replaced by a quarantine restore.
 
 An existing file save follows this sequence:
 
@@ -295,8 +306,9 @@ An existing file save follows this sequence:
 8. attempt to `fsync` the parent directory and verify the visible bytes;
 9. only then update the document's saved/dirty state.
 
-Stable document reads, disk probes, all content hashing, atomic publication, Save As, and orphan
-source validation run in Textual thread workers. A completed probe is classified on the UI thread
+Stable document reads, disk probes, all content hashing, atomic publication, Save As, session I/O,
+recovery mutation, and orphan-source validation run in Textual thread workers. A completed probe is
+classified on the UI thread
 against the latest dirty state, so an edit made during a watcher or transition check cannot be
 silently reloaded or left behind. During actual publication the editor is temporarily read-only;
 quit, switching, duplicate saves, and Save As dismissal wait until the non-cancellable writer has
@@ -311,7 +323,9 @@ If both local and disk content changed, the only choices are:
 - explicitly reload the disk version;
 - cancel.
 
-Changing files and quitting use a separate Save / Discard / Cancel guard. Save failures keep the
+Opening or activating another tab preserves the current buffer without prompting. Closing a dirty
+tab, reloading it, replacing its source, and quitting still use Save / Discard / Cancel. Quit checks
+every open document in order, and Cancel stops the entire quit. Save failures keep the affected
 document dirty and stop the requested transition.
 
 If a clean open file disappears or becomes inaccessible, a guarded transition offers Save local as,
@@ -340,18 +354,20 @@ mypy
 The suite covers the document model, UTF-8/BOM/LF/CRLF preservation, mixed-ending consent, empty
 files, missing final newlines, recovery round trips and failures, restart recovery, atomic-save
 failures, metadata and permission bits, watcher reload/conflict/deletion behavior, workspace
-filtering, symlinks, file and workspace-text search, content-free workspace sessions, quarantine
-restore/export/retention/deletion, recent-document switching, heading navigation announcements, CLI
-validation, and Textual Pilot workflows.
+filtering, symlinks, file and workspace-text search, bounded content-free workspace sessions,
+quarantine restore/export/retention/deletion, independent document tabs, heading navigation
+announcements, CLI validation, and Textual Pilot workflows.
 Customization tests also exercise remapped keys, runtime TOML reload, user-TCSS precedence, command
 discovery, task continuation, termination, and undo grouping. Race-focused worker tests block probes,
-loads, saves, and Save As publication to verify UI responsiveness, stale-result rejection, conflict
-preservation, and non-cancellable writer locking.
+loads, saves, session writes, recovery publication, and Save As publication to verify UI
+responsiveness, ordered cleanup, stale-result rejection, conflict preservation, and non-cancellable
+writer locking.
 
 ## Known limitations
 
-- One document is active at a time. The recent switcher remembers views but does not keep multiple
-  live buffers or provide tabs.
+- Tabs keep multiple live buffers only for the current run; restart restores the last active file and
+  MRU views, not the complete tab set. Tabs share one public Textual `TextArea`, whose documented
+  `load_text()` behavior clears undo history, so undo history resets when switching tabs.
 - Recovery has a nominal 500 ms first-write delay. Termination before the timer runs, a blocked event
   loop, or a failed journal write can lose the latest unsaved keystrokes. It is not version history,
   a backup, or an autosave of the Markdown path. Recovery entries contain the draft's plaintext
@@ -384,9 +400,10 @@ preservation, and non-cancellable writer locking.
   hostile process swapping intermediate path components during the initial open or a new Save As.
   Existing-file saves additionally compare file and parent identities and keep all temporary,
   cleanup, and replacement operations attached to the opened parent directory.
-- Session metadata is last-writer-wins between concurrent TermWriter instances. Missing or renamed
-  paths remain harmless stale view entries because automatic pruning is not implemented yet.
-- Heading navigation emits a visible Textual notification and prioritized status text. TermWriter
+- Session metadata is last-writer-wins between concurrent TermWriter instances. Ctrl+O prunes only
+  paths confirmed missing; entries that are temporarily inaccessible remain until they can be
+  classified safely.
+- Heading navigation emits prioritized status text. TermWriter
   does not currently integrate a native screen-reader announcement API, so it does not claim
   assistive-technology support beyond those terminal-visible cues.
 - Preview links are deliberately non-opening. Raw document HTML, JavaScript, and shell text are not
@@ -407,17 +424,15 @@ preservation, and non-cancellable writer locking.
   returns an error instead of results.
 - Thread workers cannot stop an in-progress operating-system read or write. TermWriter ignores stale
   read/probe results; an atomic writer is deliberately allowed to finish while the UI stays locked.
-- Recovery-journal publication and workspace index refreshes remain synchronous. Journal locking
-  can also wait briefly for another TermWriter process. These operations can pause input for an
-  unusually large dirty document or workspace even though Markdown-file hashing and publication now
-  run outside the UI thread.
+- Workspace index refreshes and individual recovery-entry reads during document opening remain
+  synchronous. They can pause input for an unusually large workspace or recovery journal. Recovery
+  publication, deletion, and advisory-lock waits run outside the UI thread.
 
 ## Near-term roadmap
 
-1. Add optional tabs with independent guarded buffers, while keeping Markdown files authoritative.
-2. Bound and asynchronously load session metadata, and prune stale MRU paths after explicit use.
-3. Move recovery-journal publication off the UI thread without widening the crash-loss window.
-4. Prototype read-only semantic block mapping before attempting hybrid block editing.
+1. Give each tab independent editor undo history and optionally restore the previous runtime tab set.
+2. Move workspace indexing and recovery-entry reads fully off the UI thread.
+3. Prototype read-only semantic block mapping before attempting hybrid block editing.
 
 Implementation boundaries and tradeoffs are documented in
 [`docs/architecture.md`](docs/architecture.md).
