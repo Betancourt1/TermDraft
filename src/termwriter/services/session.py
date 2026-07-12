@@ -172,7 +172,7 @@ def _serialize(state: SessionState) -> bytes:
 def _state_from_bytes(data: bytes) -> SessionState:
     try:
         payload = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    except ValueError as error:
         raise SessionError(f"invalid UTF-8 JSON: {error}") from error
     return _state_from_payload(payload)
 
