@@ -214,19 +214,23 @@ class MarkdownPreview(Markdown):
         """Select the next rendered heading, stopping at the final heading."""
         if not self._headings:
             return
+        if self._selected_heading == len(self._headings) - 1:
+            return
         index = 0 if self._selected_heading is None else self._selected_heading + 1
-        self._select_heading(min(index, len(self._headings) - 1))
+        self._select_heading(index)
 
     def action_select_previous_heading(self) -> None:
         """Select the previous rendered heading, stopping at the first heading."""
         if not self._headings:
+            return
+        if self._selected_heading == 0:
             return
         index = (
             len(self._headings) - 1
             if self._selected_heading is None
             else self._selected_heading - 1
         )
-        self._select_heading(max(index, 0))
+        self._select_heading(index)
 
     def on_blur(self) -> None:
         """Remove keyboard selection when focus leaves the preview."""

@@ -49,6 +49,7 @@ DEFAULT_KEYBINDINGS: Mapping[str, str] = MappingProxyType(
     }
 )
 KNOWN_BINDING_IDS = frozenset(DEFAULT_KEYBINDINGS)
+RESERVED_PREVIEW_KEYS = frozenset({"tab", "shift+tab", "enter"})
 
 _CHARACTER_KEY_REPLACEMENTS = {
     "solidus": "slash",
@@ -82,6 +83,7 @@ retention_days = 30
 # toggle_preview = "ctrl+e"
 # preview_next_heading = "alt+down"
 # preview_previous_heading = "alt+up"
+# Tab, Shift+Tab, and Enter remain reserved for preview link controls.
 # undo = "ctrl+z,super+z"
 # redo = "ctrl+y,super+y,ctrl+shift+z"
 # show_help = "f1"
@@ -269,6 +271,8 @@ def _parse_keybindings(raw_keybindings: object) -> Mapping[str, str]:
     for binding_id, binding in effective.items():
         for token in binding.split(","):
             collision_token = _normalized_character_key(token)
+            if collision_token.casefold() in RESERVED_PREVIEW_KEYS:
+                raise ConfigError(f"key {token!r} is reserved for preview link controls")
             previous_id = used_tokens.get(collision_token)
             if previous_id is not None:
                 raise ConfigError(

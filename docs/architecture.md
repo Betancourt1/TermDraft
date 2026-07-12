@@ -132,8 +132,9 @@ Heading navigation is independent of link navigation. After a successful render,
 `MarkdownPreview` indexes Textual's public `table_of_contents` against its mounted blocks. Alt+Down
 and Alt+Up select and scroll headings only while the preview owns focus. A typed `HeadingFocused`
 message carries level, label, one-based position, and total to the app. The app prioritizes that text
-in the status bar and emits a normal Textual notification. This is a terminal-visible cue, not a
-claim of native screen-reader integration. A failed render clears both link and heading indexes
+in the persistent status bar. This is a terminal-visible cue, not a claim of native screen-reader
+integration. Boundary presses are inert, so key repeat does not flood the interface. A failed
+render clears both link and heading indexes
 before returning, so detached blocks cannot remain keyboard-actionable.
 
 ## Workspace text search

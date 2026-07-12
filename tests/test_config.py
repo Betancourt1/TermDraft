@@ -163,6 +163,19 @@ def test_duplicate_character_aliases_are_rejected(tmp_path: Path) -> None:
         load_config(root)
 
 
+@pytest.mark.parametrize("binding", ["tab", "shift+tab", "enter", "TAB"])
+def test_preview_link_control_keys_are_reserved(tmp_path: Path, binding: str) -> None:
+    root = tmp_path / ".termwriter"
+    root.mkdir()
+    (root / CONFIG_FILE_NAME).write_text(
+        f'[keybindings]\npreview_next_heading = "{binding}"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="reserved for preview link controls"):
+        load_config(root)
+
+
 def test_invalid_toml_and_unreadable_shape_raise_clear_errors(tmp_path: Path) -> None:
     root = tmp_path / ".termwriter"
     root.mkdir()

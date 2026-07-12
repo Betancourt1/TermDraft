@@ -662,3 +662,30 @@ async def test_heading_navigation_is_inert_without_rendered_headings() -> None:
 
         assert app.heading_events == []
         assert not preview.query(".keyboard-heading-selected")
+
+
+async def test_heading_navigation_does_not_repeat_events_at_boundaries() -> None:
+    class PreviewApp(App[None]):
+        def __init__(self) -> None:
+            super().__init__()
+            self.positions: list[int] = []
+
+        def compose(self) -> ComposeResult:
+            yield MarkdownPreview()
+
+        def on_markdown_preview_heading_focused(
+            self, event: MarkdownPreview.HeadingFocused
+        ) -> None:
+            self.positions.append(event.position)
+
+    app = PreviewApp()
+    async with app.run_test() as pilot:
+        preview = app.query_one(MarkdownPreview)
+        await preview.render_source("# First\n\n## Second\n")
+        preview.focus()
+
+        await pilot.press("alt+down", "alt+down", "alt+down")
+        assert app.positions == [1, 2]
+
+        await pilot.press("alt+up", "alt+up")
+        assert app.positions == [1, 2, 1]

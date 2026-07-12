@@ -513,7 +513,6 @@ class TermWriterApp(App[None]):
         announcement = f"H{event.level} {event.position}/{event.total} · {event.label}"
         self._preview_heading_announcement = announcement
         self._refresh_status()
-        self.notify(escape(announcement), title="Preview heading")
 
     def _request_open(self, path: Path) -> None:
         try:

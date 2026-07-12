@@ -139,8 +139,8 @@ Clicking a footnote label scrolls to its definition; `↩` returns to the most r
 reference for that note. Esc leaves the indentation-enabled source editor for the next visible
 control; Ctrl+E toggles the preview and focuses it when shown. Once the preview has focus,
 Tab/Shift+Tab select links and Enter activates the selection. Internal footnotes navigate; external
-URLs remain inert. Alt+Down and Alt+Up move through rendered headings and temporarily show the
-selected heading's level and position in the status bar and a Textual notification.
+URLs remain inert. Alt+Down and Alt+Up move through rendered headings and show the selected
+heading's level and position in the persistent status bar without stacking notifications.
 Unreferenced definitions are omitted by the footnote parser, and definition lists
 use bold terms plus quoted bodies rather than a dedicated `<dl>` layout. Alerts use a conservative
 titled-blockquote presentation rather than GitHub's color and icon treatment. Math, underline,
@@ -186,6 +186,8 @@ redo = "ctrl+y,super+y,ctrl+shift+z"
 show_help = "f1"
 command_palette = "ctrl+backslash"
 ```
+
+Tab, Shift+Tab, and Enter are reserved for preview link navigation and cannot be reassigned.
 
 Use **Reload configuration** from the command palette after editing `config.toml`. Help is generated
 from the effective map, so it reflects remapped keys. Duplicate keys, unknown IDs/options, invalid
