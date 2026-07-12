@@ -211,6 +211,29 @@ async def test_switch_and_clean_quit_persist_multiple_document_views(tmp_path: P
         assert restored.editor.scroll_offset.y == 8
 
 
+async def test_search_result_location_is_persisted_before_clean_quit(tmp_path: Path) -> None:
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("\n".join(f"second {index}" for index in range(40)), encoding="utf-8")
+    store = SessionStore(tmp_path / "sessions")
+    app = app_for_file(first, session_store=store)
+
+    async with app.run_test(size=(100, 16)) as pilot:
+        app._request_open_at(second, 30, 4)
+        for _ in range(100):
+            if app.document is not None and app.document.path == second:
+                break
+            await pilot.pause(0.01)
+
+        assert app.editor.cursor_location == (30, 4)
+        state = store.load(tmp_path).state
+        assert state is not None
+        view = state.view_for(second)
+        assert view is not None
+        assert (view.line, view.column) == (30, 4)
+
+
 async def test_edit_marks_dirty_updates_preview_and_save_updates_file(tmp_path: Path) -> None:
     path = tmp_path / "note.md"
     path.write_text("Hello", encoding="utf-8")

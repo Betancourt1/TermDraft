@@ -1004,6 +1004,13 @@ class TermWriterApp(App[None]):
         self._pending_open_location = None
         if target is not None and target[0] == document.path:
             self.editor.move_cursor((target[1], target[2]), center=True)
+            line, column = self.editor.cursor_location
+            document.update_cursor(
+                line,
+                column,
+                scroll_x=float(self.editor.scroll_offset.x),
+                scroll_y=float(self.editor.scroll_offset.y),
+            )
         else:
             view = self._session_views.get(document.path)
             if view is not None:
