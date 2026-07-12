@@ -127,11 +127,11 @@ ModalScreen {
 }
 
 #recovery-manager-buttons {
-    height: 7;
+    height: 6;
     grid-size: 2 2;
     grid-columns: 1fr 1fr;
     grid-rows: 3 3;
-    grid-gutter: 1;
+    grid-gutter: 0 1;
 }
 
 #recovery-manager-buttons Button {

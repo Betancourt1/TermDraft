@@ -1341,7 +1341,7 @@ async def test_recovery_manager_archives_corrupt_entry_without_changing_bytes(
         await pilot.click("#recovery-manager-archive")
         quarantine_path = journal.state_root / "quarantine" / corrupt_path.name
         for _ in range(100):
-            if quarantine_path.exists():
+            if quarantine_path.exists() and not corrupt_path.exists():
                 break
             await pilot.pause(0.01)
 
