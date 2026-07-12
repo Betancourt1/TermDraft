@@ -614,7 +614,11 @@ class TextSearchDialog(ModalScreen[TextSearchMatch | None]):
                 placeholder="Includes/excludes, e.g. notes/**/*.md, !notes/drafts/**",
                 id="text-search-filter",
             )
-            yield Static("Enter a query to search Markdown source.", id="text-search-status")
+            yield Static(
+                "Enter a query to search Markdown source.",
+                id="text-search-status",
+                markup=False,
+            )
             yield OptionList(id="text-search-results", markup=False)
 
     def on_mount(self) -> None:

@@ -222,6 +222,24 @@ async def test_text_search_dialog_reports_invalid_compound_filter(tmp_path: Path
         assert "Invalid file filter" in str(status.render())
 
 
+async def test_text_search_dialog_renders_filter_errors_as_plain_text(tmp_path: Path) -> None:
+    path = tmp_path / "active.md"
+    path.write_text("needle", encoding="utf-8")
+    app = _app(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("ctrl+shift+f")
+        assert isinstance(app.screen, TextSearchDialog)
+        app.screen.query_one("#text-search-filter", Input).value = "/[/]"
+        app.screen.query_one("#text-search-input", Input).value = "needle"
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+
+        status = app.screen.query_one("#text-search-status", Static)
+        assert "Invalid file filter" in str(status.render())
+        assert "/[/]" in str(status.render())
+
+
 async def test_text_search_options_remain_visible_in_a_narrow_terminal(
     tmp_path: Path,
 ) -> None:

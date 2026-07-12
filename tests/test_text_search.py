@@ -541,6 +541,57 @@ def test_fuzzy_text_search_preserves_unicode_source_column(tmp_path: Path) -> No
     assert [(match.line, match.column) for match in result.matches] == [(0, 6)]
 
 
+def test_fuzzy_text_search_matches_canonically_equivalent_unicode(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "unicode.md"
+    path.write_text("Prefix Cafe\N{COMBINING ACUTE ACCENT} notes\n", encoding="utf-8")
+
+    result = search_text(
+        (path,),
+        "CAFÉ",
+        options=TextSearchOptions(mode=TextSearchMode.FUZZY),
+    )
+
+    assert [(match.line, match.column) for match in result.matches] == [(0, 7)]
+
+
+def test_fuzzy_text_search_checks_cancellation_within_a_source_line(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "long.md"
+    path.write_text("a" * 10_000 + "!", encoding="utf-8")
+    loaded = False
+    checks_after_load = 0
+    safe_load = load_file
+
+    def tracked_load(source_path: Path) -> LoadedFile:
+        nonlocal loaded
+        result = safe_load(source_path)
+        loaded = True
+        return result
+
+    def cancel_during_line() -> bool:
+        nonlocal checks_after_load
+        if not loaded:
+            return False
+        checks_after_load += 1
+        return checks_after_load >= 4
+
+    monkeypatch.setattr("termwriter.services.text_search.load_file", tracked_load)
+
+    result = search_text(
+        (path,),
+        "a" * 500 + "z",
+        should_cancel=cancel_during_line,
+        options=TextSearchOptions(mode=TextSearchMode.FUZZY),
+    )
+
+    assert checks_after_load >= 4
+    assert result.matches == ()
+
+
 def test_fuzzy_text_search_respects_case_sensitive_option(tmp_path: Path) -> None:
     path = tmp_path / "case.md"
     path.write_text("Alpha Beta\n", encoding="utf-8")

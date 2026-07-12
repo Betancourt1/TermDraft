@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unicodedata
+from collections import defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -121,7 +122,16 @@ def search_text(
     fuzzy_matches: list[tuple[tuple[int, int, int, int, str, str, int, int], TextSearchMatch]] = []
     warnings: list[str] = []
     fuzzy_mode = options.mode is TextSearchMode.FUZZY
-    fuzzy_needle = query if options.case_sensitive else query.casefold()
+    fuzzy_needle = ""
+    if fuzzy_mode:
+        transformed_query = _fuzzy_form_with_columns(
+            query,
+            case_sensitive=options.case_sensitive,
+            should_cancel=should_cancel,
+        )
+        if transformed_query is None:
+            return TextSearchResult((), ())
+        fuzzy_needle = transformed_query[0]
     for path in ordered_paths:
         if should_cancel is not None and should_cancel():
             break
@@ -160,7 +170,10 @@ def search_text(
                     line,
                     fuzzy_needle,
                     case_sensitive=options.case_sensitive,
+                    should_cancel=should_cancel,
                 )
+                if should_cancel is not None and should_cancel():
+                    break
                 if fuzzy_match is None:
                     continue
                 column = fuzzy_match.column
@@ -279,19 +292,29 @@ def _fuzzy_line_match(
     needle: str,
     *,
     case_sensitive: bool,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> _FuzzyLineMatch | None:
-    if case_sensitive:
-        haystack = line
-        source_columns = list(range(len(line)))
-    else:
-        haystack, source_columns = _casefold_with_columns(line)
+    transformed = _fuzzy_form_with_columns(
+        line,
+        case_sensitive=case_sensitive,
+        should_cancel=should_cancel,
+    )
+    if transformed is None:
+        return None
+    haystack, source_columns = transformed
 
     best: _FuzzyLineMatch | None = None
     first = haystack.find(needle[0])
+    candidate_count = 0
     while first >= 0:
+        if candidate_count % 256 == 0 and should_cancel is not None and should_cancel():
+            return None
+        candidate_count += 1
         cursor = first + 1
         last = first
-        for character in needle[1:]:
+        for needle_index, character in enumerate(needle[1:]):
+            if needle_index % 256 == 0 and should_cancel is not None and should_cancel():
+                return None
             last = haystack.find(character, cursor)
             if last < 0:
                 break
@@ -312,6 +335,40 @@ def _fuzzy_line_match(
         first = haystack.find(needle[0], first + 1)
 
     return best
+
+
+def _fuzzy_form_with_columns(
+    value: str,
+    *,
+    case_sensitive: bool,
+    should_cancel: Callable[[], bool] | None = None,
+) -> tuple[str, list[int]] | None:
+    """Normalize fuzzy text canonically while retaining source coordinates."""
+    characters: list[str] = []
+    source_columns: list[int] = []
+    for column, character in enumerate(value):
+        if column % 256 == 0 and should_cancel is not None and should_cancel():
+            return None
+        folded = character if case_sensitive else character.casefold()
+        for normalized_character in unicodedata.normalize("NFD", folded):
+            characters.append(normalized_character)
+            source_columns.append(column)
+
+    intermediate = "".join(characters)
+    normalized = unicodedata.normalize("NFD", intermediate)
+    if normalized == intermediate:
+        return normalized, source_columns
+
+    columns_by_character: dict[str, deque[int]] = defaultdict(deque)
+    for character, column in zip(characters, source_columns, strict=True):
+        columns_by_character[character].append(column)
+
+    normalized_columns: list[int] = []
+    for index, character in enumerate(normalized):
+        if index % 256 == 0 and should_cancel is not None and should_cancel():
+            return None
+        normalized_columns.append(columns_by_character[character].popleft())
+    return normalized, normalized_columns
 
 
 def _logical_lines(text: str) -> list[str]:
