@@ -60,6 +60,13 @@ def test_workspace_rejects_missing_target(tmp_path: Path) -> None:
         Workspace.from_target(tmp_path / "missing")
 
 
+def test_workspace_classifies_a_missing_document_parent_as_not_found(tmp_path: Path) -> None:
+    workspace = Workspace.from_target(tmp_path)
+
+    with pytest.raises(WorkspaceNotFoundError):
+        workspace.validate_document_path(tmp_path / "removed" / "note.md")
+
+
 def test_workspace_rejects_relative_escape(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()

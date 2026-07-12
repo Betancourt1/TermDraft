@@ -115,7 +115,7 @@ async def test_recent_switching_preserves_dirty_source_in_an_open_tab(tmp_path: 
 
 async def test_recent_switcher_skips_missing_session_paths(tmp_path: Path) -> None:
     active = tmp_path / "active.md"
-    missing = tmp_path / "missing.md"
+    missing = tmp_path / "removed" / "missing.md"
     active.write_text("active", encoding="utf-8")
     store = SessionStore(tmp_path / "sessions")
     store.save(

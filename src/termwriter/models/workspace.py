@@ -142,6 +142,10 @@ class Workspace:
             raise UnsafePathError(f"Symbolic links are not supported: {candidate}")
         try:
             candidate = candidate.parent.resolve(strict=True) / candidate.name
+        except FileNotFoundError as error:
+            raise WorkspaceNotFoundError(
+                f"Parent directory no longer exists: {candidate.parent}"
+            ) from error
         except OSError as error:
             raise WorkspaceAccessError(
                 f"Cannot access parent directory: {candidate.parent}"
@@ -166,6 +170,10 @@ class Workspace:
 
         try:
             resolved_parent = candidate.parent.resolve(strict=True)
+        except FileNotFoundError as error:
+            raise WorkspaceNotFoundError(
+                f"Parent directory no longer exists: {candidate.parent}"
+            ) from error
         except OSError as error:
             raise WorkspaceAccessError(
                 f"Cannot access parent directory: {candidate.parent}"
