@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from stat import S_ISREG
+from stat import S_ISDIR, S_ISREG
 from typing import Any
 
 if sys.platform == "win32":  # pragma: no cover - exercised on Windows
@@ -58,6 +58,7 @@ class RecoveryRecord:
     fingerprint: str
     entry: RecoveryEntry | None = None
     error: str | None = None
+    quarantined: bool = False
 
     @property
     def is_corrupt(self) -> bool:
@@ -225,8 +226,34 @@ class RecoveryJournal:
             and (expected_root is None or record.entry.workspace_root == expected_root)
         )
 
+    def list_quarantined(
+        self,
+        workspace_root: Path | None = None,
+    ) -> tuple[RecoveryRecord, ...]:
+        """List quarantined journals, including corrupt entries."""
+        quarantine_root = self._validated_quarantine_root(create=False)
+        if quarantine_root is None:
+            return ()
+        try:
+            journal_paths = sorted(quarantine_root.glob("*.json"))
+        except OSError as error:
+            raise RecoveryError(f"Cannot scan recovery quarantine: {error}") from error
+        records = tuple(
+            self._inspect(journal_path, quarantined=True) for journal_path in journal_paths
+        )
+        if workspace_root is None:
+            return records
+        expected_root = _absolute_path(workspace_root)
+        return tuple(
+            record
+            for record in records
+            if record.entry is None or record.entry.workspace_root == expected_root
+        )
+
     def delete_record(self, record: RecoveryRecord) -> None:
         """Delete exactly the journal version represented by ``record``."""
+        if record.quarantined:
+            raise RecoveryError("Cannot delete a quarantined entry without permanent deletion")
         with self._journal_locks(record.journal_path):
             self._verify_record(record)
             self._unlink_record(record)
@@ -268,16 +295,16 @@ class RecoveryJournal:
 
     def quarantine(self, record: RecoveryRecord) -> Path:
         """Move an unchanged journal aside while preserving its exact bytes."""
+        if record.quarantined:
+            raise RecoveryError("Recovery entry is already quarantined")
         with self._journal_locks(record.journal_path):
             self._verify_record(record)
-            quarantine_root = self.state_root / "quarantine"
-            try:
-                quarantine_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-            except OSError as error:
-                raise RecoveryError(f"Cannot create recovery quarantine: {error}") from error
+            quarantine_root = self._validated_quarantine_root(create=True)
+            assert quarantine_root is not None
             destination = quarantine_root / record.journal_path.name
             try:
                 os.link(record.journal_path, destination, follow_symlinks=False)
+                _sync_directory(quarantine_root)
             except FileExistsError as error:
                 raise RecoveryError(
                     f"Recovery quarantine already contains {destination.name}"
@@ -290,7 +317,6 @@ class RecoveryJournal:
             try:
                 self._verify_record(record)
                 record.journal_path.unlink()
-                _sync_directory(quarantine_root)
                 _sync_directory(self.state_root)
             except (OSError, RecoveryError) as error:
                 if isinstance(error, RecoveryError):
@@ -299,6 +325,51 @@ class RecoveryJournal:
                     f"Cannot finish quarantining {record.journal_path.name}: {error}"
                 ) from error
             return destination
+
+    def restore_quarantined(self, record: RecoveryRecord) -> RecoveryEntry:
+        """Restore an unchanged trusted journal without replacing an active draft."""
+        if not record.quarantined:
+            raise RecoveryError("Recovery entry is not quarantined")
+        with self._journal_locks(record.journal_path):
+            current = self._verify_record(record)
+            if current.entry is None:
+                raise RecoveryError("Cannot restore a corrupt recovery entry")
+
+            destination = self.path_for(current.entry.document_path)
+            try:
+                os.link(record.journal_path, destination, follow_symlinks=False)
+                _sync_directory(self.state_root)
+            except FileExistsError as error:
+                raise RecoveryError(
+                    f"An active recovery entry already exists for {destination.name}"
+                ) from error
+            except OSError as error:
+                raise RecoveryError(
+                    f"Cannot restore quarantined recovery entry {record.journal_path.name}: {error}"
+                ) from error
+
+            quarantine_root = self._validated_quarantine_root(create=False)
+            assert quarantine_root is not None
+            try:
+                self._verify_record(record)
+                record.journal_path.unlink()
+                _sync_directory(quarantine_root)
+            except (OSError, RecoveryError) as error:
+                if isinstance(error, RecoveryError):
+                    raise
+                raise RecoveryError(
+                    f"Recovery entry was restored, but its quarantine copy could not be "
+                    f"removed: {error}"
+                ) from error
+            return current.entry
+
+    def delete_quarantined(self, record: RecoveryRecord) -> None:
+        """Permanently delete exactly the quarantined version represented by ``record``."""
+        if not record.quarantined:
+            raise RecoveryError("Recovery entry is not quarantined")
+        with self._journal_locks(record.journal_path):
+            self._verify_record(record)
+            self._unlink_record(record)
 
     def delete(self, document_path: Path) -> None:
         """Delete a recovery journal after a successful save or explicit discard."""
@@ -318,7 +389,12 @@ class RecoveryJournal:
                 f"Recovery journal was deleted, but its directory could not be synced: {error}"
             ) from error
 
-    def _inspect(self, journal_path: Path) -> RecoveryRecord:
+    def _inspect(
+        self,
+        journal_path: Path,
+        *,
+        quarantined: bool = False,
+    ) -> RecoveryRecord:
         try:
             if journal_path.is_symlink() or not journal_path.is_file():
                 raise RecoveryError("Recovery entry is not a regular file")
@@ -328,25 +404,46 @@ class RecoveryJournal:
                 journal_path,
                 _path_fingerprint(journal_path),
                 error=str(error),
+                quarantined=quarantined,
             )
 
         fingerprint = _fingerprint(data)
         try:
             entry = _entry_from_bytes(data, journal_path.name)
-            if self.path_for(entry.document_path) != journal_path:
+            expected_path = self.path_for(entry.document_path)
+            path_matches = (
+                expected_path.name == journal_path.name
+                if quarantined
+                else expected_path == journal_path
+            )
+            if not path_matches:
                 raise RecoveryError("Recovery journal filename does not match its document")
-            return RecoveryRecord(journal_path, fingerprint, entry=entry)
+            return RecoveryRecord(
+                journal_path,
+                fingerprint,
+                entry=entry,
+                quarantined=quarantined,
+            )
         except RecoveryError as error:
             return RecoveryRecord(
                 journal_path,
                 fingerprint,
                 error=str(error),
+                quarantined=quarantined,
             )
 
     def _verify_record(self, record: RecoveryRecord) -> RecoveryRecord:
-        if record.journal_path.parent != self.state_root:
-            raise RecoveryError("Recovery entry is outside the recovery directory")
-        current = self._inspect(record.journal_path)
+        expected_parent = self.state_root
+        if record.quarantined:
+            expected_parent = self.state_root / "quarantine"
+            self._validated_quarantine_root(create=False)
+        if record.journal_path.parent != expected_parent:
+            location = "recovery quarantine" if record.quarantined else "recovery directory"
+            raise RecoveryError(f"Recovery entry is outside the {location}")
+        current = self._inspect(
+            record.journal_path,
+            quarantined=record.quarantined,
+        )
         if current.fingerprint != record.fingerprint:
             raise RecoveryError("Recovery entry changed after it was listed")
         return current
@@ -354,13 +451,30 @@ class RecoveryJournal:
     def _unlink_record(self, record: RecoveryRecord) -> None:
         try:
             record.journal_path.unlink()
-            _sync_directory(self.state_root)
+            _sync_directory(record.journal_path.parent)
         except FileNotFoundError as error:
             raise RecoveryError("Recovery entry disappeared after it was listed") from error
         except OSError as error:
             raise RecoveryError(
                 f"Cannot delete recovery entry {record.journal_path.name}: {error}"
             ) from error
+
+    def _validated_quarantine_root(self, *, create: bool) -> Path | None:
+        quarantine_root = self.state_root / "quarantine"
+        if create:
+            try:
+                quarantine_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            except OSError as error:
+                raise RecoveryError(f"Cannot create recovery quarantine: {error}") from error
+        try:
+            metadata = quarantine_root.lstat()
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            raise RecoveryError(f"Cannot inspect recovery quarantine: {error}") from error
+        if not S_ISDIR(metadata.st_mode):
+            raise RecoveryError("Recovery quarantine is not a real directory")
+        return quarantine_root
 
     def _publish_new(self, destination: Path, data: bytes) -> None:
         try:

@@ -478,6 +478,335 @@ def test_quarantine_lock_preserves_replacement_started_after_final_verification(
     assert json.loads(destination.read_text(encoding="utf-8"))["text"] == "older unsaved draft"
 
 
+def test_quarantine_inventory_marks_records_and_filters_trusted_workspaces(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    other_workspace = tmp_path / "other"
+    workspace.mkdir()
+    other_workspace.mkdir()
+    journal = RecoveryJournal(tmp_path / "state")
+    wanted = workspace / "wanted.md"
+    other = other_workspace / "other.md"
+    for document, root in ((wanted, workspace), (other, other_workspace)):
+        journal.save(
+            document_path=document,
+            workspace_root=root,
+            text=document.stem,
+            encoding="utf-8",
+            base_snapshot=FileSnapshot.missing(),
+        )
+        record = next(
+            item
+            for item in journal.list_entries()
+            if item.entry is not None and item.entry.document_path == document
+        )
+        journal.quarantine(record)
+    corrupt_path = journal.state_root / "quarantine" / f"{'f' * 64}.json"
+    corrupt_bytes = b"not UTF-8: \xff\x00"
+    corrupt_path.write_bytes(corrupt_bytes)
+
+    records = journal.list_quarantined(workspace)
+
+    trusted = next(record for record in records if record.entry is not None)
+    corrupt = next(record for record in records if record.entry is None)
+    assert trusted.entry is not None
+    assert trusted.entry.document_path == wanted
+    assert trusted.quarantined
+    assert not trusted.is_corrupt
+    assert corrupt.journal_path == corrupt_path
+    assert corrupt.quarantined
+    assert corrupt.is_corrupt
+    assert corrupt_path.read_bytes() == corrupt_bytes
+    assert all(
+        record.entry is None or record.entry.workspace_root == workspace for record in records
+    )
+
+
+def test_restore_quarantined_preserves_exact_journal_bytes(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    document = workspace / "café 東京.md"
+    journal = RecoveryJournal(tmp_path / "state")
+    saved = journal.save(
+        document_path=document,
+        workspace_root=workspace,
+        text="# Café\r\n\r\n東京\nno final newline",
+        encoding="utf-8-sig",
+        base_snapshot=_BASE_SNAPSHOT,
+    )
+    active_path = journal.path_for(document)
+    original_bytes = active_path.read_bytes()
+    (active_record,) = journal.list_entries(workspace)
+    journal.quarantine(active_record)
+    (quarantined_record,) = journal.list_quarantined(workspace)
+
+    restored = journal.restore_quarantined(quarantined_record)
+
+    assert restored == saved
+    assert active_path.read_bytes() == original_bytes
+    assert journal.load(document) == saved
+    assert journal.list_quarantined() == ()
+
+
+def test_restore_quarantined_never_replaces_an_active_draft(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    document = workspace / "note.md"
+    journal = RecoveryJournal(tmp_path / "state")
+    journal.save(
+        document_path=document,
+        workspace_root=workspace,
+        text="archived draft",
+        encoding="utf-8",
+        base_snapshot=FileSnapshot.missing(),
+    )
+    (active_record,) = journal.list_entries(workspace)
+    quarantine_path = journal.quarantine(active_record)
+    archived_bytes = quarantine_path.read_bytes()
+    journal.save(
+        document_path=document,
+        workspace_root=workspace,
+        text="new active draft",
+        encoding="utf-8",
+        base_snapshot=FileSnapshot.missing(),
+    )
+    active_bytes = journal.path_for(document).read_bytes()
+    (quarantined_record,) = journal.list_quarantined(workspace)
+
+    with pytest.raises(RecoveryError, match="active recovery entry already exists"):
+        journal.restore_quarantined(quarantined_record)
+
+    assert journal.path_for(document).read_bytes() == active_bytes
+    assert quarantine_path.read_bytes() == archived_bytes
+
+
+def test_restore_quarantined_rejects_corrupt_entry_without_creating_active_file(
+    tmp_path: Path,
+) -> None:
+    journal = RecoveryJournal(tmp_path / "state")
+    quarantine_root = journal.state_root / "quarantine"
+    quarantine_root.mkdir(parents=True)
+    corrupt_path = quarantine_root / f"{'e' * 64}.json"
+    corrupt_bytes = b"{not valid JSON}\r\n"
+    corrupt_path.write_bytes(corrupt_bytes)
+    (record,) = journal.list_quarantined()
+
+    with pytest.raises(RecoveryError, match="Cannot restore a corrupt recovery entry"):
+        journal.restore_quarantined(record)
+
+    assert corrupt_path.read_bytes() == corrupt_bytes
+    assert journal.list_entries() == ()
+
+
+def test_restore_quarantined_refuses_entry_changed_after_listing(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    document = workspace / "note.md"
+    journal = RecoveryJournal(tmp_path / "state")
+    journal.save(
+        document_path=document,
+        workspace_root=workspace,
+        text="listed draft",
+        encoding="utf-8",
+        base_snapshot=FileSnapshot.missing(),
+    )
+    (active_record,) = journal.list_entries(workspace)
+    quarantine_path = journal.quarantine(active_record)
+    (record,) = journal.list_quarantined(workspace)
+    replacement_bytes = quarantine_path.read_bytes().replace(b"listed", b"newest")
+    quarantine_path.write_bytes(replacement_bytes)
+
+    with pytest.raises(RecoveryError, match="changed after it was listed"):
+        journal.restore_quarantined(record)
+
+    assert quarantine_path.read_bytes() == replacement_bytes
+    assert journal.list_entries() == ()
+
+
+def test_restore_failure_keeps_quarantined_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    document = workspace / "note.md"
+    journal = RecoveryJournal(tmp_path / "state")
+    journal.save(
+        document_path=document,
+        workspace_root=workspace,
+        text="keep me",
+        encoding="utf-8",
+        base_snapshot=FileSnapshot.missing(),
+    )
+    (active_record,) = journal.list_entries(workspace)
+    quarantine_path = journal.quarantine(active_record)
+    quarantined_bytes = quarantine_path.read_bytes()
+    (record,) = journal.list_quarantined(workspace)
+
+    def broken_link(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise OSError("injected restore failure")
+
+    monkeypatch.setattr("termwriter.services.recovery.os.link", broken_link)
+
+    with pytest.raises(RecoveryError, match="injected restore failure"):
+        journal.restore_quarantined(record)
+
+    assert quarantine_path.read_bytes() == quarantined_bytes
+    assert journal.list_entries() == ()
+
+
+def test_restore_sync_failure_leaves_two_exact_safe_copies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    document = workspace / "note.md"
+    journal = RecoveryJournal(tmp_path / "state")
+    journal.save(
+        document_path=document,
+        workspace_root=workspace,
+        text="keep me",
+        encoding="utf-8",
+        base_snapshot=FileSnapshot.missing(),
+    )
+    (active_record,) = journal.list_entries(workspace)
+    quarantine_path = journal.quarantine(active_record)
+    quarantined_bytes = quarantine_path.read_bytes()
+    (record,) = journal.list_quarantined(workspace)
+
+    def broken_sync(directory: Path) -> None:
+        assert directory == journal.state_root
+        raise OSError("injected directory sync failure")
+
+    monkeypatch.setattr("termwriter.services.recovery._sync_directory", broken_sync)
+
+    with pytest.raises(RecoveryError, match="injected directory sync failure"):
+        journal.restore_quarantined(record)
+
+    assert quarantine_path.read_bytes() == quarantined_bytes
+    assert journal.path_for(document).read_bytes() == quarantined_bytes
+
+
+def test_restore_lock_preserves_writer_started_during_final_verification(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    document = workspace / "note.md"
+    journal = RecoveryJournal(tmp_path / "state")
+    writer = RecoveryJournal(journal.state_root)
+    journal.save(
+        document_path=document,
+        workspace_root=workspace,
+        text="archived draft",
+        encoding="utf-8",
+        base_snapshot=FileSnapshot.missing(),
+    )
+    (active_record,) = journal.list_entries(workspace)
+    journal.quarantine(active_record)
+    (record,) = journal.list_quarantined(workspace)
+    replacement_started = Event()
+    replacement_finished = Event()
+
+    def replace_journal() -> None:
+        replacement_started.set()
+        writer.save(
+            document_path=document,
+            workspace_root=workspace,
+            text="new active draft",
+            encoding="utf-8",
+            base_snapshot=FileSnapshot.missing(),
+        )
+        replacement_finished.set()
+
+    replacement = Thread(target=replace_journal)
+    original_verify = journal._verify_record
+    verification_count = 0
+
+    def verify_then_replace(item: RecoveryRecord) -> RecoveryRecord:
+        nonlocal verification_count
+        current = original_verify(item)
+        verification_count += 1
+        if verification_count == 2:
+            replacement.start()
+            assert replacement_started.wait(1)
+            assert not replacement_finished.wait(0.05)
+        return current
+
+    with patch.object(journal, "_verify_record", side_effect=verify_then_replace):
+        restored = journal.restore_quarantined(record)
+
+    replacement.join(timeout=2)
+    assert not replacement.is_alive()
+    assert restored.text == "archived draft"
+    active = journal.load(document)
+    assert active is not None
+    assert active.text == "new active draft"
+    assert journal.list_quarantined() == ()
+
+
+def test_permanent_delete_is_guarded_and_can_remove_corrupt_quarantine(
+    tmp_path: Path,
+) -> None:
+    journal = RecoveryJournal(tmp_path / "state")
+    quarantine_root = journal.state_root / "quarantine"
+    quarantine_root.mkdir(parents=True)
+    corrupt_path = quarantine_root / f"{'a' * 64}.json"
+    corrupt_path.write_bytes(b"corrupt draft bytes")
+    (record,) = journal.list_quarantined()
+
+    journal.delete_quarantined(record)
+
+    assert not corrupt_path.exists()
+    assert journal.list_quarantined() == ()
+
+
+def test_permanent_delete_refuses_quarantine_changed_after_listing(tmp_path: Path) -> None:
+    journal = RecoveryJournal(tmp_path / "state")
+    quarantine_root = journal.state_root / "quarantine"
+    quarantine_root.mkdir(parents=True)
+    corrupt_path = quarantine_root / f"{'b' * 64}.json"
+    corrupt_path.write_bytes(b"listed bytes")
+    (record,) = journal.list_quarantined()
+    corrupt_path.write_bytes(b"newer bytes")
+
+    with pytest.raises(RecoveryError, match="changed after it was listed"):
+        journal.delete_quarantined(record)
+
+    assert corrupt_path.read_bytes() == b"newer bytes"
+
+
+def test_quarantine_operations_reject_wrong_record_location(tmp_path: Path) -> None:
+    journal = RecoveryJournal(tmp_path / "state")
+    outside = tmp_path / "do-not-delete.json"
+    outside.write_bytes(b"important")
+    forged = RecoveryRecord(
+        journal_path=outside,
+        fingerprint="not trusted",
+        error="forged",
+        quarantined=True,
+    )
+
+    with pytest.raises(RecoveryError, match="outside the recovery quarantine"):
+        journal.delete_quarantined(forged)
+
+    assert outside.read_bytes() == b"important"
+
+
+def test_quarantine_inventory_rejects_symlinked_storage(tmp_path: Path) -> None:
+    journal = RecoveryJournal(tmp_path / "state")
+    journal.state_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (journal.state_root / "quarantine").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RecoveryError, match="not a real directory"):
+        journal.list_quarantined()
+
+
 def test_retarget_preserves_draft_and_timestamp(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
