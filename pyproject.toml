@@ -12,6 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "TermWriter contributors" }]
 dependencies = [
     "markdown-it-py>=4.0,<5",
+    "mdit-py-plugins>=0.6,<1",
     "textual[syntax]>=8.2.8,<9",
 ]
 
