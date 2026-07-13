@@ -223,7 +223,7 @@ async def test_blocked_file_index_keeps_editor_responsive(
         app.action_find_file()
         await _wait_until(pilot, started.is_set)
         try:
-            await pilot.press("x")
+            await pilot.press("i", "x")
             assert app.document is not None
             assert app.document.text == "xbase"
             assert not isinstance(app.screen, FileSearchDialog)
@@ -348,7 +348,7 @@ async def test_recovery_publication_runs_off_ui_and_keeps_latest_edit(
     monkeypatch.setattr(journal, "publish", blocked_publish)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         assert app._recovery_timer is not None
         app._recovery_timer.stop()
         app._write_recovery(app._recovery_revision)
@@ -418,7 +418,7 @@ async def test_discard_waits_for_recovery_save_then_delete_without_resurrection(
     monkeypatch.setattr(journal, "publish", blocked_publish)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         assert app._recovery_timer is not None
         app._recovery_timer.stop()
         app._write_recovery(app._recovery_revision)
@@ -455,7 +455,7 @@ async def test_successful_save_stays_frozen_until_recovery_cleanup_finishes(
     real_delete = journal.delete_expected
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         assert app._recovery_timer is not None
         app._recovery_timer.stop()
         app._write_recovery(app._recovery_revision)
@@ -626,7 +626,7 @@ async def test_watcher_probe_allows_edit_and_classifies_result_against_latest_di
 
         assert not app._critical_io
         assert not app.editor.read_only
-        await pilot.press("x")
+        await pilot.press("i", "x")
         assert app.document is not None
         assert app.document.text == "xbase"
 
@@ -703,7 +703,7 @@ async def test_blocked_save_is_read_only_and_cannot_be_quit_mid_publication(
     monkeypatch.setattr("termwriter.app.atomic_save", blocked_save)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x", "ctrl+s")
+        await pilot.press("i", "x", "ctrl+s")
         await _wait_until(pilot, started.is_set)
 
         assert app._critical_io
@@ -749,7 +749,7 @@ async def test_external_write_during_background_save_opens_conflict(
     monkeypatch.setattr("termwriter.app.atomic_save", blocked_save)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x", "ctrl+s")
+        await pilot.press("i", "x", "ctrl+s")
         await _wait_until(pilot, started.is_set)
         path.write_text("external", encoding="utf-8")
         release.set()
@@ -783,7 +783,7 @@ async def test_unexpected_save_worker_error_restores_editor(
     monkeypatch.setattr("termwriter.app.atomic_save", fail_save)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x", "ctrl+s")
+        await pilot.press("i", "x", "ctrl+s")
         await _wait_until(
             pilot,
             lambda: bool(
@@ -809,7 +809,7 @@ async def test_save_as_dialog_stays_locked_until_background_publication_finishes
     app = _app(path)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         path.write_text("external", encoding="utf-8")
         await pilot.press("ctrl+s")
         await _wait_until(pilot, lambda: isinstance(app.screen, ConflictDialog))

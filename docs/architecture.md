@@ -249,12 +249,12 @@ Recovery Manager; it cannot schedule deletion. The initializer uses exclusive cr
 replace existing files, and creates new directories and files with mode 0700/0600 where POSIX
 permissions apply.
 
-TermWriter starts in WRITE mode. Esc changes the application to COMMAND mode, where the Markdown
-editor stops consuming printable input and the application owns a fixed mnemonic single-key map.
-The four directional arrows still pass through the editor's cursor navigation without mutating
-source. `i` restores WRITE mode and editor focus. Modal dialogs suppress the COMMAND map so their
-inputs remain ordinary text fields. The persistent status bar always leads with the interaction
-mode and adds FILES or PREVIEW when focus leaves the source editor.
+TermWriter starts in COMMAND mode, like Vim, where the Markdown editor stops consuming printable
+input and the application owns a fixed mnemonic single-key map. The four directional arrows still
+pass through the editor's cursor navigation without mutating source. `i` enters WRITE mode and
+editor focus; Esc returns to COMMAND mode. Modal dialogs suppress the COMMAND map so their inputs
+remain ordinary text fields. The persistent status bar always leads with the interaction mode and
+adds FILES or PREVIEW when focus leaves the source editor.
 
 Configured bindings keep stable IDs and are remapped through Textual's public `App.set_keymap`.
 They remain available in both interaction modes. Undo and redo are defined on the Markdown editor

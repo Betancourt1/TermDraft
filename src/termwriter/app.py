@@ -338,7 +338,7 @@ class TermWriterApp(App[None]):
         self._preview_visible = True
         self._narrow = False
         self._narrow_pane = "editor"
-        self._interaction_mode = _InteractionMode.WRITE
+        self._interaction_mode = _InteractionMode.COMMAND
         self._empty_editor: MarkdownEditor | None = None
         self._pending_open_document: Document | None = None
         self._pending_recovery_entry: RecoveryEntry | None = None

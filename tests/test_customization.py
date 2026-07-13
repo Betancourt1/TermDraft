@@ -31,6 +31,7 @@ async def test_enter_continues_task_list_and_undo_reverts_the_whole_edit(tmp_pat
     app = _app(path)
 
     async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("i")
         app.editor.move_cursor((0, len("- [x] done")))
         await pilot.press("enter")
 
@@ -49,6 +50,7 @@ async def test_enter_on_empty_marker_ends_the_list(tmp_path: Path) -> None:
     app = _app(path)
 
     async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("i")
         app.editor.move_cursor((1, 2))
         await pilot.press("enter")
 
@@ -62,6 +64,7 @@ async def test_enter_after_thematic_break_does_not_start_a_list(tmp_path: Path) 
     app = _app(path)
 
     async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("i")
         app.editor.move_cursor((0, len("* * *")))
         await pilot.press("enter")
 
@@ -76,6 +79,7 @@ async def test_enter_does_not_continue_indented_code_but_keeps_nested_lists(
     code_app = _app(code_path)
 
     async with code_app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("i")
         code_app.editor.move_cursor((0, len("    - literal")))
         await pilot.press("enter")
         assert code_app.editor.text == "    - literal\n"
@@ -85,6 +89,7 @@ async def test_enter_does_not_continue_indented_code_but_keeps_nested_lists(
     list_app = _app(list_path)
 
     async with list_app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("i")
         list_app.editor.move_cursor((1, len("    - child")))
         await pilot.press("enter")
         assert list_app.editor.text == "- parent\n    - child\n    - "
@@ -100,6 +105,7 @@ async def test_list_continuation_can_be_disabled(tmp_path: Path) -> None:
     app = _app(path, config)
 
     async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("i")
         app.editor.move_cursor((0, len("- item")))
         await pilot.press("enter")
 
@@ -118,7 +124,7 @@ async def test_remapped_save_and_undo_replace_their_default_keys(tmp_path: Path)
     app = _app(path, load_config(config_root))
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x", "ctrl+z")
+        await pilot.press("i", "x", "ctrl+z")
         assert app.editor.text == "xbase"
         assert path.read_text(encoding="utf-8") == "base"
 
@@ -141,14 +147,11 @@ async def test_write_and_command_modes_protect_text_and_use_plain_keys(tmp_path:
 
     async with app.run_test(size=(100, 30)) as pilot:
         status = app.query_one("#status-bar", Static)
-        assert str(status.render()).startswith("WRITE")
-
-        await pilot.press("x", "escape", "z")
-        assert app.editor.text == "xbase"
         assert str(status.render()).startswith("COMMAND")
 
-        await pilot.press("u")
+        await pilot.press("x", "z")
         assert app.editor.text == "base"
+        assert str(status.render()).startswith("COMMAND")
 
         await pilot.press("i", "w")
         assert app.editor.text == "wbase"
@@ -189,7 +192,7 @@ async def test_command_mode_plain_w_saves_the_current_document(tmp_path: Path) -
     app = _app(path)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x", "escape", "w")
+        await pilot.press("i", "x", "escape", "w")
         for _ in range(100):
             if path.read_text(encoding="utf-8") == "xbase":
                 break
@@ -227,7 +230,7 @@ save = "ctrl+r"
         assert not app.editor.soft_wrap
         assert not app.editor.show_line_numbers
 
-        await pilot.press("x", "ctrl+g")
+        await pilot.press("i", "x", "ctrl+g")
         assert path.read_text(encoding="utf-8") == "base"
         await pilot.press("ctrl+r")
         assert path.read_text(encoding="utf-8") == "xbase"

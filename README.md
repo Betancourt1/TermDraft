@@ -42,7 +42,7 @@ rendering experiment.
 │  projects/               │ Today I learned…           │ Today I learned…     │
 │   termwriter.md          │                            │                      │
 ├──────────────────────────┴────────────────────────────┴──────────────────────┤
-│ WRITE | journal/2026-07-11.md ● modified | RECOVERY STORED | 36 words | Ln…│
+│ COMMAND | journal/2026-07-11.md ● modified | RECOVERY STORED | 36 words |…│
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -228,10 +228,9 @@ TermWriter is already running, restart once so it can be added to the watched st
 
 ## Modes and shortcuts
 
-TermWriter starts in WRITE mode so opening a file still leads directly into writing. Press Esc to
-enter COMMAND mode; source text is protected there, so plain keys run commands instead of being
-inserted. The arrow keys continue to move the cursor without changing the document. Press `i` to
-return to WRITE mode.
+TermWriter starts in COMMAND mode, like Vim. Source text is protected there, so plain keys run
+commands instead of being inserted. The arrow keys continue to move the cursor without changing the
+document. Press `i` to enter WRITE mode and Esc to return to COMMAND mode.
 
 | COMMAND key | Action |
 | --- | --- |

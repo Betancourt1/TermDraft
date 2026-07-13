@@ -55,7 +55,7 @@ async def test_text_search_uses_dirty_active_source(tmp_path: Path) -> None:
     app = _app(path)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("n", "e", "e", "d", "l", "e", "space")
+        await pilot.press("i", "n", "e", "e", "d", "l", "e", "space")
         await pilot.press("ctrl+shift+f")
         await pilot.press("n", "e", "e", "d", "l", "e", "enter")
         await pilot.pause(0.15)
@@ -295,7 +295,7 @@ async def test_text_search_can_focus_a_dirty_active_file_deleted_from_disk(
 
     async with app.run_test(size=(100, 30)) as pilot:
         path.unlink()
-        await pilot.press("n", "e", "e", "d", "l", "e", "space", "ctrl+shift+f")
+        await pilot.press("i", "n", "e", "e", "d", "l", "e", "space", "ctrl+shift+f")
         await pilot.press("n", "e", "e", "d", "l", "e", "enter")
         await pilot.pause(0.15)
 
@@ -319,7 +319,7 @@ async def test_text_result_opening_preserves_unsaved_source_in_a_tab(tmp_path: P
     app = _app(first)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x", "ctrl+shift+f")
+        await pilot.press("i", "x", "ctrl+shift+f")
         await pilot.press("t", "a", "r", "g", "e", "t", "enter")
         await pilot.pause(0.15)
         await pilot.press("enter")
@@ -346,7 +346,7 @@ async def test_case_insensitive_alias_is_one_active_result(tmp_path: Path) -> No
     app = _app(alias_path)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x", "ctrl+shift+f")
+        await pilot.press("i", "x", "ctrl+shift+f")
         await pilot.press("n", "e", "e", "d", "l", "e", "enter")
         await pilot.pause(0.15)
 
@@ -373,7 +373,7 @@ async def test_unicode_normalization_alias_is_one_active_result(tmp_path: Path) 
     app = _app(alias_path)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x", "ctrl+shift+f")
+        await pilot.press("i", "x", "ctrl+shift+f")
         await pilot.press("n", "e", "e", "d", "l", "e", "enter")
         await pilot.pause(0.15)
 
@@ -391,7 +391,7 @@ async def test_distinct_hardlink_result_opens_an_independent_tab(tmp_path: Path)
     app = _app(first)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x", "ctrl+shift+f")
+        await pilot.press("i", "x", "ctrl+shift+f")
         await pilot.press("n", "e", "e", "d", "l", "e", "enter")
         await pilot.pause(0.15)
 

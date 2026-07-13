@@ -94,7 +94,7 @@ async def test_recent_switching_preserves_dirty_source_in_an_open_tab(tmp_path: 
     app = _app(first, store)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x", "ctrl+o", "down", "enter")
+        await pilot.press("i", "x", "ctrl+o", "down", "enter")
         await _wait_for_document(app, pilot, second)
 
         assert app.document is not None

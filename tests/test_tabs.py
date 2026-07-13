@@ -60,7 +60,7 @@ async def test_tabs_preserve_independent_dirty_sources_and_view_positions(
     app = _app(first)
 
     async with app.run_test(size=(100, 18)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         app.editor.move_cursor((20, 3))
         app.editor.scroll_to(y=12, animate=False, immediate=True)
         await _open(app, pilot, second)
@@ -95,7 +95,7 @@ async def test_tabs_keep_independent_editor_undo_histories(
     app = _app(first)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         await _open(app, pilot, second)
         await pilot.press("y", "ctrl+pageup", "ctrl+z")
 
@@ -121,7 +121,7 @@ async def test_saving_active_tab_does_not_write_or_clean_another_buffer(
     app = _app(first)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         await _open(app, pilot, second)
         await pilot.press("y", "ctrl+s")
         for _ in range(200):
@@ -152,7 +152,7 @@ async def test_switch_flushes_recovery_before_long_debounce_expires(tmp_path: Pa
     )
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         await _open(app, pilot, second)
         for _ in range(200):
             recovered = journal.load(first)
@@ -179,7 +179,7 @@ async def test_dirty_tab_close_uses_cancel_then_discard_guard(tmp_path: Path) ->
 
     async with app.run_test(size=(100, 30)) as pilot:
         await _open(app, pilot, second)
-        await pilot.press("x", "ctrl+f4")
+        await pilot.press("i", "x", "ctrl+f4")
         assert isinstance(app.screen, UnsavedChangesDialog)
         await pilot.press("escape")
 
@@ -210,7 +210,7 @@ async def test_quit_guards_each_dirty_tab_and_cancel_stops_exit(tmp_path: Path) 
     app = _app(first)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         await _open(app, pilot, second)
         await pilot.press("y", "ctrl+q")
         assert isinstance(app.screen, UnsavedChangesDialog)
@@ -254,7 +254,7 @@ async def test_orderly_signal_journals_every_dirty_tab_even_during_quit_dialog(
         first_entry = app._open_entry_for_document(first_buffer)
         assert first_entry is not None
         first_entry.editor.insert("x", (0, 0))
-        await pilot.press("y", "ctrl+q")
+        await pilot.press("i", "y", "ctrl+q")
 
         assert isinstance(app.screen, UnsavedChangesDialog)
         assert journal.load(first) is None
@@ -284,7 +284,7 @@ async def test_reactivating_dirty_tab_detects_external_conflict(tmp_path: Path) 
     app = _app(first)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         await _open(app, pilot, second)
         first.write_text("external", encoding="utf-8")
         await pilot.press("ctrl+pageup")
@@ -416,7 +416,7 @@ async def test_recovery_manager_protects_every_dirty_open_tab(tmp_path: Path) ->
     )
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         await _open(app, pilot, second)
         await pilot.press("y")
         for _ in range(200):

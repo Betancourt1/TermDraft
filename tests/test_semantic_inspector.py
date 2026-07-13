@@ -81,7 +81,7 @@ async def test_stale_semantic_result_is_discarded_after_edit(
         app.action_inspect_semantic_blocks()
         await _wait_until(pilot, started.is_set)
         try:
-            await pilot.press("x")
+            await pilot.press("i", "x")
             assert app.document is not None and app.document.dirty
         finally:
             release.set()

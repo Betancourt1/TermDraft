@@ -136,7 +136,7 @@ async def test_stale_reader_result_is_discarded_after_edit(
         app.action_read_semantic_blocks()
         await _wait_until(pilot, started.is_set)
         try:
-            await pilot.press("x")
+            await pilot.press("i", "x")
             assert app.document is not None and app.document.dirty
         finally:
             release.set()
@@ -153,7 +153,7 @@ async def test_reader_retains_exact_dirty_source_and_editor_undo(
     app = _app(path)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         assert app.document is not None and app.document.dirty
         app.action_read_semantic_blocks()
         await _wait_until(pilot, lambda: isinstance(app.screen, SemanticReaderDialog))

@@ -290,7 +290,7 @@ async def test_edit_marks_dirty_updates_preview_and_save_updates_file(tmp_path: 
     app = app_for_file(path)
 
     async with app.run_test(size=(120, 36)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         await pilot.pause(0.03)
 
         assert app.document is not None
@@ -313,7 +313,7 @@ async def test_opening_another_file_preserves_dirty_buffer_without_writing(tmp_p
     app = app_for_file(first)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         await pilot.press("ctrl+p")
         assert isinstance(app.screen, FileSearchDialog)
         await pilot.press("t", "w", "o", "enter")
@@ -351,7 +351,7 @@ async def test_ctrl_q_does_not_discard_unsaved_content(tmp_path: Path) -> None:
     app = app_for_file(path)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x", "ctrl+q")
+        await pilot.press("i", "x", "ctrl+q")
 
         assert isinstance(app.screen, UnsavedChangesDialog)
         assert app.is_running
@@ -376,7 +376,7 @@ async def test_external_conflict_never_overwrites_disk_silently(tmp_path: Path) 
     app = app_for_file(path)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         path.write_text("external", encoding="utf-8")
         await pilot.press("ctrl+s")
 
@@ -396,7 +396,7 @@ async def test_conflict_save_as_rejects_existing_name_without_crashing(tmp_path:
     app = app_for_file(path)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         path.write_text("external", encoding="utf-8")
         await pilot.press("ctrl+s")
         await pilot.click("#conflict-save-as")
@@ -420,7 +420,7 @@ async def test_conflict_save_as_preserves_both_versions(tmp_path: Path) -> None:
     app = app_for_file(path)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         path.write_text("external", encoding="utf-8")
         await pilot.press("ctrl+s")
         await pilot.click("#conflict-save-as")
@@ -457,7 +457,7 @@ async def test_save_as_rejects_path_owned_by_deleted_open_tab(
             await pilot.pause(0.01)
         second_buffer = app.document
         second.unlink()
-        await pilot.press("ctrl+pageup", "x")
+        await pilot.press("ctrl+pageup", "i", "x")
         first.write_text("external", encoding="utf-8")
         await pilot.press("ctrl+s")
         for _ in range(200):
@@ -503,7 +503,7 @@ async def test_save_as_replaces_pending_recovery_timer_for_future_edits(
     )
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         assert app._recovery_timer is not None
         path.write_text("external", encoding="utf-8")
         await pilot.press("ctrl+s")
@@ -560,7 +560,7 @@ async def test_ancestor_swap_during_save_as_cannot_escape_workspace(
         return atomic_save(path, text, encoding=encoding, expected=expected)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         original.write_text("external", encoding="utf-8")
         await pilot.press("ctrl+s")
         await pilot.click("#conflict-save-as")
@@ -596,7 +596,7 @@ async def test_dirty_persistence_error_keeps_source_and_disk(
         raise PersistenceError("permission denied")
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         monkeypatch.setattr("termwriter.app.atomic_save", inaccessible_save)
         await pilot.press("ctrl+s")
         await pilot.pause(0.1)
@@ -630,7 +630,7 @@ async def test_dirty_inaccessible_file_offers_save_as(
         return DiskProbe(requested, None, "permission denied")
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         monkeypatch.setattr("termwriter.app.atomic_save", inaccessible_save)
         monkeypatch.setattr("termwriter.app.probe_file", inaccessible_probe)
         await pilot.press("ctrl+s")
@@ -681,7 +681,7 @@ async def test_parent_symlink_swap_cannot_redirect_save(tmp_path: Path) -> None:
     async with app.run_test(size=(100, 30)) as pilot:
         workspace_path.rename(moved_workspace)
         workspace_path.symlink_to(outside, target_is_directory=True)
-        await pilot.press("x", "ctrl+s")
+        await pilot.press("i", "x", "ctrl+s")
 
         assert isinstance(app.screen, ConflictDialog)
         assert outside_file.read_text(encoding="utf-8") == "base"
@@ -719,7 +719,7 @@ async def test_ancestor_swap_during_save_cannot_redirect_publication(
         return atomic_save(path, text, encoding=encoding, expected=expected)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         monkeypatch.setattr("termwriter.app.atomic_save", redirected_save)
         await pilot.press("ctrl+s")
 
@@ -736,7 +736,7 @@ async def test_recovered_baseline_clears_conflict_status(tmp_path: Path) -> None
     app = app_for_file(path)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         path.write_text("external", encoding="utf-8")
         await pilot.press("ctrl+s")
         await pilot.click("#conflict-cancel")
@@ -895,7 +895,7 @@ async def test_undo_and_redo_use_text_area_history(tmp_path: Path) -> None:
     app = app_for_file(path)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         await pilot.press("ctrl+z")
 
         assert app.document is not None
@@ -934,7 +934,7 @@ async def test_mixed_line_ending_edit_requires_consent_and_normalizes(tmp_path: 
         assert app.document is None
 
         await pilot.click("#mixed-normalize")
-        await pilot.press("x", "ctrl+s")
+        await pilot.press("i", "x", "ctrl+s")
 
         assert app.document is not None
         assert app.document.line_ending_label == "CRLF"
@@ -963,7 +963,7 @@ async def test_lf_first_mixed_source_reports_textuals_crlf_target(tmp_path: Path
         assert isinstance(app.screen, MixedLineEndingsDialog)
         assert app.screen.target == "CRLF"
         await pilot.click("#mixed-normalize")
-        await pilot.press("x", "ctrl+s")
+        await pilot.press("i", "x", "ctrl+s")
 
         assert path.read_bytes() == b"xone\r\ntwo\r\nthree"
 
@@ -974,7 +974,7 @@ async def test_crlf_is_preserved_when_editing_and_saving(tmp_path: Path) -> None
     app = app_for_file(path)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x", "ctrl+s")
+        await pilot.press("i", "x", "ctrl+s")
 
         assert path.read_bytes() == b"xone\r\ntwo\r\n"
 
@@ -1017,7 +1017,7 @@ async def test_external_watcher_marks_dirty_conflict_without_opening_modal(
     app = app_for_file(path)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         path.write_text("external", encoding="utf-8")
         app._check_external_in_background()
         await pilot.pause(0.1)
@@ -1058,7 +1058,7 @@ async def test_external_watcher_pauses_for_modal_and_clears_reverted_conflict(
     app = app_for_file(path)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x", "f1")
+        await pilot.press("i", "x", "f1")
         path.write_text("external", encoding="utf-8")
         app._check_external_in_background()
 
@@ -1105,7 +1105,7 @@ async def test_external_watcher_requires_consent_for_mixed_line_ending_reload(
         app._check_external_in_background()
         await pilot.pause(0.1)
         assert not app.editor.read_only
-        await pilot.press("x")
+        await pilot.press("i", "x")
         assert app.document.text == "xuniform"
 
 
@@ -1145,7 +1145,7 @@ async def test_dirty_edit_is_journaled_and_successful_save_clears_recovery(
     )
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         await pilot.pause(0.04)
 
         recovered = journal.load(path)
@@ -1174,7 +1174,7 @@ async def test_continuous_edits_do_not_postpone_the_recovery_deadline(
     )
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         pending_timer = app._recovery_timer
         pending_revision = app._recovery_revision
         assert pending_timer is not None
@@ -1208,7 +1208,7 @@ async def test_orderly_signal_flushes_pending_dirty_source_before_exit(
     )
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         assert journal.load(path) is None
 
         app.request_orderly_shutdown(signal.SIGTERM)
@@ -1262,7 +1262,7 @@ async def test_orderly_signal_waits_for_recovery_publication(
     monkeypatch.setattr(journal, "publish", blocked_publish)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         app.request_orderly_shutdown(signal.SIGTERM)
         for _ in range(200):
             if started.is_set():
@@ -1316,7 +1316,7 @@ async def test_orderly_signal_cancels_exit_when_recovery_publication_fails(
     monkeypatch.setattr(journal, "publish", failed_publish)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         app.request_orderly_shutdown(signal.SIGTERM)
         for _ in range(200):
             if attempted.is_set() and not app._signal_shutdown_in_progress:
@@ -1455,7 +1455,7 @@ async def test_recovered_conflict_keeps_original_baseline_across_two_restarts(
         await pilot.click("#recovery-restore")
         assert first_app.document is not None
         assert first_app.document.recovery_conflict
-        await pilot.press("x")
+        await pilot.press("i", "x")
         await pilot.pause(0.04)
 
     rewritten = journal.load(path)
@@ -1675,7 +1675,7 @@ async def test_permission_tightening_before_save_is_preserved(tmp_path: Path) ->
     app = app_for_file(path)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         path.chmod(0o600)
         await pilot.press("ctrl+s")
         await pilot.pause(0.1)
@@ -1695,7 +1695,7 @@ async def test_explicit_quit_discard_removes_recovery_journal(tmp_path: Path) ->
     )
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         await pilot.pause(0.04)
         assert journal.load(path) is not None
 
@@ -1722,7 +1722,7 @@ async def test_cancelled_mixed_open_cannot_journal_the_wrong_document(
     )
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x", "ctrl+p")
+        await pilot.press("i", "x", "ctrl+p")
         await pilot.press("s", "e", "c", "o", "n", "d", "enter")
         assert isinstance(app.screen, MixedLineEndingsDialog)
 
@@ -1758,7 +1758,7 @@ async def test_failed_open_keeps_the_active_dirty_document_and_recovery(
     )
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x")
+        await pilot.press("i", "x")
         await pilot.pause(0.04)
         assert journal.load(first) is not None
 
