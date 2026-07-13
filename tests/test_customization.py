@@ -320,10 +320,14 @@ async def test_command_palette_and_help_expose_product_actions(tmp_path: Path) -
         assert app.screen.id == "--command-palette"
         command_list = app.screen.query_one(CommandList)
         option_padding = command_list.get_component_styles("option-list--option").padding
+        options = command_list.options
         search_icon = app.screen.query_one(SearchIcon)
-        assert option_padding.top == 0
         assert option_padding.left == option_padding.right == 3
-        assert option_padding.bottom == 1
+        assert option_padding.top == option_padding.bottom == 0
+        assert all(option._divider for option in options[:-1])
+        assert not options[-1]._divider
+        command_list._update_lines()
+        assert command_list._line_cache.index_to_line[1] == 3
         assert search_icon.icon == SEARCH_ICON
         assert search_icon.styles.color == Color.parse(SEARCH_ICON_COLOR)
         await pilot.press("escape")

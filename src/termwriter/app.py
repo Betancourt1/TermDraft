@@ -6,13 +6,14 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum, auto
+from operator import attrgetter
 from pathlib import Path, PurePath
 
 from rich.markup import escape
 from textual import events, on, work
 from textual.app import App, ComposeResult, SystemCommand
 from textual.color import Color
-from textual.command import CommandPalette, SearchIcon
+from textual.command import Command, CommandList, CommandPalette, SearchIcon
 from textual.containers import Horizontal
 from textual.filter import LineFilter, Monochrome
 from textual.screen import ModalScreen, Screen
@@ -316,6 +317,31 @@ class _OpenDocument:
     editor: MarkdownEditor
     baseline_text: str
     baseline_source_text: str
+
+
+class _GroupedCommandPalette(CommandPalette):
+    """Separate command results without splitting titles from their help text."""
+
+    def _refresh_command_list(
+        self,
+        command_list: CommandList,
+        commands: list[Command],
+        clear_current: bool,
+    ) -> None:
+        del clear_current
+        sorted_commands = sorted(commands, key=attrgetter("hit.score"), reverse=True)
+        separated: list[Command | None] = []
+        for command in sorted_commands:
+            if separated:
+                separated.append(None)
+            separated.append(command)
+        command_list.clear_options().add_options(separated)
+
+        if sorted_commands:
+            command_list.highlighted = 0
+
+        self._list_visible = bool(command_list.option_count)
+        self._hit_count = command_list.option_count
 
 
 class TermWriterApp(App[None]):
@@ -873,6 +899,11 @@ class TermWriterApp(App[None]):
         icon = self.screen.query_one(SearchIcon)
         icon.icon = SEARCH_ICON
         icon.styles.color = Color.parse(SEARCH_ICON_COLOR)
+
+    def action_command_palette(self) -> None:
+        """Open the command palette with grouped result spacing."""
+        if self.use_command_palette and not self.screen.has_class("--textual-command-palette"):
+            self.push_screen(_GroupedCommandPalette(id="--command-palette"))
 
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
         if not isinstance(event.widget, MarkdownPreview):

@@ -283,5 +283,9 @@ ModalScreen {
 }
 
 CommandPalette CommandList > .option-list--option {
-    padding: 0 3 1 3;
+    padding: 0 3;
+}
+
+CommandPalette CommandList > .option-list--separator {
+    color: $background;
 }
