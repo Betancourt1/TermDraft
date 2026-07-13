@@ -51,8 +51,9 @@ rendering experiment.
 ```
 
 At widths below 100 columns, `v` in COMMAND mode switches between the editor and preview instead of
-squeezing both panes into an unusable layout. `e` can reclaim the explorer width at any terminal
-size. The configured Ctrl shortcuts remain available in both modes.
+squeezing both panes into an unusable layout. The file explorer starts wider and its divider can be
+dragged between 20 and 48 columns without adding a horizontal scrollbar. `e` can hide or restore the
+explorer at any terminal size. The configured Ctrl shortcuts remain available in both modes.
 
 ## Requirements
 

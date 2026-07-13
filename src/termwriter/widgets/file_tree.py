@@ -7,6 +7,7 @@ from pathlib import Path
 
 from rich.style import Style
 from rich.text import Text
+from textual import events
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import DirectoryTree, Static
@@ -21,6 +22,10 @@ from termwriter.icons import (
     OPEN_FOLDER_ICON,
 )
 from termwriter.models.workspace import IGNORED_DIRECTORIES, MARKDOWN_SUFFIXES, Workspace
+
+EXPLORER_DEFAULT_WIDTH = 34
+EXPLORER_MIN_WIDTH = 20
+EXPLORER_MAX_WIDTH = 48
 
 
 class MarkdownDirectoryTree(DirectoryTree):
@@ -85,3 +90,40 @@ class FileExplorer(Vertical):
             title.append(" · ", style="dim")
             title.append(path.relative_to(self.workspace.root).as_posix())
         self.query_one("#explorer-title", Static).update(title)
+
+    def set_panel_width(self, width: int) -> None:
+        """Resize the panel within its usable bounds."""
+        self.styles.width = min(max(width, EXPLORER_MIN_WIDTH), EXPLORER_MAX_WIDTH)
+
+
+class ExplorerResizeHandle(Static):
+    """Drag handle for resizing the file explorer."""
+
+    def __init__(self) -> None:
+        self._drag_start_x: int | None = None
+        self._drag_start_width = EXPLORER_DEFAULT_WIDTH
+        super().__init__(id="explorer-resize-handle")
+        self.tooltip = "Drag to resize files"
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button != 1:
+            return
+        explorer = self.screen.query_one(FileExplorer)
+        self._drag_start_x = int(event.screen_x)
+        self._drag_start_width = explorer.size.width
+        self.capture_mouse()
+        event.stop()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if self._drag_start_x is None:
+            return
+        explorer = self.screen.query_one(FileExplorer)
+        explorer.set_panel_width(self._drag_start_width + int(event.screen_x) - self._drag_start_x)
+        event.stop()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if self._drag_start_x is None:
+            return
+        self._drag_start_x = None
+        self.release_mouse()
+        event.stop()

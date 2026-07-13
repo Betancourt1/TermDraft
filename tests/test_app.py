@@ -40,6 +40,7 @@ from termwriter.services.recovery import (
     RecoveryRetentionResult,
 )
 from termwriter.services.session import DocumentViewState, SessionState, SessionStore
+from termwriter.widgets.file_tree import EXPLORER_MAX_WIDTH, EXPLORER_MIN_WIDTH
 
 
 def app_for_file(
@@ -828,6 +829,38 @@ async def test_narrow_layout_switches_between_editor_and_preview(tmp_path: Path)
 
         await pilot.press("ctrl+b")
         assert not app.explorer.display
+        assert not app.explorer_resize_handle.display
+
+        await pilot.press("ctrl+b")
+        assert app.explorer.display
+        assert app.explorer_resize_handle.display
+
+
+async def test_explorer_is_wider_resizable_and_has_no_horizontal_scrollbar(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "a-very-long-markdown-filename-that-does-not-fit.md"
+    path.write_text("content", encoding="utf-8")
+    app = app_for_file(path)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause(0.03)
+        assert app.explorer.size.width == 34
+        assert app.explorer.directory_tree.styles.overflow_x == "hidden"
+        assert not app.explorer.directory_tree.show_horizontal_scrollbar
+
+        await pilot.mouse_down(app.explorer_resize_handle)
+        await pilot.hover(offset=(100, 2))
+        await pilot.mouse_up(offset=(100, 2))
+        assert app.explorer.size.width == EXPLORER_MAX_WIDTH
+
+        await pilot.mouse_down(app.explorer_resize_handle)
+        await pilot.hover(offset=(2, 2))
+        await pilot.mouse_up(offset=(2, 2))
+        assert app.explorer.size.width == EXPLORER_MIN_WIDTH
+
+        await pilot.press("ctrl+b", "ctrl+b")
+        assert app.explorer.size.width == EXPLORER_MIN_WIDTH
 
 
 async def test_showing_wide_preview_focuses_keyboard_link_navigation(tmp_path: Path) -> None:
