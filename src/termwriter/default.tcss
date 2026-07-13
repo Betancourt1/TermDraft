@@ -70,6 +70,11 @@ Screen {
     border: none;
 }
 
+.markdown-editor-buffer, #markdown-preview {
+    scrollbar-size-vertical: 1;
+    scrollbar-size-horizontal: 0;
+}
+
 #markdown-preview {
     width: 1fr;
     height: 1fr;

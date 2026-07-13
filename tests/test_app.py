@@ -863,6 +863,20 @@ async def test_explorer_is_wider_resizable_and_has_no_horizontal_scrollbar(
         assert app.explorer.size.width == EXPLORER_MIN_WIDTH
 
 
+async def test_editor_and_preview_use_compact_scrollbars(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("\n".join(f"line {index}" for index in range(100)), encoding="utf-8")
+    app = app_for_file(path)
+
+    async with app.run_test(size=(120, 20)) as pilot:
+        await pilot.pause(0.03)
+        for widget in (app.editor, app.preview):
+            assert widget.styles.scrollbar_size_vertical == 1
+            assert widget.styles.scrollbar_size_horizontal == 0
+            assert widget.scrollbar_size_vertical == 1
+            assert widget.scrollbar_size_horizontal == 0
+
+
 async def test_showing_wide_preview_focuses_keyboard_link_navigation(tmp_path: Path) -> None:
     path = tmp_path / "note.md"
     path.write_text("[Reference](https://example.com)\n", encoding="utf-8")
