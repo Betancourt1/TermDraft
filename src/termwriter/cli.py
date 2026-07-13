@@ -65,6 +65,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="configuration directory (default: ~/.termwriter)",
     )
+    parser.add_argument(
+        "--safe-mode",
+        action="store_true",
+        help="ignore theme.tcss for this launch",
+    )
     utilities = parser.add_mutually_exclusive_group()
     utilities.add_argument(
         "--init-config",
@@ -119,5 +124,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"termwriter: error: {error}", file=sys.stderr)
         return 2
 
-    _run_with_shutdown_signals(TermWriterApp(workspace, config=config))
+    _run_with_shutdown_signals(
+        TermWriterApp(workspace, config=config, use_user_theme=not arguments.safe_mode)
+    )
     return 0

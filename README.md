@@ -252,8 +252,11 @@ after TermWriter's bundled stylesheet, so matching selectors override the defaul
 }
 ```
 
-An existing `theme.tcss` is watched and reapplied when saved. If the theme file is created while
-TermWriter is already running, restart once so it can be added to the watched stylesheet list.
+An existing valid `theme.tcss` is watched and reapplied when saved. A malformed or unreadable theme
+is ignored at startup with a warning, while the bundled theme keeps TermWriter usable. Fix the file
+and restart to re-enable it, or launch with `termwriter --safe-mode` to ignore only `theme.tcss` for
+that run. If the theme file is created while TermWriter is already running, restart once so it can be
+added to the watched stylesheet list.
 
 ## Modes and shortcuts
 
@@ -586,8 +589,9 @@ mode, Python environment, dependency versions, and workload, then compare the me
 - Smart Enter handles common list/task/blockquote prefixes, thematic breaks, fenced code, and the
   distinction between indented code and genuine nested lists. Ambiguous indentation parses the
   source prefix through the cursor, so Enter may have a small delay in extremely large files.
-- A malformed `theme.tcss` can prevent startup until the file is corrected. Only a theme present at
-  launch is watched; create the templates with `--init-config` before opening the TUI.
+- Only a valid theme present at launch is watched; create the templates with `--init-config` before
+  opening the TUI. Runtime edits are handled by Textual's CSS watcher, which keeps the last valid
+  stylesheet if a later edit is malformed.
 - Workspace text search returns one match per source line and caps results at 100. Fuzzy mode scans
   every candidate line before returning its globally strongest matches, with cooperative
   cancellation during long lines. Compound filters do not provide escaping for filenames containing

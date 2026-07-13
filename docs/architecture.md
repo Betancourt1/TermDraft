@@ -283,8 +283,10 @@ aliases. F1 and CLI help are generated from the effective keymap, including rema
 The command palette exposes fixed application callbacks; configuration cannot add callbacks.
 
 Bundled layout rules live in `default.tcss`. When an existing user `theme.tcss` is present, the App
-loads `[default.tcss, theme.tcss]` in that order and enables Textual's CSS file watcher. Inline widget
-CSS is avoided so the user file can override normal selectors. Runtime reload reparses TOML,
+parses it with the bundled stylesheet before startup. A read or parse failure excludes only the user
+file and produces a warning; `--safe-mode` deliberately takes the same bundled-only path. Valid
+themes load after `default.tcss` and enable Textual's CSS file watcher. Inline widget CSS is avoided
+so the user file can override normal selectors. Runtime reload reparses TOML,
 updates keybindings and editor properties, and applies the new retention age the next time Recovery
 Manager opens; an existing theme is independently reloaded by Textual when saved. Creating the theme
 after application startup requires one restart.

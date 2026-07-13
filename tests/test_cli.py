@@ -39,6 +39,35 @@ def test_cli_launches_valid_workspace(
     assert launched == [tmp_path.resolve()]
 
 
+def test_cli_safe_mode_ignores_only_the_user_theme(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    (config_root / "config.toml").write_text(
+        "[editor]\nsoft_wrap = false\n",
+        encoding="utf-8",
+    )
+    (config_root / "theme.tcss").write_text(
+        "#title-bar { background: #010203; }\n",
+        encoding="utf-8",
+    )
+    launched: list[TermWriterApp] = []
+
+    def fake_run(app: TermWriterApp) -> None:
+        launched.append(app)
+
+    monkeypatch.setattr(TermWriterApp, "run", fake_run)
+
+    result = main(["--config-dir", str(config_root), "--safe-mode", str(tmp_path)])
+
+    assert result == 0
+    assert len(launched) == 1
+    assert not launched[0].config.editor.soft_wrap
+    assert launched[0]._theme_warning is None
+
+
 def test_cli_forwards_shutdown_signal_and_restores_handlers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

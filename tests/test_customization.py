@@ -17,12 +17,18 @@ from termwriter.screens.dialogs import HelpDialog
 from termwriter.services.recovery import RecoveryJournal
 
 
-def _app(path: Path, config: TermWriterConfig | None = None) -> TermWriterApp:
+def _app(
+    path: Path,
+    config: TermWriterConfig | None = None,
+    *,
+    use_user_theme: bool = True,
+) -> TermWriterApp:
     return TermWriterApp(
         Workspace.from_target(path),
         preview_debounce=0.01,
         recovery_journal=RecoveryJournal(path.parent / ".test-recovery"),
         config=config,
+        use_user_theme=use_user_theme,
     )
 
 
@@ -287,6 +293,48 @@ async def test_user_theme_overrides_bundled_css(tmp_path: Path) -> None:
         )
         await pilot.pause(0.35)
         assert title.styles.background == Color(4, 5, 6)
+
+
+async def test_invalid_user_theme_is_ignored_with_warning(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    theme_path = config_root / "theme.tcss"
+    theme_path.write_text("#title-bar { background: ; }\n", encoding="utf-8")
+    app = _app(path, load_config(config_root))
+
+    async with app.run_test(size=(100, 30)):
+        notifications = list(app._notifications)
+
+        assert app.document is not None
+        assert len(notifications) == 1
+        assert notifications[0].title == "Custom theme ignored"
+        assert str(theme_path) in notifications[0].message
+        assert "restart TermWriter" in notifications[0].message
+
+
+async def test_safe_mode_ignores_theme_but_keeps_editor_config(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    (config_root / "config.toml").write_text(
+        "[editor]\nsoft_wrap = false\n",
+        encoding="utf-8",
+    )
+    (config_root / "theme.tcss").write_text(
+        "#title-bar { background: #010203; }\n",
+        encoding="utf-8",
+    )
+    app = _app(path, load_config(config_root), use_user_theme=False)
+
+    async with app.run_test(size=(100, 30)):
+        title = app.query_one("#title-bar")
+
+        assert title.styles.background != Color(1, 2, 3)
+        assert not app.editor.soft_wrap
+        assert app._theme_warning is None
 
 
 async def test_command_palette_and_help_expose_product_actions(tmp_path: Path) -> None:

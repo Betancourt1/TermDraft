@@ -15,6 +15,7 @@ from textual.app import App, ComposeResult, SystemCommand
 from textual.color import Color
 from textual.command import Command, CommandList, CommandPalette, SearchIcon
 from textual.containers import Horizontal
+from textual.css.stylesheet import Stylesheet
 from textual.filter import LineFilter, Monochrome
 from textual.screen import ModalScreen, Screen
 from textual.theme import Theme
@@ -157,6 +158,19 @@ _MONOCHROME_THEME = Theme(
     },
 )
 _MONOCHROME_FILTER = Monochrome()
+
+
+def _validate_user_theme(default_css: Path, user_css: Path) -> None:
+    """Parse bundled and user styles together before Textual starts."""
+    variables = _MONOCHROME_THEME.to_color_system().generate()
+
+    bundled = Stylesheet(variables=variables)
+    bundled.read(default_css)
+    bundled.parse()
+
+    combined = Stylesheet(variables=variables)
+    combined.read_all([default_css, user_css])
+    combined.parse()
 
 
 def _paths_reserve_same_spelling(left: Path, right: Path) -> bool:
@@ -384,14 +398,26 @@ class TermWriterApp(App[None]):
         recovery_journal: RecoveryJournal | None = None,
         session_store: SessionStore | None = None,
         config: TermWriterConfig | None = None,
+        use_user_theme: bool = True,
     ) -> None:
         self.config = config or TermWriterConfig(root=Path.home() / ".termwriter")
         self._config_root = config.root if config is not None else None
         default_css = Path(__file__).with_name("default.tcss")
         css_paths: list[str | PurePath] = [default_css]
-        watch_user_css = config is not None and self.config.theme_path.is_file()
-        if watch_user_css:
-            css_paths.append(self.config.theme_path)
+        watch_user_css = False
+        self._theme_warning: str | None = None
+        theme_path = self.config.theme_path
+        if config is not None and use_user_theme and theme_path.exists():
+            try:
+                _validate_user_theme(default_css, theme_path)
+            except Exception:
+                self._theme_warning = (
+                    f"{theme_path} was ignored because it could not be read or parsed. "
+                    "Fix the file and restart TermWriter to re-enable it."
+                )
+            else:
+                css_paths.append(theme_path)
+                watch_user_css = True
         super().__init__(css_path=css_paths, watch_css=watch_user_css)
         self.register_theme(_MONOCHROME_THEME)
         self.theme = _MONOCHROME_THEME.name
@@ -519,6 +545,12 @@ class TermWriterApp(App[None]):
         )
         self._narrow = self.size.width < 100
         self._apply_panel_visibility()
+        if self._theme_warning is not None:
+            self.notify(
+                escape(self._theme_warning),
+                severity="warning",
+                title="Custom theme ignored",
+            )
         if self._session_warning is not None:
             self.notify(
                 escape(self._session_warning),
