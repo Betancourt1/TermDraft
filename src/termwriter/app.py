@@ -35,6 +35,8 @@ from termwriter.icons import SEARCH_ICON, SEARCH_ICON_COLOR
 from termwriter.models.document import Document, FileSnapshot
 from termwriter.models.workspace import (
     ScanResult,
+    UnsafePathError,
+    UnsupportedFileError,
     Workspace,
     WorkspaceError,
     WorkspaceNotFoundError,
@@ -1146,7 +1148,11 @@ class TermWriterApp(App[None]):
 
     def _refresh_document_tabs(self) -> None:
         tabs = self.document_tabs
-        tabs.display = len(self._open_documents) > 1
+        tabs.display = len(self._open_documents) > 1 or (
+            self.document is None
+            and bool(self._open_documents)
+            and not self._restoring_session_tabs
+        )
         active_id = ""
         for opened in self._open_documents:
             tab = tabs.get_tab(opened.tab_id)
@@ -1160,6 +1166,8 @@ class TermWriterApp(App[None]):
                 active_id = opened.tab_id
         if active_id and tabs.active != active_id:
             tabs.active = active_id
+        elif not active_id and tabs.active:
+            tabs.active = ""
 
     @on(Tabs.TabActivated, "#document-tabs")
     def document_tab_activated(self, event: Tabs.TabActivated) -> None:
@@ -1364,7 +1372,12 @@ class TermWriterApp(App[None]):
             safe_path = self.workspace.validate_document_path(path)
         except WorkspaceError as error:
             self.notify(escape(str(error)), severity="error", title="Cannot open file")
-            self._cancel_pending_open()
+            self._cancel_pending_open(
+                prune_deferred=isinstance(
+                    error,
+                    (WorkspaceNotFoundError, UnsupportedFileError, UnsafePathError),
+                )
+            )
             return None
 
         current = self.document
@@ -1948,7 +1961,7 @@ class TermWriterApp(App[None]):
             return
         self._cancel_pending_open()
 
-    def _cancel_pending_open(self) -> None:
+    def _cancel_pending_open(self, *, prune_deferred: bool = False) -> None:
         self._pending_open_document = None
         self._pending_recovery_entry = None
         self._pending_recovery_record = None
@@ -1964,8 +1977,11 @@ class TermWriterApp(App[None]):
             None,
         )
         self._pending_deferred_tab_id = None
-        if deferred is not None and self._restoring_session_tabs:
-            self._remove_deferred_document(deferred, forget_session=False)
+        deferred_pruned = deferred is not None and prune_deferred
+        if deferred is not None and (self._restoring_session_tabs or prune_deferred):
+            self._remove_deferred_document(deferred, forget_session=prune_deferred)
+        if deferred_pruned and not self._restoring_session_tabs:
+            self._persist_session()
         if self.document is not None:
             self.editor.focus()
             if self.document.dirty:

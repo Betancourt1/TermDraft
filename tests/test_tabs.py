@@ -5,12 +5,13 @@ from __future__ import annotations
 import signal
 from pathlib import Path
 
+import pytest
 from textual.pilot import Pilot
 from textual.widgets import Tab
 
 from termwriter.app import TermWriterApp
 from termwriter.config import load_config
-from termwriter.models.workspace import Workspace
+from termwriter.models.workspace import Workspace, WorkspaceAccessError
 from termwriter.screens.dialogs import (
     RecoveryManagerDialog,
     TextSearchDialog,
@@ -628,6 +629,120 @@ async def test_missing_restored_tab_is_pruned_and_survivor_opens(tmp_path: Path)
         restored = store.load(tmp_path).state
         assert restored is not None
         assert restored.open_paths == (survivor,)
+
+
+@pytest.mark.parametrize("replacement", ["missing", "directory"])
+async def test_invalid_deferred_tab_is_pruned_after_startup(
+    tmp_path: Path,
+    replacement: str,
+) -> None:
+    first = tmp_path / "first.md"
+    deferred = tmp_path / "deferred.md"
+    first.write_text("first", encoding="utf-8")
+    deferred.write_text("deferred", encoding="utf-8")
+    store = SessionStore(tmp_path / "sessions")
+    store.save(
+        SessionState(
+            tmp_path,
+            first,
+            (DocumentViewState(first), DocumentViewState(deferred)),
+            (first, deferred),
+        )
+    )
+    app = TermWriterApp(
+        Workspace.from_target(tmp_path),
+        preview_debounce=0.01,
+        recovery_journal=RecoveryJournal(tmp_path / "recovery"),
+        session_store=store,
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        for _ in range(200):
+            if app.document is not None and not app._restoring_session_tabs:
+                break
+            await pilot.pause(0.01)
+        deferred.unlink()
+        if replacement == "directory":
+            deferred.mkdir()
+
+        deferred_tab = next(
+            opened for opened in app._open_documents if app._tab_path(opened) == deferred
+        )
+        await pilot.click(f"#{deferred_tab.tab_id}")
+        for _ in range(200):
+            if all(app._tab_path(opened) != deferred for opened in app._open_documents):
+                break
+            await pilot.pause(0.01)
+        await _wait_until_session_saved(app, pilot)
+
+        assert app.document is not None and app.document.path == first
+        assert [app._tab_path(opened) for opened in app._open_documents] == [first]
+        restored = store.load(tmp_path).state
+        assert restored is not None
+        assert restored.open_paths == (first,)
+        assert all(view.path != deferred for view in restored.documents)
+
+
+async def test_transient_deferred_failure_can_be_retried_after_last_active_tab_closes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = tmp_path / "first.md"
+    deferred = tmp_path / "deferred.md"
+    first.write_text("first", encoding="utf-8")
+    deferred.write_text("deferred", encoding="utf-8")
+    store = SessionStore(tmp_path / "sessions")
+    store.save(
+        SessionState(
+            tmp_path,
+            first,
+            (DocumentViewState(first), DocumentViewState(deferred)),
+            (first, deferred),
+        )
+    )
+    app = TermWriterApp(
+        Workspace.from_target(tmp_path),
+        preview_debounce=0.01,
+        recovery_journal=RecoveryJournal(tmp_path / "recovery"),
+        session_store=store,
+    )
+    original_validate = Workspace.validate_document_path
+    unavailable = True
+
+    def transient_validate(
+        workspace: Workspace,
+        path: Path,
+        *,
+        must_exist: bool = True,
+    ) -> Path:
+        if unavailable and path == deferred:
+            raise WorkspaceAccessError("injected transient access failure")
+        return original_validate(workspace, path, must_exist=must_exist)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        for _ in range(200):
+            if app.document is not None and not app._restoring_session_tabs:
+                break
+            await pilot.pause(0.01)
+        monkeypatch.setattr(Workspace, "validate_document_path", transient_validate)
+
+        await pilot.press("ctrl+f4")
+        for _ in range(200):
+            if app.document is None and not app._critical_io:
+                break
+            await pilot.pause(0.01)
+
+        assert [app._tab_path(opened) for opened in app._open_documents] == [deferred]
+        assert app.document_tabs.display
+        assert app.document_tabs.active == ""
+
+        unavailable = False
+        retained = app._open_documents[0]
+        await pilot.click(f"#{retained.tab_id}")
+        await _wait_for_document(app, pilot, deferred)
+
+        assert app.editor.text == "deferred"
+        assert app.document_tabs.active == retained.tab_id
 
 
 async def _wait_until_session_saved(app: TermWriterApp, pilot: Pilot[None]) -> None:
