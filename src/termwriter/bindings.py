@@ -238,6 +238,7 @@ EDITOR_BINDINGS: list[BindingType] = [
         "undo",
         "Undo",
         show=False,
+        priority=True,
         id=BINDING_ID_UNDO,
     ),
     Binding(
@@ -245,6 +246,7 @@ EDITOR_BINDINGS: list[BindingType] = [
         "redo",
         "Redo",
         show=False,
+        priority=True,
         id=BINDING_ID_REDO,
     ),
 ]

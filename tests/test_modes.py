@@ -112,3 +112,50 @@ async def test_write_startup_mode_accepts_text_without_mode_switch(tmp_path: Pat
 
         assert app.editor.text == "xsource"
         assert app._focus_mode() == "WRITE"
+
+
+async def test_modifier_undo_and_redo_work_in_command_mode(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    app = _app(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("i", "x", "escape", "ctrl+z")
+
+        assert app.editor.text == "base"
+        assert app._focus_mode() == "COMMAND"
+
+        await pilot.press("ctrl+y")
+        assert app.editor.text == "xbase"
+
+        await pilot.press("backspace", "delete", "x")
+        assert app.editor.text == "xbase"
+
+        await pilot.press("u")
+        assert app.editor.text == "base"
+        await pilot.press("r")
+        assert app.editor.text == "xbase"
+
+
+async def test_remapped_modifier_undo_and_redo_work_in_command_mode(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    (config_root / "config.toml").write_text(
+        '[keybindings]\nundo = "ctrl+u"\nredo = "ctrl+shift+r"\n',
+        encoding="utf-8",
+    )
+    app = _app(path, config_root=config_root)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("i", "x", "escape", "ctrl+z")
+        assert app.editor.text == "xbase"
+
+        await pilot.press("ctrl+u")
+        assert app.editor.text == "base"
+
+        await pilot.press("ctrl+shift+r")
+        assert app.editor.text == "xbase"
