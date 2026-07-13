@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import cast
+from typing import Literal, cast
 
 CONFIG_HOME_ENV = "TERMWRITER_CONFIG_HOME"
 CONFIG_DIRECTORY_NAME = ".termwriter"
@@ -34,6 +34,29 @@ BINDING_ID_UNDO = "undo"
 BINDING_ID_REDO = "redo"
 BINDING_ID_SHOW_HELP = "show_help"
 BINDING_ID_COMMAND_PALETTE = "command_palette"
+BINDING_ID_COMMAND_WRITE_MODE = "command_write_mode"
+BINDING_ID_COMMAND_SAVE = "command_save"
+BINDING_ID_COMMAND_QUIT = "command_quit"
+BINDING_ID_COMMAND_TOGGLE_EXPLORER = "command_toggle_explorer"
+BINDING_ID_COMMAND_FIND_FILE = "command_find_file"
+BINDING_ID_COMMAND_RECENT_DOCUMENTS = "command_recent_documents"
+BINDING_ID_COMMAND_NEXT_TAB = "command_next_tab"
+BINDING_ID_COMMAND_PREVIOUS_TAB = "command_previous_tab"
+BINDING_ID_COMMAND_CLOSE_TAB = "command_close_tab"
+BINDING_ID_COMMAND_SEARCH_TEXT = "command_search_text"
+BINDING_ID_COMMAND_TOGGLE_PREVIEW = "command_toggle_preview"
+BINDING_ID_COMMAND_UNDO = "command_undo"
+BINDING_ID_COMMAND_REDO = "command_redo"
+BINDING_ID_COMMAND_OPEN_PALETTE = "command_open_palette"
+BINDING_ID_COMMAND_SHOW_HELP = "command_show_help"
+BINDING_ID_COMMAND_CURSOR_LEFT = "command_cursor_left"
+BINDING_ID_COMMAND_CURSOR_DOWN = "command_cursor_down"
+BINDING_ID_COMMAND_CURSOR_UP = "command_cursor_up"
+BINDING_ID_COMMAND_CURSOR_RIGHT = "command_cursor_right"
+BINDING_ID_COMMAND_LINE_START = "command_line_start"
+BINDING_ID_COMMAND_LINE_END = "command_line_end"
+BINDING_ID_COMMAND_DOCUMENT_START = "command_document_start"
+BINDING_ID_COMMAND_DOCUMENT_END = "command_document_end"
 
 DEFAULT_KEYBINDINGS: Mapping[str, str] = MappingProxyType(
     {
@@ -53,6 +76,29 @@ DEFAULT_KEYBINDINGS: Mapping[str, str] = MappingProxyType(
         BINDING_ID_REDO: "ctrl+y,super+y,ctrl+shift+z",
         BINDING_ID_SHOW_HELP: "f1",
         BINDING_ID_COMMAND_PALETTE: "ctrl+backslash",
+        BINDING_ID_COMMAND_WRITE_MODE: "i",
+        BINDING_ID_COMMAND_SAVE: "w",
+        BINDING_ID_COMMAND_QUIT: "q",
+        BINDING_ID_COMMAND_TOGGLE_EXPLORER: "e",
+        BINDING_ID_COMMAND_FIND_FILE: "f",
+        BINDING_ID_COMMAND_RECENT_DOCUMENTS: "o",
+        BINDING_ID_COMMAND_NEXT_TAB: "n",
+        BINDING_ID_COMMAND_PREVIOUS_TAB: "p",
+        BINDING_ID_COMMAND_CLOSE_TAB: "c",
+        BINDING_ID_COMMAND_SEARCH_TEXT: "slash",
+        BINDING_ID_COMMAND_TOGGLE_PREVIEW: "v",
+        BINDING_ID_COMMAND_UNDO: "u",
+        BINDING_ID_COMMAND_REDO: "r",
+        BINDING_ID_COMMAND_OPEN_PALETTE: "colon",
+        BINDING_ID_COMMAND_SHOW_HELP: "question_mark",
+        BINDING_ID_COMMAND_CURSOR_LEFT: "h",
+        BINDING_ID_COMMAND_CURSOR_DOWN: "j",
+        BINDING_ID_COMMAND_CURSOR_UP: "k",
+        BINDING_ID_COMMAND_CURSOR_RIGHT: "l",
+        BINDING_ID_COMMAND_LINE_START: "0",
+        BINDING_ID_COMMAND_LINE_END: "dollar_sign",
+        BINDING_ID_COMMAND_DOCUMENT_START: "g",
+        BINDING_ID_COMMAND_DOCUMENT_END: "G",
     }
 )
 KNOWN_BINDING_IDS = frozenset(DEFAULT_KEYBINDINGS)
@@ -74,6 +120,8 @@ CONFIG_TEMPLATE = """\
 auto_continue_lists = true
 soft_wrap = true
 show_line_numbers = true
+# Applied on the next launch: "command" or "write".
+startup_mode = "command"
 
 [recovery]
 # Used only when you explicitly choose age-based cleanup in Recovery Manager.
@@ -98,6 +146,30 @@ retention_days = 30
 # redo = "ctrl+y,super+y,ctrl+shift+z"
 # show_help = "f1"
 # command_palette = "ctrl+backslash"
+# Single-key COMMAND bindings are remappable too.
+# command_write_mode = "i"
+# command_save = "w"
+# command_quit = "q"
+# command_toggle_explorer = "e"
+# command_find_file = "f"
+# command_recent_documents = "o"
+# command_next_tab = "n"
+# command_previous_tab = "p"
+# command_close_tab = "c"
+# command_search_text = "slash"
+# command_toggle_preview = "v"
+# command_undo = "u"
+# command_redo = "r"
+# command_open_palette = "colon"
+# command_show_help = "question_mark"
+# command_cursor_left = "h"
+# command_cursor_down = "j"
+# command_cursor_up = "k"
+# command_cursor_right = "l"
+# command_line_start = "0"
+# command_line_end = "dollar_sign"
+# command_document_start = "g"
+# command_document_end = "G"
 """
 
 THEME_TEMPLATE = """\
@@ -123,6 +195,7 @@ class EditorConfig:
     auto_continue_lists: bool = True
     soft_wrap: bool = True
     show_line_numbers: bool = True
+    startup_mode: Literal["command", "write"] = "command"
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,7 +295,12 @@ def initialize_config(
 
 def _parse_editor(raw_editor: object) -> EditorConfig:
     editor = _as_table(raw_editor, "editor")
-    allowed_keys = {"auto_continue_lists", "soft_wrap", "show_line_numbers"}
+    allowed_keys = {
+        "auto_continue_lists",
+        "soft_wrap",
+        "show_line_numbers",
+        "startup_mode",
+    }
     unknown_keys = set(editor) - allowed_keys
     if unknown_keys:
         raise ConfigError(f"unknown editor option: {_format_names(unknown_keys)}")
@@ -240,10 +318,15 @@ def _parse_editor(raw_editor: object) -> EditorConfig:
             raise ConfigError(f"editor.{name} must be true or false")
         values[name] = value
 
+    startup_mode = editor.get("startup_mode", "command")
+    if not isinstance(startup_mode, str) or startup_mode not in {"command", "write"}:
+        raise ConfigError('editor.startup_mode must be "command" or "write"')
+
     return EditorConfig(
         auto_continue_lists=values["auto_continue_lists"],
         soft_wrap=values["soft_wrap"],
         show_line_numbers=values["show_line_numbers"],
+        startup_mode=cast(Literal["command", "write"], startup_mode),
     )
 
 

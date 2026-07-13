@@ -186,7 +186,7 @@ termwriter --config-path
 
 The default files are `~/.termwriter/config.toml` and `~/.termwriter/theme.tcss`. Override the
 directory with `TERMWRITER_CONFIG_HOME` or `--config-dir PATH`. The TOML file accepts only the
-documented editor booleans, positive manual-retention age, and known binding IDs; it cannot define
+documented editor options, positive manual-retention age, and known binding IDs; it cannot define
 actions, commands, or executable hooks.
 
 ```toml
@@ -194,6 +194,7 @@ actions, commands, or executable hooks.
 auto_continue_lists = true
 soft_wrap = true
 show_line_numbers = true
+startup_mode = "command" # or "write"; applied on the next launch
 
 [recovery]
 # Applied only when Delete expired is explicitly confirmed.
@@ -216,11 +217,19 @@ undo = "ctrl+z,super+z"
 redo = "ctrl+y,super+y,ctrl+shift+z"
 show_help = "f1"
 command_palette = "ctrl+backslash"
+command_cursor_left = "h"
+command_cursor_down = "j"
+command_cursor_up = "k"
+command_cursor_right = "l"
+command_line_start = "0"
+command_line_end = "dollar_sign"
+command_document_start = "g"
+command_document_end = "G"
 ```
 
 Tab, Shift+Tab, and Enter are reserved for preview link navigation and cannot be reassigned.
-The single-key COMMAND mode map is fixed in this version; the configured shortcuts below remain
-available in both modes and can still be remapped.
+Every single-key COMMAND action has a `command_*` binding ID in the generated template. Configured
+Ctrl/Alt shortcuts remain available in both modes and can also be remapped.
 
 Use **Reload configuration** from the command palette after editing `config.toml`. Help is generated
 from the effective map, so it reflects remapped keys. Duplicate keys, unknown IDs/options, invalid
@@ -244,9 +253,10 @@ TermWriter is already running, restart once so it can be added to the watched st
 
 ## Modes and shortcuts
 
-TermWriter starts in COMMAND mode, like Vim. Source text is protected there, so plain keys run
-commands instead of being inserted. The arrow keys continue to move the cursor without changing the
-document. Press `i` to enter WRITE mode and Esc to return to COMMAND mode.
+TermWriter starts in COMMAND mode by default, like Vim; set `editor.startup_mode = "write"` to begin
+ready for insertion instead. Source text is protected in COMMAND mode, so plain keys run commands
+instead of being inserted. The arrow keys and `h`/`j`/`k`/`l` move without changing the document.
+Press `i` to enter WRITE mode and Esc to return to COMMAND mode.
 
 | COMMAND key | Action |
 | --- | --- |
@@ -263,6 +273,9 @@ document. Press `i` to enter WRITE mode and Esc to return to COMMAND mode.
 | `u` / `r` | Undo / redo |
 | `:` | Open the searchable command palette |
 | `?` | Shortcut help |
+| `h` / `j` / `k` / `l` | Move left / down / up / right in the focused source editor |
+| `0` / `$` | Move to the start / end of the source line |
+| `g` / `G` | Move to the start / end of the document |
 
 Configured shortcuts remain available in both modes:
 
@@ -283,9 +296,9 @@ Configured shortcuts remain available in both modes:
 | Ctrl+\ | Open the searchable command palette |
 | F1 | Shortcut help |
 
-The command palette shows only each command's single-key COMMAND-mode shortcut. Commands without
-one are labeled `Palette only`; configured Ctrl/Alt shortcuts remain available but stay out of the
-palette for a cleaner scan.
+The command palette shows each command's effective single-key COMMAND-mode shortcut. Commands
+without one are labeled `Palette only`; configured Ctrl/Alt shortcuts remain available but stay out
+of the palette for a cleaner scan.
 
 The editor keeps Tab and Shift+Tab for Markdown indentation. Inside the focused preview, Tab and
 Shift+Tab select links, and Enter activates the selection; reaching either end returns to the normal

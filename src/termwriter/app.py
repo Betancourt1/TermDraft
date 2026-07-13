@@ -24,6 +24,7 @@ from textual.worker import Worker, get_current_worker
 
 from termwriter.bindings import (
     APP_BINDINGS,
+    COMMAND_NAVIGATION_ACTIONS,
     MARKDOWN_SYNTAX_HELP,
     format_action_shortcuts,
     format_shortcut_help,
@@ -439,7 +440,11 @@ class TermWriterApp(App[None]):
         self._preview_visible = True
         self._narrow = False
         self._narrow_pane = "editor"
-        self._interaction_mode = _InteractionMode.COMMAND
+        self._interaction_mode = (
+            _InteractionMode.WRITE
+            if self.config.editor.startup_mode == "write"
+            else _InteractionMode.COMMAND
+        )
         self._empty_editor: MarkdownEditor | None = None
         self._pending_open_document: Document | None = None
         self._pending_recovery_entry: RecoveryEntry | None = None
@@ -2391,9 +2396,13 @@ class TermWriterApp(App[None]):
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Enable modal command keys only while COMMAND mode owns the keyboard."""
-        del parameters
         if action == "command_mode_key":
-            return self._interaction_mode is _InteractionMode.COMMAND and not self._has_modal
+            if self._interaction_mode is not _InteractionMode.COMMAND or self._has_modal:
+                return False
+            command = parameters[0] if parameters else None
+            if command in COMMAND_NAVIGATION_ACTIONS:
+                return self.document is not None and self.focused is self.editor
+            return True
         if action == "enter_command_mode":
             return not self._has_modal
         return True
@@ -2414,6 +2423,27 @@ class TermWriterApp(App[None]):
         self.editor.focus()
 
     async def action_command_mode_key(self, action: str) -> None:
+        if action in COMMAND_NAVIGATION_ACTIONS:
+            editor = self.editor
+            if action == "cursor_left":
+                editor.action_cursor_left()
+            elif action == "cursor_down":
+                editor.action_cursor_down()
+            elif action == "cursor_up":
+                editor.action_cursor_up()
+            elif action == "cursor_right":
+                editor.action_cursor_right()
+            elif action == "line_start":
+                line, _column = editor.cursor_location
+                editor.move_cursor((line, 0))
+            elif action == "line_end":
+                line, _column = editor.cursor_location
+                editor.move_cursor((line, len(editor.document.get_line(line))))
+            elif action == "document_start":
+                editor.move_cursor(editor.document.start)
+            else:
+                editor.move_cursor(editor.document.end)
+            return
         await self.run_action(action)
 
     def _set_interaction_mode(self, mode: _InteractionMode) -> None:
@@ -4101,7 +4131,7 @@ class TermWriterApp(App[None]):
             yield SystemCommand(title, self._command_help(action, description), callback)
 
     def _command_help(self, action: str, description: str) -> str:
-        shortcuts = format_action_shortcuts(action)
+        shortcuts = format_action_shortcuts(action, self.config.keybindings)
         return f"Keys: {shortcuts}  ·  {description}"
 
     def _focus_mode(self) -> str:

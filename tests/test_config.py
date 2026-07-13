@@ -73,6 +73,7 @@ def test_config_applies_editor_and_keybinding_overrides(tmp_path: Path) -> None:
 [editor]
 auto_continue_lists = false
 show_line_numbers = false
+startup_mode = "write"
 
 [recovery]
 retention_days = 45
@@ -82,6 +83,7 @@ save = "ctrl+shift+s"
 search_text = "ctrl+f"
 preview_next_heading = "ctrl+n"
 redo = "ctrl+r, ctrl+shift+r"
+command_cursor_left = "a"
 """,
         encoding="utf-8",
     )
@@ -92,12 +94,14 @@ redo = "ctrl+r, ctrl+shift+r"
         auto_continue_lists=False,
         soft_wrap=True,
         show_line_numbers=False,
+        startup_mode="write",
     )
     assert config.recovery == RecoveryConfig(retention_days=45)
     assert config.keybindings["save"] == "ctrl+shift+s"
     assert config.keybindings["search_text"] == "ctrl+f"
     assert config.keybindings["preview_next_heading"] == "ctrl+n"
     assert config.keybindings["redo"] == "ctrl+r,ctrl+shift+r"
+    assert config.keybindings["command_cursor_left"] == "a"
     assert config.keybindings["quit"] == "ctrl+q"
 
 
@@ -109,6 +113,8 @@ redo = "ctrl+r, ctrl+shift+r"
         ("editor = true\n", "editor must be a TOML table"),
         ("[editor]\nunknown = true\n", "unknown editor option"),
         ("[editor]\nsoft_wrap = 1\n", "editor.soft_wrap must be true or false"),
+        ('[editor]\nstartup_mode = "insert"\n', "editor.startup_mode"),
+        ("[editor]\nstartup_mode = false\n", "editor.startup_mode"),
         ("recovery = true\n", "recovery must be a TOML table"),
         ("[recovery]\nunknown = 1\n", "unknown recovery option"),
         ("[recovery]\nretention_days = 0\n", "must be a positive integer"),
@@ -149,6 +155,18 @@ def test_duplicate_tokens_across_effective_bindings_are_rejected(tmp_path: Path)
     (root / CONFIG_FILE_NAME).write_text('[keybindings]\nsave = "ctrl+q"\n', encoding="utf-8")
 
     with pytest.raises(ConfigError, match="assigned to both 'save' and 'quit'"):
+        load_config(root)
+
+
+def test_command_navigation_key_collisions_are_rejected(tmp_path: Path) -> None:
+    root = tmp_path / ".termwriter"
+    root.mkdir()
+    (root / CONFIG_FILE_NAME).write_text(
+        '[keybindings]\ncommand_cursor_left = "l"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=r"command_cursor_left.*command_cursor_right"):
         load_config(root)
 
 

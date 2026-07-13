@@ -8,7 +8,30 @@ from textual.binding import Binding, BindingType
 
 from termwriter.config import (
     BINDING_ID_CLOSE_TAB,
+    BINDING_ID_COMMAND_CLOSE_TAB,
+    BINDING_ID_COMMAND_CURSOR_DOWN,
+    BINDING_ID_COMMAND_CURSOR_LEFT,
+    BINDING_ID_COMMAND_CURSOR_RIGHT,
+    BINDING_ID_COMMAND_CURSOR_UP,
+    BINDING_ID_COMMAND_DOCUMENT_END,
+    BINDING_ID_COMMAND_DOCUMENT_START,
+    BINDING_ID_COMMAND_FIND_FILE,
+    BINDING_ID_COMMAND_LINE_END,
+    BINDING_ID_COMMAND_LINE_START,
+    BINDING_ID_COMMAND_NEXT_TAB,
+    BINDING_ID_COMMAND_OPEN_PALETTE,
     BINDING_ID_COMMAND_PALETTE,
+    BINDING_ID_COMMAND_PREVIOUS_TAB,
+    BINDING_ID_COMMAND_QUIT,
+    BINDING_ID_COMMAND_RECENT_DOCUMENTS,
+    BINDING_ID_COMMAND_REDO,
+    BINDING_ID_COMMAND_SAVE,
+    BINDING_ID_COMMAND_SEARCH_TEXT,
+    BINDING_ID_COMMAND_SHOW_HELP,
+    BINDING_ID_COMMAND_TOGGLE_EXPLORER,
+    BINDING_ID_COMMAND_TOGGLE_PREVIEW,
+    BINDING_ID_COMMAND_UNDO,
+    BINDING_ID_COMMAND_WRITE_MODE,
     BINDING_ID_FIND_FILE,
     BINDING_ID_NEXT_TAB,
     BINDING_ID_PREVIEW_NEXT_HEADING,
@@ -123,34 +146,66 @@ APP_BINDINGS: list[BindingType] = [
 ]
 
 COMMAND_MODE_SHORTCUTS = (
-    ("i", "enter_write_mode", "Enter WRITE mode"),
-    ("w", "save", "Save the current document"),
-    ("q", "request_quit", "Quit safely"),
-    ("e", "toggle_explorer", "Show or hide files"),
-    ("f", "find_file", "Find a Markdown file"),
-    ("o", "open_recent", "Open a recent document"),
-    ("n", "next_tab", "Activate the next open document tab"),
-    ("p", "previous_tab", "Activate the previous open document tab"),
-    ("c", "close_tab", "Close the active tab safely"),
-    ("slash", "search_text", "Search workspace text"),
-    ("v", "toggle_preview", "Show, hide, or focus the preview"),
-    ("u", "editor_undo", "Undo"),
-    ("r", "editor_redo", "Redo"),
-    ("colon", "command_palette", "Open the command palette"),
-    ("question_mark", "show_help", "Show shortcut help"),
+    (BINDING_ID_COMMAND_WRITE_MODE, "enter_write_mode", "Enter WRITE mode"),
+    (BINDING_ID_COMMAND_SAVE, "save", "Save the current document"),
+    (BINDING_ID_COMMAND_QUIT, "request_quit", "Quit safely"),
+    (BINDING_ID_COMMAND_TOGGLE_EXPLORER, "toggle_explorer", "Show or hide files"),
+    (BINDING_ID_COMMAND_FIND_FILE, "find_file", "Find a Markdown file"),
+    (BINDING_ID_COMMAND_RECENT_DOCUMENTS, "open_recent", "Open a recent document"),
+    (BINDING_ID_COMMAND_NEXT_TAB, "next_tab", "Activate the next open document tab"),
+    (
+        BINDING_ID_COMMAND_PREVIOUS_TAB,
+        "previous_tab",
+        "Activate the previous open document tab",
+    ),
+    (BINDING_ID_COMMAND_CLOSE_TAB, "close_tab", "Close the active tab safely"),
+    (BINDING_ID_COMMAND_SEARCH_TEXT, "search_text", "Search workspace text"),
+    (
+        BINDING_ID_COMMAND_TOGGLE_PREVIEW,
+        "toggle_preview",
+        "Show, hide, or focus the preview",
+    ),
+    (BINDING_ID_COMMAND_UNDO, "editor_undo", "Undo"),
+    (BINDING_ID_COMMAND_REDO, "editor_redo", "Redo"),
+    (BINDING_ID_COMMAND_OPEN_PALETTE, "command_palette", "Open the command palette"),
+    (BINDING_ID_COMMAND_SHOW_HELP, "show_help", "Show shortcut help"),
+    (BINDING_ID_COMMAND_CURSOR_LEFT, "cursor_left", "Move left"),
+    (BINDING_ID_COMMAND_CURSOR_DOWN, "cursor_down", "Move down"),
+    (BINDING_ID_COMMAND_CURSOR_UP, "cursor_up", "Move up"),
+    (BINDING_ID_COMMAND_CURSOR_RIGHT, "cursor_right", "Move right"),
+    (BINDING_ID_COMMAND_LINE_START, "line_start", "Move to source-line start"),
+    (BINDING_ID_COMMAND_LINE_END, "line_end", "Move to source-line end"),
+    (BINDING_ID_COMMAND_DOCUMENT_START, "document_start", "Move to document start"),
+    (BINDING_ID_COMMAND_DOCUMENT_END, "document_end", "Move to document end"),
 )
 
-_COMMAND_MODE_KEYS = {action: key for key, action, _description in COMMAND_MODE_SHORTCUTS}
+COMMAND_NAVIGATION_ACTIONS = frozenset(
+    {
+        "cursor_left",
+        "cursor_down",
+        "cursor_up",
+        "cursor_right",
+        "line_start",
+        "line_end",
+        "document_start",
+        "document_end",
+    }
+)
+
+_COMMAND_MODE_BINDING_IDS = {
+    action: binding_id for binding_id, action, _description in COMMAND_MODE_SHORTCUTS
+}
 
 APP_BINDINGS.extend(
     Binding(
-        key,
+        DEFAULT_KEYBINDINGS[binding_id],
         f"command_mode_key('{action}')",
         description,
         show=False,
         priority=True,
+        id=binding_id,
     )
-    for key, action, description in COMMAND_MODE_SHORTCUTS
+    for binding_id, action, description in COMMAND_MODE_SHORTCUTS
 )
 
 EDITOR_BINDINGS: list[BindingType] = [
@@ -231,8 +286,8 @@ def format_shortcut_help(
     """Render help from the effective keymap so remapped keys stay truthful."""
     command_rows = [("Esc", "Enter COMMAND mode")]
     command_rows.extend(
-        (_display_command_key(key), description)
-        for key, _action, description in COMMAND_MODE_SHORTCUTS
+        (_display_command_keys(keybindings[binding_id]), description)
+        for binding_id, _action, description in COMMAND_MODE_SHORTCUTS
     )
     configured_rows = [
         (_display_keys(keybindings[binding_id]), description)
@@ -266,6 +321,7 @@ def format_command_help(
     auto_continue_lists: bool = True,
 ) -> str:
     """Return terminal-friendly help for the CLI command listing."""
+    command_palette = format_action_shortcuts("command_palette", keybindings)
     palette = _display_keys(keybindings[BINDING_ID_COMMAND_PALETTE])
     return (
         "TermWriter commands\n\n"
@@ -274,7 +330,8 @@ def format_command_help(
             auto_continue_lists=auto_continue_lists,
         )
         + "\n\n"
-        + f"Press : in COMMAND mode or {palette} in either mode to search all commands, "
+        + f"Press {command_palette} in COMMAND mode or {palette} in either mode to search all "
+        + "commands, "
         + "including:\n"
         + "  Save, create/rename/move/trash files and folders, find file, open recent,\n"
         + "  next/previous/close tab, search workspace text,\n"
@@ -287,27 +344,35 @@ def format_command_help(
     )
 
 
-def format_action_shortcuts(action: str) -> str:
+def format_action_shortcuts(action: str, keybindings: Mapping[str, str]) -> str:
     """Display the single-key COMMAND shortcut for a palette action."""
-    command_key = _COMMAND_MODE_KEYS.get(action)
-    return _display_command_key(command_key) if command_key is not None else "Palette only"
+    binding_id = _COMMAND_MODE_BINDING_IDS.get(action)
+    return (
+        _display_command_keys(keybindings[binding_id]) if binding_id is not None else "Palette only"
+    )
 
 
 def _display_keys(keys: str) -> str:
     return " / ".join(_display_key(key.strip()) for key in keys.split(","))
 
 
-def _display_command_key(key: str) -> str:
-    return {"slash": "/", "colon": ":", "question_mark": "?"}.get(key, key)
+def _display_command_keys(keys: str) -> str:
+    return " / ".join(
+        key if len(key) == 1 else _display_key(key) for key in map(str.strip, keys.split(","))
+    )
 
 
 def _display_key(key: str) -> str:
     names = {
         "alt": "Alt",
         "backslash": "\\",
+        "colon": ":",
         "ctrl": "Ctrl",
+        "dollar_sign": "$",
         "escape": "Esc",
+        "question_mark": "?",
         "shift": "Shift",
+        "slash": "/",
         "super": "Super",
     }
     displayed: list[str] = []
