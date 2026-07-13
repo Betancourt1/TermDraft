@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
+import os
 import shutil
+import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 from termwriter.models.workspace import (
     IGNORED_DIRECTORIES,
@@ -16,6 +22,53 @@ from termwriter.services.persistence import PersistenceError, atomic_save, snaps
 
 class WorkspaceEntryError(Exception):
     """A file-management failure suitable for display in the UI."""
+
+
+def _rename_no_replace(source: Path, target: Path) -> None:
+    """Atomically rename one entry without replacing a racing destination."""
+    if sys.platform == "darwin":
+        function_name = "renameatx_np"
+        exclusive_flag = 0x00000004
+    elif sys.platform.startswith("linux"):
+        function_name = "renameat2"
+        exclusive_flag = 0x00000001
+    else:
+        raise WorkspaceEntryError("Exclusive workspace moves are unavailable on this platform.")
+
+    library = ctypes.CDLL(None, use_errno=True)
+    try:
+        raw_rename = getattr(library, function_name)
+    except AttributeError as error:
+        raise WorkspaceEntryError(
+            "Exclusive workspace moves are unavailable on this system."
+        ) from error
+    rename = cast(Callable[[int, bytes, int, bytes, int], int], raw_rename)
+
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    source_directory = os.open(source.parent, directory_flags)
+    try:
+        target_directory = os.open(target.parent, directory_flags)
+        try:
+            result = rename(
+                source_directory,
+                os.fsencode(source.name),
+                target_directory,
+                os.fsencode(target.name),
+                exclusive_flag,
+            )
+            error_number = ctypes.get_errno()
+        finally:
+            os.close(target_directory)
+    finally:
+        os.close(source_directory)
+
+    if result == 0:
+        return
+    if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise WorkspaceEntryError(f"An entry already exists at {target}.")
+    if error_number in {errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP}:
+        raise WorkspaceEntryError("This filesystem does not support exclusive workspace moves.")
+    raise OSError(error_number, os.strerror(error_number), target)
 
 
 def _validate_name(name: str) -> str:
@@ -115,7 +168,9 @@ def move_entry(workspace: Workspace, source: Path, target: Path) -> Path:
     if safe_target.exists() or safe_target.is_symlink():
         raise WorkspaceEntryError(f"An entry already exists at {safe_target}.")
     try:
-        safe_source.rename(safe_target)
+        _rename_no_replace(safe_source, safe_target)
+    except WorkspaceEntryError:
+        raise
     except OSError as error:
         raise WorkspaceEntryError(f"Cannot move {safe_source}: {error}") from error
     return safe_target

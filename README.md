@@ -119,9 +119,10 @@ selected folder, and a missing Markdown extension is added as `.md`.
 
 Move destinations are workspace-relative paths such as `archive/essay.md`. Clean open documents
 follow a rename or move without losing their tab, cursor, or contents. Save or close dirty documents
-first. Open documents cannot be removed; close them through TermWriter's save guard before trying
-again. Folder removal is recursive and its confirmation explicitly includes files hidden by the
-Markdown-only explorer.
+first. Rename and move publication never replaces a destination that appears concurrently. Open
+documents cannot be removed; close them through TermWriter's save guard before trying again. Folder
+removal is recursive and its confirmation explicitly includes files hidden by the Markdown-only
+explorer.
 
 ## Markdown support
 

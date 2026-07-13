@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from textual.widgets import Input, Static
 
+import termwriter.services.workspace_entries as workspace_entries
 from termwriter.app import TermWriterApp
 from termwriter.models.workspace import Workspace
 from termwriter.screens.dialogs import (
@@ -93,6 +94,44 @@ def test_workspace_operations_reject_replacement_escape_and_self_move(tmp_path: 
 
     assert source.read_text(encoding="utf-8") == "source"
     assert existing.read_text(encoding="utf-8") == "existing"
+
+
+@pytest.mark.parametrize("source_is_directory", [False, True])
+def test_move_never_replaces_a_destination_created_after_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_is_directory: bool,
+) -> None:
+    workspace = Workspace.from_target(tmp_path)
+    source = tmp_path / ("source" if source_is_directory else "source.md")
+    target = tmp_path / ("target" if source_is_directory else "target.md")
+    if source_is_directory:
+        source.mkdir()
+        (source / "source.md").write_text("source", encoding="utf-8")
+    else:
+        source.write_text("source", encoding="utf-8")
+    original_rename = workspace_entries._rename_no_replace
+
+    def create_racer_then_rename(racing_source: Path, racing_target: Path) -> None:
+        if source_is_directory:
+            racing_target.mkdir()
+            (racing_target / "racer.md").write_text("racer", encoding="utf-8")
+        else:
+            racing_target.write_text("racer", encoding="utf-8")
+        original_rename(racing_source, racing_target)
+
+    monkeypatch.setattr(workspace_entries, "_rename_no_replace", create_racer_then_rename)
+
+    with pytest.raises(WorkspaceEntryError, match="already exists"):
+        move_entry(workspace, source, target)
+
+    assert source.exists()
+    if source_is_directory:
+        assert (source / "source.md").read_text(encoding="utf-8") == "source"
+        assert (target / "racer.md").read_text(encoding="utf-8") == "racer"
+    else:
+        assert source.read_text(encoding="utf-8") == "source"
+        assert target.read_text(encoding="utf-8") == "racer"
 
 
 async def test_create_file_dialog_opens_the_new_document(tmp_path: Path) -> None:
