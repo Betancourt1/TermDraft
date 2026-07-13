@@ -181,14 +181,14 @@ async def test_dirty_tab_close_uses_cancel_then_discard_guard(tmp_path: Path) ->
         await _open(app, pilot, second)
         await pilot.press("x", "ctrl+f4")
         assert isinstance(app.screen, UnsavedChangesDialog)
-        await pilot.click("#unsaved-cancel")
+        await pilot.press("escape")
 
         assert len(app._open_documents) == 2
         assert app.document is not None and app.document.path == second
 
         await pilot.press("ctrl+f4")
         assert isinstance(app.screen, UnsavedChangesDialog)
-        await pilot.click("#unsaved-discard")
+        await pilot.press("n")
         await _wait_for_document(app, pilot, first)
         for _ in range(200):
             if not app._recovery_mutation_in_flight and not app._recovery_mutation_queue:
@@ -216,7 +216,7 @@ async def test_quit_guards_each_dirty_tab_and_cancel_stops_exit(tmp_path: Path) 
         assert isinstance(app.screen, UnsavedChangesDialog)
         assert app.document is not None and app.document.path == second
 
-        await pilot.click("#unsaved-save")
+        await pilot.press("y")
         for _ in range(200):
             if isinstance(app.screen, UnsavedChangesDialog) and app.document.path == first:
                 break
@@ -224,7 +224,7 @@ async def test_quit_guards_each_dirty_tab_and_cancel_stops_exit(tmp_path: Path) 
 
         assert second.read_text(encoding="utf-8") == "ysecond"
         assert isinstance(app.screen, UnsavedChangesDialog)
-        await pilot.click("#unsaved-cancel")
+        await pilot.press("escape")
 
         assert app.is_running
         assert app.document.path == first

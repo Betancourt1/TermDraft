@@ -9,7 +9,7 @@ from pathlib import Path
 from threading import Event
 
 import pytest
-from textual.widgets import Input, Static
+from textual.widgets import Button, Input, Static
 
 from termwriter.app import TermWriterApp, _RecoveryCleanupWorkerResult
 from termwriter.models.document import FileSnapshot
@@ -358,8 +358,13 @@ async def test_ctrl_q_does_not_discard_unsaved_content(tmp_path: Path) -> None:
         assert app.document is not None
         assert app.document.text == "xbase"
         assert path.read_text(encoding="utf-8") == "base"
+        assert not app.screen.query(Button)
+        prompt = app.screen.query_one("#unsaved-prompt", Static)
+        assert "[y]es  [n]o  [Esc] cancel" in str(prompt.render())
 
-        await pilot.click("#unsaved-cancel")
+        await pilot.press("enter", "x")
+        assert isinstance(app.screen, UnsavedChangesDialog)
+        await pilot.press("escape")
 
         assert app.is_running
         assert app.document.text == "xbase"
@@ -1696,7 +1701,7 @@ async def test_explicit_quit_discard_removes_recovery_journal(tmp_path: Path) ->
 
         await pilot.press("ctrl+q")
         assert isinstance(app.screen, UnsavedChangesDialog)
-        await pilot.click("#unsaved-discard")
+        await pilot.press("n")
 
         assert journal.load(path) is None
         assert not app.is_running

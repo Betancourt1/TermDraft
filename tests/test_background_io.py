@@ -427,7 +427,7 @@ async def test_discard_waits_for_recovery_save_then_delete_without_resurrection(
         app.action_close_tab()
         await _wait_until(pilot, lambda: isinstance(app.screen, UnsavedChangesDialog))
         await pilot.pause()
-        await pilot.click("#unsaved-discard")
+        await pilot.press("n")
         assert app.document is not None
         assert app.document.path == first
         assert app.editor.read_only

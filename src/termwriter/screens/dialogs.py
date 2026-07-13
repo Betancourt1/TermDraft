@@ -516,7 +516,11 @@ class MixedLineEndingsDialog(ModalScreen[bool]):
 class UnsavedChangesDialog(ModalScreen[UnsavedDecision | None]):
     """Require an actual decision before a dirty document is left behind."""
 
-    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel", show=False)]
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("y", "save", "Save", show=False),
+        Binding("n", "discard", "Discard", show=False),
+        Binding("escape", "cancel", "Cancel", show=False),
+    ]
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -524,26 +528,17 @@ class UnsavedChangesDialog(ModalScreen[UnsavedDecision | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog", id="unsaved-dialog"):
-            yield Static("Unsaved changes", classes="dialog-title", markup=False)
             yield Static(
-                f"Save changes to {self.path.name} before continuing?",
-                classes="dialog-message",
+                f"Save changes to {self.path.name}?  [y]es  [n]o  [Esc] cancel",
+                id="unsaved-prompt",
                 markup=False,
             )
-            with Horizontal(classes="dialog-buttons"):
-                yield Button("Save", id="unsaved-save", variant="primary")
-                yield Button("Discard", id="unsaved-discard", variant="error")
-                yield Button("Cancel", id="unsaved-cancel")
 
-    @on(Button.Pressed)
-    def choose(self, event: Button.Pressed) -> None:
-        decisions = {
-            "unsaved-save": UnsavedDecision.SAVE,
-            "unsaved-discard": UnsavedDecision.DISCARD,
-            "unsaved-cancel": UnsavedDecision.CANCEL,
-        }
-        if event.button.id in decisions:
-            self.dismiss(decisions[event.button.id])
+    def action_save(self) -> None:
+        self.dismiss(UnsavedDecision.SAVE)
+
+    def action_discard(self) -> None:
+        self.dismiss(UnsavedDecision.DISCARD)
 
     def action_cancel(self) -> None:
         self.dismiss(UnsavedDecision.CANCEL)

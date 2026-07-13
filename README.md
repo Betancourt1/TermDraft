@@ -23,6 +23,9 @@ The current release is a functional MVP focused on a dependable writing loop:
 - require consent before editing a file with mixed line endings;
 - require an explicit decision before closing, reloading, or replacing unsaved work.
 
+Unsaved-document transitions use a compact keyboard prompt: `y` saves, `n` discards, and Esc
+cancels. Enter and unrelated keys never choose a destructive action.
+
 Future WYSIWYM block editing is designed in
 [`docs/semantic-editing.md`](docs/semantic-editing.md). Hybrid editing is intentionally not
 implemented; the command palette offers a source-range inspector and an opt-in read-only block

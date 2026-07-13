@@ -114,6 +114,12 @@ ModalScreen {
     margin-left: 1;
 }
 
+#unsaved-dialog {
+    width: 60;
+    max-width: 94%;
+    padding: 0 1;
+}
+
 #search-dialog, #text-search-dialog {
     height: 31;
 }
