@@ -131,6 +131,62 @@ class Workspace:
             return False
         return True
 
+    def validate_entry_path(
+        self,
+        path: Path,
+        *,
+        must_exist: bool = True,
+        allow_root: bool = False,
+    ) -> Path:
+        """Validate a regular file or directory without following workspace symlinks."""
+        candidate = path.expanduser()
+        if not candidate.is_absolute():
+            candidate = self.root / candidate
+        candidate = Path(os.path.abspath(candidate))
+
+        if candidate == self.root:
+            if allow_root:
+                return self.root
+            raise UnsafePathError("The workspace root cannot be changed")
+        if candidate.is_symlink():
+            raise UnsafePathError(f"Symbolic links are not supported: {candidate}")
+
+        try:
+            candidate = candidate.parent.resolve(strict=True) / candidate.name
+        except FileNotFoundError as error:
+            raise WorkspaceNotFoundError(
+                f"Parent directory no longer exists: {candidate.parent}"
+            ) from error
+        except OSError as error:
+            raise WorkspaceAccessError(
+                f"Cannot access parent directory: {candidate.parent}"
+            ) from error
+
+        try:
+            relative = candidate.relative_to(self.root)
+        except ValueError as error:
+            raise UnsafePathError(f"Path is outside the workspace: {candidate}") from error
+
+        current = self.root
+        for part in relative.parts:
+            current /= part
+            try:
+                if current.is_symlink():
+                    raise UnsafePathError(f"Symbolic links are not supported: {current}")
+            except OSError as error:
+                raise WorkspaceAccessError(f"Cannot inspect path {current}: {error}") from error
+
+        if must_exist:
+            try:
+                entry_stat = candidate.lstat()
+            except FileNotFoundError as error:
+                raise WorkspaceNotFoundError(f"Path no longer exists: {candidate}") from error
+            except OSError as error:
+                raise WorkspaceAccessError(f"Cannot inspect path {candidate}: {error}") from error
+            if not (stat.S_ISREG(entry_stat.st_mode) or stat.S_ISDIR(entry_stat.st_mode)):
+                raise UnsupportedFileError(f"Not a regular file or directory: {candidate}")
+        return candidate
+
     def validate_document_path(self, path: Path, *, must_exist: bool = True) -> Path:
         """Validate a Markdown file path without allowing symlink traversal."""
         candidate = path.expanduser()

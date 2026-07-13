@@ -51,6 +51,14 @@ class RecoveryDecision(Enum):
     CANCEL = auto()
 
 
+class WorkspaceEntryOperation(Enum):
+    CREATE_FILE = auto()
+    CREATE_FOLDER = auto()
+    RENAME = auto()
+    MOVE = auto()
+    REMOVE = auto()
+
+
 class RecoveryManagerAction(Enum):
     """Explicit operations available from the recovery inventory."""
 
@@ -684,6 +692,159 @@ class SaveAsDialog(ModalScreen[bool]):
         self.error = error
         self.query_one("#save-as-error", Static).update(error)
         self.query_one("#save-as-input", Input).focus()
+
+
+class WorkspaceEntryDialog(ModalScreen[bool]):
+    """Collect one clear create, rename, or move request."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    class Submitted(Message):
+        """Request validation and execution by the app coordinator."""
+
+        def __init__(self, dialog: WorkspaceEntryDialog, value: str) -> None:
+            self.dialog = dialog
+            self.value = value
+            super().__init__()
+
+        @property
+        def control(self) -> WorkspaceEntryDialog:
+            return self.dialog
+
+    def __init__(
+        self,
+        operation: WorkspaceEntryOperation,
+        workspace_root: Path,
+        *,
+        source: Path | None = None,
+        destination_parent: Path | None = None,
+    ) -> None:
+        self.operation = operation
+        self.workspace_root = workspace_root
+        self.source = source
+        self.destination_parent = destination_parent
+        self.error: str | None = None
+        self._busy = False
+        super().__init__(id="workspace-entry-screen")
+
+    def _content(self) -> tuple[str, str, str, str]:
+        if self.operation is WorkspaceEntryOperation.CREATE_FILE:
+            return "Create Markdown file", self._location_message(), "note.md", "Create"
+        if self.operation is WorkspaceEntryOperation.CREATE_FOLDER:
+            return "Create folder", self._location_message(), "folder-name", "Create"
+        if self.source is None:
+            raise RuntimeError("Rename and move dialogs require a source path")
+        relative = self.source.relative_to(self.workspace_root).as_posix()
+        kind = "folder" if self.source.is_dir() else "file"
+        if self.operation is WorkspaceEntryOperation.RENAME:
+            return f"Rename {kind}", relative, self.source.name, "Rename"
+        if self.operation is WorkspaceEntryOperation.MOVE:
+            return (
+                f"Move {kind}",
+                f"Current path: {relative}",
+                relative,
+                "Move",
+            )
+        raise RuntimeError("Remove uses its own confirmation dialog")
+
+    def _location_message(self) -> str:
+        if self.destination_parent is None:
+            raise RuntimeError("Create dialogs require a parent folder")
+        relative = self.destination_parent.relative_to(self.workspace_root)
+        location = "/" if relative == Path(".") else relative.as_posix()
+        return f"Location: {location}"
+
+    def compose(self) -> ComposeResult:
+        title, message, initial, confirm_label = self._content()
+        value = (
+            initial
+            if self.operation
+            in {
+                WorkspaceEntryOperation.RENAME,
+                WorkspaceEntryOperation.MOVE,
+            }
+            else ""
+        )
+        with Vertical(classes="dialog", id="workspace-entry-dialog"):
+            yield Static(title, classes="dialog-title", markup=False)
+            yield Static(message, classes="dialog-message", markup=False)
+            yield Input(value, placeholder=initial, id="workspace-entry-input")
+            yield Static("", id="workspace-entry-error", markup=False)
+            with Horizontal(classes="dialog-buttons"):
+                yield Button(confirm_label, id="workspace-entry-confirm", variant="primary")
+                yield Button("Cancel", id="workspace-entry-cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#workspace-entry-input", Input).focus()
+
+    @on(Input.Submitted, "#workspace-entry-input")
+    def submit_input(self, event: Input.Submitted) -> None:
+        if not self._busy:
+            self.post_message(self.Submitted(self, event.value.strip()))
+
+    @on(Button.Pressed, "#workspace-entry-confirm")
+    def submit_button(self) -> None:
+        if not self._busy:
+            value = self.query_one("#workspace-entry-input", Input).value.strip()
+            self.post_message(self.Submitted(self, value))
+
+    @on(Button.Pressed, "#workspace-entry-cancel")
+    def cancel_button(self) -> None:
+        if not self._busy:
+            self.dismiss(False)
+
+    def action_cancel(self) -> None:
+        if not self._busy:
+            self.dismiss(False)
+
+    def set_busy(self, busy: bool) -> None:
+        self._busy = busy
+        self.query_one("#workspace-entry-input", Input).disabled = busy
+        self.query_one("#workspace-entry-confirm", Button).disabled = busy
+        self.query_one("#workspace-entry-cancel", Button).disabled = busy
+
+    def show_error(self, error: str) -> None:
+        self.set_busy(False)
+        self.error = error
+        self.query_one("#workspace-entry-error", Static).update(error)
+        self.query_one("#workspace-entry-input", Input).focus()
+
+
+class RemoveWorkspaceEntryDialog(ModalScreen[bool]):
+    """Confirm permanent removal without hiding recursive folder impact."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def __init__(self, source: Path, workspace_root: Path) -> None:
+        self.source = source
+        self.workspace_root = workspace_root
+        super().__init__(id="remove-workspace-entry-screen")
+
+    def compose(self) -> ComposeResult:
+        relative = self.source.relative_to(self.workspace_root).as_posix()
+        is_directory = self.source.is_dir()
+        title = "Remove folder?" if is_directory else "Remove file?"
+        message = f"Permanently remove {relative}?"
+        if is_directory:
+            message += (
+                " Everything inside it will be removed, including files hidden by the explorer."
+            )
+        with Vertical(classes="dialog", id="remove-workspace-entry-dialog"):
+            yield Static(title, classes="dialog-title", markup=False)
+            yield Static(message, classes="dialog-message", markup=False)
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Remove", id="remove-workspace-entry-confirm", variant="error")
+                yield Button("Cancel", id="remove-workspace-entry-cancel", variant="primary")
+
+    @on(Button.Pressed)
+    def choose(self, event: Button.Pressed) -> None:
+        if event.button.id == "remove-workspace-entry-confirm":
+            self.dismiss(True)
+        elif event.button.id == "remove-workspace-entry-cancel":
+            self.dismiss(False)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
 
 
 class FileSearchDialog(ModalScreen[Path | None]):

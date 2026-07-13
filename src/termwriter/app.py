@@ -53,10 +53,13 @@ from termwriter.screens.dialogs import (
     RecoveryManagerRequest,
     RecoveryRetentionDialog,
     RecoveryRetentionRequest,
+    RemoveWorkspaceEntryDialog,
     SaveAsDialog,
     TextSearchDialog,
     UnsavedChangesDialog,
     UnsavedDecision,
+    WorkspaceEntryDialog,
+    WorkspaceEntryOperation,
 )
 from termwriter.screens.recent_documents import RecentDocumentsDialog
 from termwriter.screens.semantic_inspector import SemanticInspectorDialog
@@ -99,6 +102,14 @@ from termwriter.services.session import (
     SessionStore,
 )
 from termwriter.services.text_search import TextSearchMatch, TextSearchOverride
+from termwriter.services.workspace_entries import (
+    WorkspaceEntryError,
+    create_folder,
+    create_markdown_file,
+    move_entry,
+    remove_entry,
+    rename_entry,
+)
 from termwriter.widgets.editor import MarkdownEditor
 from termwriter.widgets.file_tree import FileExplorer
 from termwriter.widgets.preview import MarkdownPreview
@@ -215,6 +226,15 @@ class _SaveAsWorkerResult:
 class _WorkspaceIndexResult:
     revision: int
     scan: ScanResult | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkspaceEntryWorkerResult:
+    operation: WorkspaceEntryOperation
+    source: Path
+    target: Path | None = None
+    snapshots: tuple[tuple[Path, FileSnapshot], ...] = ()
     error: str | None = None
 
 
@@ -3101,6 +3121,345 @@ class TermWriterApp(App[None]):
         self.explorer.directory_tree.focus()
         self._refresh_status()
 
+    @staticmethod
+    def _path_is_within(path: Path, parent: Path) -> bool:
+        try:
+            path.relative_to(parent)
+        except ValueError:
+            return False
+        return True
+
+    @staticmethod
+    def _retargeted_path(path: Path, source: Path, target: Path) -> Path:
+        relative = path.relative_to(source)
+        return target if relative == Path(".") else target / relative
+
+    def _selected_workspace_entry(self, *, fallback_to_document: bool) -> Path | None:
+        node = self.explorer.directory_tree.cursor_node
+        if node is None or node.data is None:
+            selected = (
+                self.document.path
+                if fallback_to_document and self.document is not None
+                else self.workspace.root
+            )
+        else:
+            selected = node.data.path
+        if selected == self.workspace.root and fallback_to_document and self.document is not None:
+            selected = self.document.path
+        try:
+            return self.workspace.validate_entry_path(selected, allow_root=True)
+        except WorkspaceError as error:
+            self.notify(escape(str(error)), severity="error", title="Cannot use selected path")
+            return None
+
+    def _open_documents_within(self, source: Path) -> tuple[Document, ...]:
+        return tuple(
+            opened.document
+            for opened in self._open_documents
+            if self._path_is_within(opened.document.path, source)
+        )
+
+    def _open_workspace_entry_dialog(self, operation: WorkspaceEntryOperation) -> None:
+        if self._exit_requested or self._has_modal or self._critical_io:
+            return
+        self._sync_editor_state()
+        selected = self._selected_workspace_entry(fallback_to_document=True)
+        if selected is None:
+            return
+
+        if operation in {
+            WorkspaceEntryOperation.CREATE_FILE,
+            WorkspaceEntryOperation.CREATE_FOLDER,
+        }:
+            parent = selected if selected.is_dir() else selected.parent
+            self.push_screen(
+                WorkspaceEntryDialog(
+                    operation,
+                    self.workspace.root,
+                    destination_parent=parent,
+                )
+            )
+            return
+
+        if selected == self.workspace.root:
+            self.notify("Select a file or folder first", severity="warning")
+            return
+        self.push_screen(WorkspaceEntryDialog(operation, self.workspace.root, source=selected))
+
+    def action_create_file(self) -> None:
+        self._open_workspace_entry_dialog(WorkspaceEntryOperation.CREATE_FILE)
+
+    def action_create_folder(self) -> None:
+        self._open_workspace_entry_dialog(WorkspaceEntryOperation.CREATE_FOLDER)
+
+    def action_rename_entry(self) -> None:
+        self._open_workspace_entry_dialog(WorkspaceEntryOperation.RENAME)
+
+    def action_move_entry(self) -> None:
+        self._open_workspace_entry_dialog(WorkspaceEntryOperation.MOVE)
+
+    def action_remove_entry(self) -> None:
+        if self._exit_requested or self._has_modal or self._critical_io:
+            return
+        self._sync_editor_state()
+        source = self._selected_workspace_entry(fallback_to_document=True)
+        if source is None:
+            return
+        if source == self.workspace.root:
+            self.notify("Select a file or folder first", severity="warning")
+            return
+        affected = self._open_documents_within(source)
+        if affected:
+            noun = "documents" if len(affected) > 1 else "document"
+            self.notify(
+                f"Close {len(affected)} open {noun} before removing this path",
+                severity="warning",
+            )
+            return
+        self.push_screen(
+            RemoveWorkspaceEntryDialog(source, self.workspace.root),
+            lambda confirmed: self._handle_remove_entry_confirmation(source, confirmed),
+        )
+
+    @on(WorkspaceEntryDialog.Submitted)
+    def _handle_workspace_entry_submission(self, event: WorkspaceEntryDialog.Submitted) -> None:
+        if self._critical_io:
+            return
+        dialog = event.dialog
+        if not event.value:
+            dialog.show_error("Enter a file or folder name.")
+            return
+
+        operation = dialog.operation
+        source = (
+            dialog.destination_parent
+            if operation
+            in {
+                WorkspaceEntryOperation.CREATE_FILE,
+                WorkspaceEntryOperation.CREATE_FOLDER,
+            }
+            else dialog.source
+        )
+        if source is None:
+            dialog.show_error("The selected path is no longer available.")
+            return
+
+        affected = self._open_documents_within(source) if dialog.source is not None else ()
+        if any(document.dirty for document in affected):
+            dialog.show_error("Save or close open documents inside this path before changing it.")
+            return
+
+        requested_target: Path | None = None
+        if operation is WorkspaceEntryOperation.RENAME:
+            try:
+                requested_target = source.with_name(event.value)
+            except ValueError:
+                dialog.show_error("Enter one file or folder name, without a path.")
+                return
+        elif operation is WorkspaceEntryOperation.MOVE:
+            requested_target = Path(event.value)
+            if not requested_target.is_absolute():
+                requested_target = self.workspace.root / requested_target
+
+        if requested_target is not None:
+            affected_paths = {
+                self._retargeted_path(document.path, source, requested_target)
+                for document in affected
+            }
+            for opened in self._open_documents:
+                if any(opened.document is document for document in affected):
+                    continue
+                if any(
+                    _paths_reserve_same_spelling(opened.document.path, target)
+                    or paths_are_spelling_aliases(opened.document.path, target)
+                    for target in affected_paths
+                ):
+                    dialog.show_error("The destination is already reserved by an open document.")
+                    return
+
+        critical_document = (
+            self.document
+            if self.document is not None and any(self.document is document for document in affected)
+            else None
+        )
+        labels = {
+            WorkspaceEntryOperation.CREATE_FILE: "Creating file…",
+            WorkspaceEntryOperation.CREATE_FOLDER: "Creating folder…",
+            WorkspaceEntryOperation.RENAME: "Renaming…",
+            WorkspaceEntryOperation.MOVE: "Moving…",
+        }
+        if not self._begin_critical_io(
+            critical_document,
+            freeze_editor=critical_document is not None,
+            status=labels[operation] if critical_document is not None else None,
+        ):
+            return
+        dialog.set_busy(True)
+        self._workspace_entry_worker(
+            operation,
+            source,
+            event.value,
+            dialog,
+            tuple(document.path for document in affected),
+        )
+
+    def _handle_remove_entry_confirmation(self, source: Path, confirmed: bool | None) -> None:
+        if not confirmed or self._critical_io or self._exit_requested:
+            return
+        removed_documents = tuple(
+            path for path in self.workspace_files if self._path_is_within(path, source)
+        )
+        if not self._begin_critical_io(None, freeze_editor=False):
+            return
+        self._workspace_entry_worker(
+            WorkspaceEntryOperation.REMOVE,
+            source,
+            "",
+            None,
+            removed_documents,
+        )
+
+    @work(group="workspace-entry", exclusive=True, thread=True, exit_on_error=False)
+    def _workspace_entry_worker(
+        self,
+        operation: WorkspaceEntryOperation,
+        source: Path,
+        value: str,
+        dialog: WorkspaceEntryDialog | None,
+        affected_paths: tuple[Path, ...],
+    ) -> None:
+        worker = get_current_worker()
+        try:
+            if operation is WorkspaceEntryOperation.CREATE_FILE:
+                target = create_markdown_file(self.workspace, source, value)
+            elif operation is WorkspaceEntryOperation.CREATE_FOLDER:
+                target = create_folder(self.workspace, source, value)
+            elif operation is WorkspaceEntryOperation.RENAME:
+                target = rename_entry(self.workspace, source, value)
+            elif operation is WorkspaceEntryOperation.MOVE:
+                target = move_entry(self.workspace, source, Path(value))
+            else:
+                target = remove_entry(self.workspace, source)
+
+            snapshots: tuple[tuple[Path, FileSnapshot], ...] = ()
+            if operation in {
+                WorkspaceEntryOperation.RENAME,
+                WorkspaceEntryOperation.MOVE,
+            }:
+                snapshots = tuple(
+                    (
+                        self._retargeted_path(path, source, target),
+                        snapshot_file(self._retargeted_path(path, source, target)),
+                    )
+                    for path in affected_paths
+                )
+            result = _WorkspaceEntryWorkerResult(
+                operation,
+                source,
+                target=target,
+                snapshots=snapshots,
+            )
+        except (OSError, PersistenceError, WorkspaceEntryError, WorkspaceError) as error:
+            result = _WorkspaceEntryWorkerResult(operation, source, error=str(error))
+        except Exception as error:
+            result = _WorkspaceEntryWorkerResult(
+                operation,
+                source,
+                error=f"Unexpected file operation failure: {error}",
+            )
+        if not worker.is_cancelled:
+            self.call_from_thread(
+                self._handle_workspace_entry_result,
+                dialog,
+                affected_paths,
+                result,
+            )
+
+    def _handle_workspace_entry_result(
+        self,
+        dialog: WorkspaceEntryDialog | None,
+        affected_paths: tuple[Path, ...],
+        result: _WorkspaceEntryWorkerResult,
+    ) -> None:
+        if result.error is not None or result.target is None:
+            self._finish_critical_io()
+            if dialog is not None:
+                dialog.show_error(result.error or "The file operation did not return a result.")
+            else:
+                self.notify(
+                    escape(result.error or "The file operation did not return a result."),
+                    severity="error",
+                    title="File operation failed",
+                )
+            return
+
+        operation = result.operation
+        target = result.target
+        snapshots = dict(result.snapshots)
+        if operation in {
+            WorkspaceEntryOperation.RENAME,
+            WorkspaceEntryOperation.MOVE,
+        }:
+            for previous_path in affected_paths:
+                document = self._open_document_for_path(previous_path)
+                if document is None:
+                    continue
+                new_path = self._retargeted_path(previous_path, result.source, target)
+                self._clear_recovery(previous_path)
+                previous_view = self._session_views.pop(previous_path, None)
+                self._recent_paths = [
+                    new_path if path == previous_path else path for path in self._recent_paths
+                ]
+                document.retarget(new_path)
+                snapshot = snapshots.get(new_path)
+                if snapshot is not None:
+                    document.accept_unchanged_snapshot(snapshot)
+                document.last_save_status = (
+                    "Renamed" if operation is WorkspaceEntryOperation.RENAME else "Moved"
+                )
+                if previous_view is not None:
+                    self._session_views[new_path] = DocumentViewState(
+                        new_path,
+                        line=previous_view.line,
+                        column=previous_view.column,
+                        scroll_x=previous_view.scroll_x,
+                        scroll_y=previous_view.scroll_y,
+                    )
+            self._document_generation += 1
+            if self.document is not None:
+                self.explorer.set_active(self.document.path)
+            self._refresh_document_tabs()
+            self._persist_session()
+        elif operation is WorkspaceEntryOperation.REMOVE:
+            for path in affected_paths:
+                self._forget_session_path(path)
+                self._clear_recovery(path)
+            self._persist_session()
+
+        self._refresh_workspace_index()
+        self.explorer.directory_tree.reload()
+        self._finish_critical_io(restore_status=False)
+        if dialog is not None:
+            dialog.set_busy(False)
+            dialog.dismiss(True)
+
+        relative = target.relative_to(self.workspace.root).as_posix()
+        messages = {
+            WorkspaceEntryOperation.CREATE_FILE: f"Created {relative}",
+            WorkspaceEntryOperation.CREATE_FOLDER: f"Created folder {relative}",
+            WorkspaceEntryOperation.RENAME: f"Renamed to {relative}",
+            WorkspaceEntryOperation.MOVE: f"Moved to {relative}",
+            WorkspaceEntryOperation.REMOVE: f"Removed {relative}",
+        }
+        self.notify(escape(messages[operation]))
+        if operation is WorkspaceEntryOperation.CREATE_FILE:
+            self.call_after_refresh(self._request_open, target)
+        elif operation in {
+            WorkspaceEntryOperation.CREATE_FOLDER,
+            WorkspaceEntryOperation.REMOVE,
+        }:
+            self.explorer.directory_tree.focus()
+
     def action_toggle_explorer(self) -> None:
         if self._has_modal:
             return
@@ -3308,6 +3667,36 @@ class TermWriterApp(App[None]):
         del screen
         commands = (
             ("Save document", "save", "Save the open Markdown source", self.action_save),
+            (
+                "Create Markdown file",
+                "create_file",
+                "Create and open a Markdown file beside the selected entry",
+                self.action_create_file,
+            ),
+            (
+                "Create folder",
+                "create_folder",
+                "Create a folder beside or inside the selected entry",
+                self.action_create_folder,
+            ),
+            (
+                "Rename selected file or folder",
+                "rename_entry",
+                "Rename the selected entry without changing its contents",
+                self.action_rename_entry,
+            ),
+            (
+                "Move selected file or folder",
+                "move_entry",
+                "Move the selected entry to a workspace-relative path",
+                self.action_move_entry,
+            ),
+            (
+                "Remove selected file or folder",
+                "remove_entry",
+                "Permanently remove the selected entry after confirmation",
+                self.action_remove_entry,
+            ),
             (
                 "Find file",
                 "find_file",

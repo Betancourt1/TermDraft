@@ -275,6 +275,14 @@ after application startup requires one restart.
 scanner uses `os.scandir`, ignores common generated directories, catches per-directory `OSError`,
 and indexes only `.md` and `.markdown` files.
 
+`services/workspace_entries.py` owns the small create, rename, move, and remove surface. New file
+publication reuses guarded no-clobber persistence; rename and move reject existing destinations,
+workspace escapes, ignored directories, unsupported Markdown suffixes, and moving a folder inside
+itself. The app executes mutations in one exclusive worker and reloads the explorer/index only after
+success. Clean open documents are retargeted with their session views; dirty documents cannot move,
+and any open document blocks removal. Recursive folder removal stays behind an explicit warning that
+includes entries hidden by the Markdown-only explorer.
+
 The MVP rejects all explorer symlinks and Markdown file symlinks. This is more restrictive than
 following links that happen to resolve inside the root, but keeps both selection and replacement
 behavior understandable. Resolved containment and final-file checks are repeated before application
@@ -466,11 +474,11 @@ the original active buffer, and then seals editing while final state writes drai
 - Text search and document content I/O use thread workers and never invoke workspace commands.
 - Configuration contains data only; document/workspace contents never define commands or CSS.
 
-Workspace-index scans, recovery-record reads, Markdown hashing, stable reads, reloads, publication,
-session I/O, recovery mutation, and semantic mapping are worker-backed. Cooperative cancellation,
-revisions, document tickets, immutable mutation payloads, and critical-operation locks preserve
-callback ordering and conflict checks. An individual operating-system read cannot be interrupted,
-so stale-result rejection remains authoritative.
+Workspace-index scans, workspace-entry mutations, recovery-record reads, Markdown hashing, stable
+reads, reloads, publication, session I/O, recovery mutation, and semantic mapping are worker-backed.
+Cooperative cancellation, revisions, document tickets, immutable mutation payloads, and
+critical-operation locks preserve callback ordering and conflict checks. An individual
+operating-system read cannot be interrupted, so stale-result rejection remains authoritative.
 
 `termwriter-benchmark` is intentionally repository-specific instrumentation rather than runtime
 abstraction. It calls the real semantic mapper, mounts the real application and tab editors through

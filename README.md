@@ -8,6 +8,7 @@ The current release is a functional MVP focused on a dependable writing loop:
 - browse a Markdown workspace;
 - edit source with soft wrapping, Unicode, syntax highlighting, undo, redo, and list continuation;
 - read a safe GFM-style rendered preview without leaving the terminal;
+- create, rename, move, and remove Markdown files and workspace folders;
 - find files quickly;
 - search source text across the workspace without an external command;
 - search commands from a palette;
@@ -107,6 +108,20 @@ Show every CLI option or the effective in-app commands without starting the TUI:
 termwriter --help
 termwriter --commands
 ```
+
+### File and folder management
+
+Open the command palette with `:` in COMMAND mode or Ctrl+\ and choose **Create Markdown file**,
+**Create folder**, **Rename selected file or folder**, **Move selected file or folder**, or
+**Remove selected file or folder**. Actions use the selected explorer entry; when the tree has no
+selection, the active document is used. New files are created beside the selected file or inside the
+selected folder, and a missing Markdown extension is added as `.md`.
+
+Move destinations are workspace-relative paths such as `archive/essay.md`. Clean open documents
+follow a rename or move without losing their tab, cursor, or contents. Save or close dirty documents
+first. Open documents cannot be removed; close them through TermWriter's save guard before trying
+again. Folder removal is recursive and its confirmation explicitly includes files hidden by the
+Markdown-only explorer.
 
 ## Markdown support
 

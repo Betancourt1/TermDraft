@@ -298,6 +298,11 @@ async def test_command_palette_and_help_expose_product_actions(tmp_path: Path) -
         command_titles = {command.title for command in app.get_system_commands(app.screen)}
         assert {
             "Save document",
+            "Create Markdown file",
+            "Create folder",
+            "Rename selected file or folder",
+            "Move selected file or folder",
+            "Remove selected file or folder",
             "Search workspace text",
             "Reload configuration",
             "Manage recovery drafts",
