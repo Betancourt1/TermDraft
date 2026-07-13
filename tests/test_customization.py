@@ -60,6 +60,18 @@ def test_default_theme_is_black_and_grayscale(tmp_path: Path) -> None:
     assert any(isinstance(line_filter, Monochrome) for line_filter in app.get_line_filters())
 
 
+def test_preview_headings_have_readable_monochrome_colors(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("# Heading", encoding="utf-8")
+    app = _app(path)
+
+    variables = app.current_theme.to_color_system().generate()
+
+    assert variables["markdown-h1-color"] == "#e6e6e6"
+    assert variables["markdown-h2-color"] == "#d0d0d0"
+    assert variables["markdown-h3-color"] == "#b8b8b8"
+
+
 async def test_enter_continues_task_list_and_undo_reverts_the_whole_edit(tmp_path: Path) -> None:
     path = tmp_path / "tasks.md"
     path.write_text("- [x] done", encoding="utf-8")
