@@ -320,6 +320,18 @@ class _OpenDocument:
     baseline_source_text: str
 
 
+@dataclass(slots=True)
+class _DeferredDocumentTab:
+    """A restored tab whose file is loaded only when the user selects it."""
+
+    tab_id: str
+    editor_id: str
+    path: Path
+
+
+_DocumentTab = _OpenDocument | _DeferredDocumentTab
+
+
 class _GroupedCommandPalette(CommandPalette):
     """Separate command results without splitting titles from their help text."""
 
@@ -376,7 +388,7 @@ class TermWriterApp(App[None]):
         self.set_keymap(dict(self.config.keybindings))
         self.workspace = workspace
         self.document: Document | None = None
-        self._open_documents: list[_OpenDocument] = []
+        self._open_documents: list[_DocumentTab] = []
         self._next_tab_id = 0
         self._quit_documents: list[Document] | None = None
         self._quit_active_document: Document | None = None
@@ -394,6 +406,7 @@ class TermWriterApp(App[None]):
         self._session_restore_paths: list[Path] = []
         self._session_restore_active_path: Path | None = None
         self._restoring_session_tabs = False
+        self._pending_deferred_tab_id: str | None = None
         self._recent_paths: list[Path] = []
         self._session_save_in_flight = False
         self._pending_session_state: SessionState | None = None
@@ -818,9 +831,9 @@ class TermWriterApp(App[None]):
                 if path in self._session_views
             ),
             open_paths=tuple(
-                opened.document.path
+                self._tab_path(opened)
                 for opened in self._open_documents
-                if opened.document.path in self._session_views
+                if self._tab_path(opened) in self._session_views
             ),
         )
         self._queue_session_save(state)
@@ -919,20 +932,47 @@ class TermWriterApp(App[None]):
         self._refresh_status()
 
     def _open_document_for_path(self, path: Path) -> Document | None:
-        for opened in self._open_documents:
+        for opened in self._materialized_open_documents():
             if paths_are_spelling_aliases(opened.document.path, path):
                 return opened.document
         return None
 
+    @staticmethod
+    def _tab_path(opened: _DocumentTab) -> Path:
+        if isinstance(opened, _DeferredDocumentTab):
+            return opened.path
+        return opened.document.path
+
+    def _open_tab_for_path(self, path: Path) -> _DocumentTab | None:
+        return next(
+            (
+                opened
+                for opened in self._open_documents
+                if paths_are_spelling_aliases(self._tab_path(opened), path)
+            ),
+            None,
+        )
+
+    def _materialized_open_documents(self) -> tuple[_OpenDocument, ...]:
+        return tuple(opened for opened in self._open_documents if isinstance(opened, _OpenDocument))
+
     def _open_entry_for_document(self, document: Document) -> _OpenDocument | None:
         return next(
-            (opened for opened in self._open_documents if opened.document is document),
+            (
+                opened
+                for opened in self._open_documents
+                if isinstance(opened, _OpenDocument) and opened.document is document
+            ),
             None,
         )
 
     def _open_entry_for_editor(self, editor: TextArea) -> _OpenDocument | None:
         return next(
-            (opened for opened in self._open_documents if opened.editor is editor),
+            (
+                opened
+                for opened in self._open_documents
+                if isinstance(opened, _OpenDocument) and opened.editor is editor
+            ),
             None,
         )
 
@@ -967,17 +1007,27 @@ class TermWriterApp(App[None]):
         state = "!" if document.conflict else "●" if document.dirty else ""
         return f"{state} {relative}" if state else relative
 
+    def _deferred_tab_label(self, path: Path) -> str:
+        return path.relative_to(self.workspace.root).as_posix()
+
+    def _next_document_tab_ids(self) -> tuple[str, str]:
+        self._next_tab_id += 1
+        return (
+            f"document-tab-{self._next_tab_id}",
+            f"editor-buffer-{self._next_tab_id}",
+        )
+
     def _register_open_document(self, document: Document) -> bool:
         if self._open_entry_for_document(document) is not None:
             return False
-        self._next_tab_id += 1
+        tab_id, editor_id = self._next_document_tab_ids()
         editor = self._new_editor(
             document.text,
-            editor_id=f"editor-buffer-{self._next_tab_id}",
+            editor_id=editor_id,
             read_only=document.read_only,
         )
         opened = _OpenDocument(
-            f"document-tab-{self._next_tab_id}",
+            tab_id,
             document,
             editor,
             editor.text,
@@ -989,6 +1039,60 @@ class TermWriterApp(App[None]):
         self.call_after_refresh(self._refresh_document_tabs)
         return True
 
+    def _register_deferred_document(self, path: Path) -> _DeferredDocumentTab:
+        tab_id, editor_id = self._next_document_tab_ids()
+        opened = _DeferredDocumentTab(tab_id, editor_id, path)
+        self._open_documents.append(opened)
+        self.document_tabs.add_tab(Tab(self._deferred_tab_label(path), id=tab_id))
+        return opened
+
+    def _materialize_deferred_document(
+        self,
+        opened: _DeferredDocumentTab,
+    ) -> Worker[None] | None:
+        self._pending_deferred_tab_id = opened.tab_id
+        worker = self._open_file_now(opened.path)
+        if worker is None:
+            self._pending_deferred_tab_id = None
+            self.call_after_refresh(self._refresh_document_tabs)
+        return worker
+
+    def _replace_deferred_document(
+        self,
+        deferred: _DeferredDocumentTab,
+        document: Document,
+    ) -> _OpenDocument:
+        editor = self._new_editor(
+            document.text,
+            editor_id=deferred.editor_id,
+            read_only=document.read_only,
+        )
+        opened = _OpenDocument(
+            deferred.tab_id,
+            document,
+            editor,
+            editor.text,
+            document.text,
+        )
+        index = self._open_documents.index(deferred)
+        self._open_documents[index] = opened
+        self.editor_switcher.mount(editor)
+        self._pending_deferred_tab_id = None
+        return opened
+
+    def _remove_deferred_document(
+        self,
+        opened: _DeferredDocumentTab,
+        *,
+        forget_session: bool,
+    ) -> None:
+        if opened not in self._open_documents:
+            return
+        self._open_documents.remove(opened)
+        self.document_tabs.remove_tab(opened.tab_id)
+        if forget_session:
+            self._forget_session_path(opened.path)
+
     def _refresh_document_tabs(self) -> None:
         tabs = self.document_tabs
         tabs.display = len(self._open_documents) > 1
@@ -996,8 +1100,12 @@ class TermWriterApp(App[None]):
         for opened in self._open_documents:
             tab = tabs.get_tab(opened.tab_id)
             if tab is not None:
-                tab.label = self._tab_label(opened.document)
-            if opened.document is self.document:
+                tab.label = (
+                    self._deferred_tab_label(opened.path)
+                    if isinstance(opened, _DeferredDocumentTab)
+                    else self._tab_label(opened.document)
+                )
+            if isinstance(opened, _OpenDocument) and opened.document is self.document:
                 active_id = opened.tab_id
         if active_id and tabs.active != active_id:
             tabs.active = active_id
@@ -1015,13 +1123,18 @@ class TermWriterApp(App[None]):
             (item for item in self._open_documents if item.tab_id == event.tab.id),
             None,
         )
-        if opened is None or opened.document is self.document:
+        if opened is None or (
+            isinstance(opened, _OpenDocument) and opened.document is self.document
+        ):
             return
         if self._critical_io or self._has_modal:
             self.notify("Wait for the current operation to finish", severity="warning")
             self.call_after_refresh(self._refresh_document_tabs)
             return
-        self._activate_document(opened.document)
+        if isinstance(opened, _DeferredDocumentTab):
+            self._materialize_deferred_document(opened)
+        else:
+            self._activate_document(opened.document)
 
     def _request_open(self, path: Path) -> None:
         if self._exit_requested:
@@ -1034,12 +1147,15 @@ class TermWriterApp(App[None]):
         if self.document is not None and safe_path == self.document.path:
             self.editor.focus()
             return
-        opened = self._open_document_for_path(safe_path)
+        opened = self._open_tab_for_path(safe_path)
         if opened is not None:
             if self._critical_io:
                 self.notify("Wait for the current file operation to finish", severity="warning")
                 return
-            self._activate_document(opened)
+            if isinstance(opened, _DeferredDocumentTab):
+                self._materialize_deferred_document(opened)
+            else:
+                self._activate_document(opened.document)
             return
         if self._critical_io:
             self.notify("Wait for the current file operation to finish", severity="warning")
@@ -1068,10 +1184,14 @@ class TermWriterApp(App[None]):
         except WorkspaceError as error:
             self.notify(escape(str(error)), severity="error", title="Cannot open search result")
             return
-        opened = self._open_document_for_path(safe_path)
+        opened = self._open_tab_for_path(safe_path)
         if opened is not None:
-            self._activate_document(opened)
-            self._focus_editor_at(line, column)
+            if isinstance(opened, _DeferredDocumentTab):
+                self._pending_open_location = (safe_path, line, column)
+                self._materialize_deferred_document(opened)
+            else:
+                self._activate_document(opened.document)
+                self._focus_editor_at(line, column)
             return
         self._pending_open_location = (safe_path, line, column)
         self._open_file_now(safe_path)
@@ -1312,7 +1432,9 @@ class TermWriterApp(App[None]):
         if self._has_modal or self._critical_io:
             return
         protected_paths = tuple(
-            opened.document.path for opened in self._open_documents if opened.document.dirty
+            opened.document.path
+            for opened in self._materialized_open_documents()
+            if opened.document.dirty
         )
         protected_journal_paths = frozenset(
             self.recovery_journal.path_for(path) for path in protected_paths
@@ -1421,7 +1543,9 @@ class TermWriterApp(App[None]):
         self._sync_editor_state()
         document = self.document
         protected_paths = tuple(
-            opened.document.path for opened in self._open_documents if opened.document.dirty
+            opened.document.path
+            for opened in self._materialized_open_documents()
+            if opened.document.dirty
         )
         if self._begin_critical_io(document, freeze_editor=True):
             self._manage_recovery_worker(request, protected_paths)
@@ -1779,10 +1903,24 @@ class TermWriterApp(App[None]):
         self._pending_recovery_record = None
         self._pending_recovery_is_orphan = False
         self._pending_open_location = None
+        deferred = next(
+            (
+                opened
+                for opened in self._open_documents
+                if isinstance(opened, _DeferredDocumentTab)
+                and opened.tab_id == self._pending_deferred_tab_id
+            ),
+            None,
+        )
+        self._pending_deferred_tab_id = None
+        if deferred is not None and self._restoring_session_tabs:
+            self._remove_deferred_document(deferred, forget_session=False)
         if self.document is not None:
             self.editor.focus()
             if self.document.dirty:
                 self._schedule_recovery()
+        if not self._restoring_session_tabs:
+            self.call_after_refresh(self._refresh_document_tabs)
         self._continue_session_orphan_scan()
         self._refresh_status()
 
@@ -1806,7 +1944,12 @@ class TermWriterApp(App[None]):
                 opened.baseline_source_text = document.text
             newly_opened = False
         else:
-            newly_opened = self._register_open_document(document)
+            deferred = self._open_tab_for_path(document.path)
+            if isinstance(deferred, _DeferredDocumentTab):
+                self._replace_deferred_document(deferred, document)
+                newly_opened = True
+            else:
+                newly_opened = self._register_open_document(document)
         self._activate_document(
             document,
             newly_opened=newly_opened,
@@ -1930,9 +2073,18 @@ class TermWriterApp(App[None]):
             self.call_after_refresh(self._scan_orphan_recoveries)
 
     def _restore_next_session_tab(self) -> Worker[None] | None:
-        """Restore stored tabs sequentially so recovery prompts cannot overlap."""
+        """Restore one active tab and keep the remaining session tabs deferred."""
         if not self._restoring_session_tabs:
             return None
+        if self.document is not None:
+            self._restoring_session_tabs = False
+            self._session_restore_active_path = None
+            self._persist_session()
+            if self._scan_orphans_after_session_open:
+                self._scan_orphans_after_session_open = False
+                self.call_after_refresh(self._scan_orphan_recoveries)
+            return None
+
         while self._session_restore_paths:
             path = self._session_restore_paths.pop(0)
             try:
@@ -1952,27 +2104,24 @@ class TermWriterApp(App[None]):
                     title="Previous session document unavailable",
                 )
                 continue
-            if self._open_document_for_path(safe_path) is not None:
+            if self._open_tab_for_path(safe_path) is not None:
                 continue
-            return self._open_file_now(safe_path)
+            self._register_deferred_document(safe_path)
+
+        active_path = self._session_restore_active_path
+        target = None if active_path is None else self._open_tab_for_path(active_path)
+        if target is None and self._open_documents:
+            target = self._open_documents[0]
+        if isinstance(target, _DeferredDocumentTab):
+            return self._materialize_deferred_document(target)
 
         self._restoring_session_tabs = False
-        active_path = self._session_restore_active_path
         self._session_restore_active_path = None
-        target = None if active_path is None else self._open_document_for_path(active_path)
-        if target is None and self._open_documents:
-            target = self._open_documents[0].document
-        if target is not None and target is not self.document:
-            self._activate_document(
-                target,
-                flush_previous_recovery=False,
-                record_session=False,
-            )
         self._persist_session()
         if self._scan_orphans_after_session_open:
             self._scan_orphans_after_session_open = False
             self.call_after_refresh(self._scan_orphan_recoveries)
-        elif self.document is None:
+        if self.document is None:
             self.explorer.directory_tree.focus()
             self._refresh_status()
         return None
@@ -2170,7 +2319,8 @@ class TermWriterApp(App[None]):
             return
         self._pending_shutdown_signal = None
         self._sync_editor_state()
-        for opened in self._open_documents:
+        materialized = self._materialized_open_documents()
+        for opened in materialized:
             editor_text = opened.editor.text
             source_text = (
                 opened.baseline_source_text if editor_text == opened.baseline_text else editor_text
@@ -2184,9 +2334,9 @@ class TermWriterApp(App[None]):
 
         self._signal_shutdown_in_progress = True
         self._shutdown_editor_states = tuple(
-            (opened.editor, opened.editor.read_only) for opened in self._open_documents
+            (opened.editor, opened.editor.read_only) for opened in materialized
         )
-        for opened in self._open_documents:
+        for opened in materialized:
             opened.editor.read_only = True
             if opened.document.dirty:
                 sequence = self._queue_recovery_save(opened.document)
@@ -2579,7 +2729,7 @@ class TermWriterApp(App[None]):
         ticket = self._document_ticket(document)
         if self._begin_critical_io(document, freeze_editor=True, status="Saving copy…"):
             event.dialog.set_busy(True)
-            occupied_paths = tuple(opened.document.path for opened in self._open_documents)
+            occupied_paths = tuple(self._tab_path(opened) for opened in self._open_documents)
             self._save_as_worker(
                 ticket,
                 event.dialog,
@@ -2936,7 +3086,9 @@ class TermWriterApp(App[None]):
             return
         self._sync_editor_state()
         inactive = [
-            opened.document for opened in self._open_documents if opened.document is not document
+            opened.document
+            for opened in self._materialized_open_documents()
+            if opened.document is not document
         ]
         documents = [document]
         if inactive:
@@ -3044,7 +3196,7 @@ class TermWriterApp(App[None]):
             *(() if self.document is None else (self.document,)),
             *(
                 opened.document
-                for opened in self._open_documents
+                for opened in self._materialized_open_documents()
                 if opened.document is not self.document
             ),
         ]
@@ -3115,12 +3267,15 @@ class TermWriterApp(App[None]):
             (
                 index
                 for index, opened in enumerate(self._open_documents)
-                if opened.document is self.document
+                if isinstance(opened, _OpenDocument) and opened.document is self.document
             ),
             0,
         )
         target = self._open_documents[(active_index + offset) % len(self._open_documents)]
-        self._activate_document(target.document)
+        if isinstance(target, _DeferredDocumentTab):
+            self._materialize_deferred_document(target)
+        else:
+            self._activate_document(target.document)
 
     def action_close_tab(self) -> None:
         if self._exit_requested or self._has_modal or self._critical_io or self.document is None:
@@ -3134,18 +3289,24 @@ class TermWriterApp(App[None]):
             return
         index = self._open_documents.index(opened)
         remaining = [candidate for candidate in self._open_documents if candidate is not opened]
+        target: _DocumentTab | None = None
         if remaining:
             target = remaining[min(index, len(remaining) - 1)]
-            self._activate_document(
-                target.document,
-                flush_previous_recovery=False,
-                record_session=False,
-            )
+            if isinstance(target, _OpenDocument):
+                self._activate_document(
+                    target.document,
+                    flush_previous_recovery=False,
+                    record_session=False,
+                )
+            else:
+                self._clear_active_document(flush_recovery=False, record_session=False)
         else:
             self._clear_active_document(flush_recovery=False, record_session=False)
         self._open_documents.remove(opened)
         self.document_tabs.remove_tab(opened.tab_id)
         opened.editor.remove()
+        if isinstance(target, _DeferredDocumentTab):
+            self._materialize_deferred_document(target)
         self._persist_session()
         self.call_after_refresh(self._refresh_document_tabs)
 
@@ -3214,9 +3375,13 @@ class TermWriterApp(App[None]):
     def _open_documents_within(self, source: Path) -> tuple[Document, ...]:
         return tuple(
             opened.document
-            for opened in self._open_documents
+            for opened in self._materialized_open_documents()
             if self._path_is_within(opened.document.path, source)
         )
+
+    def _open_tab_paths_within(self, source: Path) -> tuple[Path, ...]:
+        paths = (self._tab_path(opened) for opened in self._open_documents)
+        return tuple(path for path in paths if self._path_is_within(path, source))
 
     def _open_workspace_entry_dialog(self, operation: WorkspaceEntryOperation) -> None:
         if self._exit_requested or self._has_modal or self._critical_io:
@@ -3267,11 +3432,11 @@ class TermWriterApp(App[None]):
         if source == self.workspace.root:
             self.notify("Select a file or folder first", severity="warning")
             return
-        affected = self._open_documents_within(source)
-        if affected:
-            noun = "documents" if len(affected) > 1 else "document"
+        affected_paths = self._open_tab_paths_within(source)
+        if affected_paths:
+            noun = "documents" if len(affected_paths) > 1 else "document"
             self.notify(
-                f"Close {len(affected)} open {noun} before removing this path",
+                f"Close {len(affected_paths)} open {noun} before removing this path",
                 severity="warning",
             )
             return
@@ -3304,6 +3469,9 @@ class TermWriterApp(App[None]):
             return
 
         affected = self._open_documents_within(source) if dialog.source is not None else ()
+        affected_tab_paths = (
+            self._open_tab_paths_within(source) if dialog.source is not None else ()
+        )
         if any(document.dirty for document in affected):
             dialog.show_error("Save or close open documents inside this path before changing it.")
             return
@@ -3322,15 +3490,15 @@ class TermWriterApp(App[None]):
 
         if requested_target is not None:
             affected_paths = {
-                self._retargeted_path(document.path, source, requested_target)
-                for document in affected
+                self._retargeted_path(path, source, requested_target) for path in affected_tab_paths
             }
             for opened in self._open_documents:
-                if any(opened.document is document for document in affected):
+                opened_path = self._tab_path(opened)
+                if opened_path in affected_tab_paths:
                     continue
                 if any(
-                    _paths_reserve_same_spelling(opened.document.path, target)
-                    or paths_are_spelling_aliases(opened.document.path, target)
+                    _paths_reserve_same_spelling(opened_path, target)
+                    or paths_are_spelling_aliases(opened_path, target)
                     for target in affected_paths
                 ):
                     dialog.show_error("The destination is already reserved by an open document.")
@@ -3359,7 +3527,7 @@ class TermWriterApp(App[None]):
             source,
             event.value,
             dialog,
-            tuple(document.path for document in affected),
+            affected_tab_paths,
             tuple((document.path, document.snapshot) for document in affected),
         )
 
@@ -3497,16 +3665,29 @@ class TermWriterApp(App[None]):
             WorkspaceEntryOperation.MOVE,
         }:
             for previous_path in affected_paths:
-                document = self._open_document_for_path(previous_path)
-                if document is None:
+                opened = self._open_tab_for_path(previous_path)
+                if opened is None:
                     continue
                 new_path = self._retargeted_path(previous_path, result.source, target)
-                baseline = document.snapshot
-                self._clear_recovery(previous_path)
                 previous_view = self._session_views.pop(previous_path, None)
                 self._recent_paths = [
                     new_path if path == previous_path else path for path in self._recent_paths
                 ]
+                if isinstance(opened, _DeferredDocumentTab):
+                    opened.path = new_path
+                    if previous_view is not None:
+                        self._session_views[new_path] = DocumentViewState(
+                            new_path,
+                            line=previous_view.line,
+                            column=previous_view.column,
+                            scroll_x=previous_view.scroll_x,
+                            scroll_y=previous_view.scroll_y,
+                        )
+                    continue
+
+                document = opened.document
+                baseline = document.snapshot
+                self._clear_recovery(previous_path)
                 document.retarget(new_path)
                 snapshot = snapshots.get(new_path)
                 same_file = (
@@ -3640,7 +3821,7 @@ class TermWriterApp(App[None]):
                 opened.document.text,
                 prefer_disk=not (opened.document.dirty or opened.document.conflict),
             )
-            for opened in self._open_documents
+            for opened in self._materialized_open_documents()
         )
         self.push_screen(
             TextSearchDialog(

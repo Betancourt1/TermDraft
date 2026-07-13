@@ -52,10 +52,12 @@ TextArea source edits
 an independently mutable flag. Reverting an ordinary edit to the baseline therefore clears dirty
 state without a special code path.
 
-Each open entry owns a mounted `TextArea` as an editable view, not a second domain model. Widget
-identity routes `Changed` and selection messages to the matching `Document`; only the active entry
-drives preview and status updates. Each entry also owns the normalized/exact baseline pair needed for
-mixed line endings and its independent Textual undo stack. Before save, tab activation, or a
+Each materialized entry owns a mounted `TextArea` as an editable view, not a second domain model.
+Session-restored inactive tabs initially retain only their validated path and tab identity; their
+`Document` and editor are created through the normal open pipeline when first selected. Once
+materialized, an entry keeps the normalized/exact baseline pair and independent Textual undo stack
+for the rest of the process. Widget identity routes `Changed` and selection messages to the matching
+`Document`; only the active entry drives preview and status updates. Before save, tab activation, or a
 destructive transition,
 the coordinator also reads the widget synchronously so a queued message cannot omit the latest
 keypress.
@@ -71,9 +73,10 @@ previous complete session on write failure.
 
 The store rejects files larger than 512 KiB and states with more than 100 document views. The app
 loads metadata in a thread worker at the start of mounting. An explicit CLI file suppresses tab
-restoration. A directory launch restores paths sequentially through normal recovery and
-mixed-ending decisions, then selects the stored active tab; missing paths are pruned and access
-failures are skipped without dropping their recent view. Writes use one in-flight worker and one
+restoration. A directory launch validates the stored paths, creates lightweight tabs in saved order,
+and loads only the prior active tab through the normal recovery and mixed-ending decisions. Other
+tabs follow that pipeline when selected; missing paths are pruned and access failures are skipped
+without dropping their recent view. Writes use one in-flight worker and one
 replaceable pending immutable snapshot, so an older thread cannot finish after newer metadata;
 clean quit waits for the queue to drain. Ctrl+O opens the bounded MRU order. Each activation caches
 the outgoing view, and Save As moves the cached view to the new path. Corrupt session JSON is

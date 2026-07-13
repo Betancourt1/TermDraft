@@ -524,10 +524,49 @@ async def test_directory_restart_restores_tab_order_and_active_tab(tmp_path: Pat
                 break
             await pilot.pause(0.01)
 
-        assert [opened.document.path for opened in app._open_documents] == [first, second]
+        assert [app._tab_path(opened) for opened in app._open_documents] == [first, second]
+        assert len(app._materialized_open_documents()) == 1
         assert app.document is not None and app.document.path == first
         assert app.editor.cursor_location == (0, 3)
         assert app.editor.history.undo_stack == []
+
+        await pilot.press("ctrl+pagedown")
+        await _wait_for_document(app, pilot, second)
+
+        assert len(app._materialized_open_documents()) == 2
+        assert app.editor.text == "second"
+        assert app.editor.cursor_location == (0, 4)
+
+
+async def test_directory_restart_defers_every_inactive_tab(tmp_path: Path) -> None:
+    paths = tuple(tmp_path / f"note-{index}.md" for index in range(10))
+    for index, path in enumerate(paths):
+        path.write_text(f"note {index}", encoding="utf-8")
+    store = SessionStore(tmp_path / "sessions")
+    store.save(
+        SessionState(
+            tmp_path,
+            paths[4],
+            tuple(DocumentViewState(path) for path in paths),
+            paths,
+        )
+    )
+    app = TermWriterApp(
+        Workspace.from_target(tmp_path),
+        preview_debounce=0.01,
+        recovery_journal=RecoveryJournal(tmp_path / "recovery"),
+        session_store=store,
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        for _ in range(200):
+            if len(app._open_documents) == 10 and not app._restoring_session_tabs:
+                break
+            await pilot.pause(0.01)
+
+        assert [app._tab_path(opened) for opened in app._open_documents] == list(paths)
+        assert len(app._materialized_open_documents()) == 1
+        assert app.document is not None and app.document.path == paths[4]
 
 
 async def test_explicit_file_launch_does_not_restore_other_session_tabs(

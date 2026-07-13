@@ -316,16 +316,19 @@ for future semantic editing, not a source transformation.
 
 ## Data-safety behavior
 
-Each open file has one live `Document` that remains its in-memory source of truth and one mounted
-Textual editor with its own runtime undo stack. One document/editor pair is active beside the shared
-preview; neither rendered output nor tab widgets write source back to the model.
+Each loaded file has one live `Document` that remains its in-memory source of truth and one mounted
+Textual editor with its own runtime undo stack. Restored background tabs keep only their path until
+first selected; once loaded, their editor remains mounted so runtime undo history survives tab
+switches. One document/editor pair is active beside the shared preview; neither rendered output nor
+tab widgets write source back to the model.
 
 Workspace session JSON stores only ordered open paths, the active path, and per-document
 cursor/scroll coordinates. It is limited to 100 document views and 512 KiB. Loading and serialized,
 coalesced writes run in workers; clean quit waits for the newest queued snapshot. Opening a directory
-restores readable tabs sequentially and then reselects the prior active tab, while an explicit CLI
-file takes precedence and does not resurrect siblings. Recovery and mixed-ending decisions pause
-that sequence so dialogs never overlap. Ctrl+O presents the most-recently-used order. Confirmed
+restores the prior active tab immediately and defers loading the other readable tabs until selected,
+while an explicit CLI file takes precedence and does not resurrect siblings. Recovery and
+mixed-ending decisions still run through the normal open path. Ctrl+O presents the
+most-recently-used order. Confirmed
 missing entries are pruned; temporarily inaccessible entries remain recent but are skipped during
 automatic restoration. Session state is atomically replaced outside the workspace and never
 contains Markdown source, recovery text, or undo history. Missing or corrupt state cannot prevent
@@ -481,8 +484,9 @@ mode, Python environment, dependency versions, and workload, then compare the me
 ## Known limitations
 
 - Each tab's undo/redo history survives runtime tab switching but is intentionally not serialized;
-  restored tabs begin with empty histories after restart. Keeping one mounted `TextArea` per tab also
-  means unusually large tab sets consume more memory. Session metadata restores at most 100 views.
+  restored tabs begin with empty histories when first selected. Materialized editors remain mounted,
+  so unusually large tab sets eventually consume more memory if every tab is activated. Session
+  metadata restores at most 100 views.
 - The semantic inspector is line-level diagnostics, not an editing-grade AST. Nested containers are
   represented by their outer block. Valid top-level link-reference definitions use parser
   environment line maps, while malformed or unknown source remains explicit gaps; this metadata is
@@ -570,7 +574,7 @@ mode, Python environment, dependency versions, and workload, then compare the me
    stability while retaining immediate full-source fallback.
 2. Design editing-grade block identities and range reconciliation as read-only diagnostics before
    permitting any source splice.
-3. Prototype lighter inactive-tab storage to address the measured mounted-editor memory cost without
+3. Measure whether already materialized inactive editors need a bounded eviction policy without
    weakening dirty source, undo, recovery, or conflict guarantees.
 
 Implementation boundaries and tradeoffs are documented in

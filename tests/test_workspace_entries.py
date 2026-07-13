@@ -14,9 +14,10 @@ from termwriter.screens.dialogs import (
     ConflictDialog,
     TrashWorkspaceEntryDialog,
     WorkspaceEntryDialog,
+    WorkspaceEntryOperation,
 )
 from termwriter.services.recovery import RecoveryJournal
-from termwriter.services.session import SessionStore
+from termwriter.services.session import DocumentViewState, SessionState, SessionStore
 from termwriter.services.workspace_entries import (
     WorkspaceEntryError,
     create_folder,
@@ -217,6 +218,61 @@ async def test_rename_keeps_a_clean_open_document_attached(tmp_path: Path) -> No
         assert app.document is not None
         assert app.document.path == renamed
         assert not app.document.dirty
+
+
+async def test_rename_retargets_a_deferred_restored_tab(tmp_path: Path) -> None:
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    state_root = tmp_path / "state"
+    store = SessionStore(state_root / "sessions")
+    store.save(
+        SessionState(
+            tmp_path,
+            first,
+            (DocumentViewState(first), DocumentViewState(second)),
+            (first, second),
+        )
+    )
+    app = _app(tmp_path, state_root)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        for _ in range(200):
+            if app.document is not None and not app._restoring_session_tabs:
+                break
+            await pilot.pause(0.01)
+
+        assert len(app._materialized_open_documents()) == 1
+        app.push_screen(
+            WorkspaceEntryDialog(
+                WorkspaceEntryOperation.RENAME,
+                tmp_path,
+                source=second,
+            )
+        )
+        await pilot.pause()
+        dialog = app.screen
+        assert isinstance(dialog, WorkspaceEntryDialog)
+        dialog.query_one("#workspace-entry-input", Input).value = "renamed.md"
+        await pilot.press("enter")
+        renamed = tmp_path / "renamed.md"
+        for _ in range(200):
+            if renamed.exists() and not app._critical_io:
+                break
+            await pilot.pause(0.01)
+
+        assert [app._tab_path(opened) for opened in app._open_documents] == [first, renamed]
+        assert len(app._materialized_open_documents()) == 1
+
+        app._request_open(renamed)
+        for _ in range(200):
+            if app.document is not None and app.document.path == renamed:
+                break
+            await pilot.pause(0.01)
+
+        assert app.editor.text == "second"
+        assert len(app._materialized_open_documents()) == 2
 
 
 async def test_rename_refuses_an_open_document_changed_on_disk(tmp_path: Path) -> None:
