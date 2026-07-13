@@ -1009,6 +1009,68 @@ async def test_external_watcher_reloads_a_clean_document(tmp_path: Path) -> None
         assert app.document.last_save_status == "Reloaded externally"
 
 
+async def test_workspace_watcher_refreshes_external_files_and_folders(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    existing = root / "existing.md"
+    existing.write_text("existing", encoding="utf-8")
+    app = TermWriterApp(
+        Workspace.from_target(root),
+        external_poll_interval=0.01,
+        recovery_journal=RecoveryJournal(tmp_path / "recovery"),
+        session_store=SessionStore(tmp_path / "sessions"),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        tree = app.explorer.directory_tree
+        real_reload = tree.reload
+        reloads = 0
+
+        def tracked_reload() -> object:
+            nonlocal reloads
+            reloads += 1
+            return real_reload()
+
+        monkeypatch.setattr(tree, "reload", tracked_reload)
+        folder = root / "drafts"
+        folder.mkdir()
+        added = folder / "added.md"
+        added.write_text("added", encoding="utf-8")
+
+        for _ in range(200):
+            if added in app.workspace_files and folder in app.workspace_directories:
+                break
+            await pilot.pause(0.01)
+
+        assert added in app.workspace_files
+        assert folder in app.workspace_directories
+        assert reloads >= 1
+
+        renamed = folder / "renamed.md"
+        added.rename(renamed)
+        for _ in range(200):
+            if renamed in app.workspace_files and added not in app.workspace_files:
+                break
+            await pilot.pause(0.01)
+
+        assert renamed in app.workspace_files
+        assert added not in app.workspace_files
+
+        renamed.unlink()
+        folder.rmdir()
+        for _ in range(200):
+            if renamed not in app.workspace_files and folder not in app.workspace_directories:
+                break
+            await pilot.pause(0.01)
+
+        assert app.workspace_files == (existing,)
+        assert folder not in app.workspace_directories
+        assert reloads >= 3
+
+
 async def test_external_watcher_marks_dirty_conflict_without_opening_modal(
     tmp_path: Path,
 ) -> None:

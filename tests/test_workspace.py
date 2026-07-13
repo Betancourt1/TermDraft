@@ -26,6 +26,7 @@ def test_workspace_filters_supported_files_and_ignored_directories(tmp_path: Pat
     result = Workspace.from_target(tmp_path).scan()
 
     assert [path.name for path in result.files] == ["DOS.MARKDOWN", "one.md"]
+    assert result.directories == (tmp_path / "notes",)
     assert result.warnings == ()
 
 

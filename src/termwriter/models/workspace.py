@@ -58,9 +58,10 @@ class UnsupportedFileError(WorkspaceError):
 
 @dataclass(frozen=True, slots=True)
 class ScanResult:
-    """Markdown files plus non-fatal directory errors found during scanning."""
+    """Visible workspace structure plus non-fatal scan errors."""
 
     files: tuple[Path, ...]
+    directories: tuple[Path, ...]
     warnings: tuple[str, ...]
 
 
@@ -258,6 +259,7 @@ class Workspace:
         """Find Markdown files while treating unreadable directories as warnings."""
         pending = [self.root]
         files: list[Path] = []
+        directories: list[Path] = []
         warnings: list[str] = []
 
         while pending:
@@ -280,6 +282,7 @@ class Workspace:
                         continue
                     if entry.is_dir(follow_symlinks=False):
                         if entry.name not in IGNORED_DIRECTORIES:
+                            directories.append(path)
                             pending.append(path)
                     elif (
                         entry.is_file(follow_symlinks=False)
@@ -290,4 +293,5 @@ class Workspace:
                     warnings.append(f"Cannot inspect {path}: {error}")
 
         files.sort(key=lambda path: path.relative_to(self.root).as_posix().casefold())
-        return ScanResult(tuple(files), tuple(warnings))
+        directories.sort(key=lambda path: path.relative_to(self.root).as_posix().casefold())
+        return ScanResult(tuple(files), tuple(directories), tuple(warnings))

@@ -445,6 +445,13 @@ authoritative check and can then reload or report a conflict. Polling pauses whi
 operation, or continuation is active. Save and transition checks remain authoritative and
 revalidate immediately before acting.
 
+A separate worker scan on the same interval compares the visible Markdown files and folders with the
+last applied workspace scan. Structural differences reload the explorer and update the file-search
+index; unchanged scans do neither. The scan also runs when the app regains focus and still ignores
+symlinks, unsupported files, and configured ignored directories. External renames are represented as
+one removed path and one added path. Open documents are not retargeted by inference, so the existing
+deletion/conflict flow continues to protect their in-memory source.
+
 The `TermWriterApp` coordinator owns pending transition and save continuations. Typed modal callbacks
 implement these paths:
 

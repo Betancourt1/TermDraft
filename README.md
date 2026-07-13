@@ -20,7 +20,7 @@ The current release is a functional MVP focused on a dependable writing loop:
 - save through a same-directory temporary file;
 - keep an atomic per-user crash-recovery journal for dirty source;
 - drain exact dirty-tab recovery drafts on cooperative `SIGTERM` and `SIGHUP` shutdown;
-- poll the active file and rotate through inactive tabs for external changes;
+- poll open files and visible workspace structure for external changes;
 - require consent before editing a file with mixed line endings;
 - require an explicit decision before closing, reloading, or replacing unsaved work.
 
@@ -407,6 +407,12 @@ visible `Reloaded externally` status. A dirty external edit, deletion, or inacce
 editor source intact, marks a persistent conflict, and shows one warning; only an explicit save or
 transition opens the decision dialog. Checks pause while another modal workflow is active.
 
+The same interval scans visible Markdown paths and folders in the background. External creates,
+deletes, and renames refresh the explorer and file-search index within about two seconds, or when
+TermWriter regains focus. Renaming an open file is handled conservatively: the original tab is marked
+as deleted externally while the renamed path appears in the explorer, rather than guessing that the
+two paths represent the same document.
+
 Mixed line endings are detected before the editor becomes active. TermWriter states the separator
 Textual will use and requires an explicit Edit and normalize decision. Cancel leaves the current
 document untouched. For a mixed file reloaded by the watcher, choosing Keep read-only requires
@@ -502,10 +508,11 @@ mode, Python environment, dependency versions, and workload, then compare the me
   prompt remains open. Another TermWriter instance can publish a newer journal during that decision;
   restoring and then editing the captured draft may supersede the newer recovery journal. The
   Markdown-file conflict guard still applies, but recovery metadata is not a multi-writer history.
-- The watcher polls the active file plus one rotating inactive tab every two seconds. It is not an
-  operating-system event watcher. Inactive changes set a persistent `!` tab state but never reload a
-  hidden editor or open a dialog. Hashing runs in a worker, so a completed check can arrive after the
-  disk changed again; save and transition checks remain authoritative.
+- The watcher polls the active file plus one rotating inactive tab and scans visible workspace
+  structure every two seconds. It is not an operating-system event watcher. Inactive changes set a
+  persistent `!` tab state but never reload a hidden editor or open a dialog. File probing and
+  workspace scanning run in workers, so a completed check can arrive after the disk changed again;
+  save and transition checks remain authoritative. Very large workspace trees cost more to rescan.
 - Files must be valid UTF-8, with or without a UTF-8 BOM.
 - Uniform LF and CRLF sources round-trip through edits. Textual prefers CRLF when it is present,
   otherwise LF and then CR. After explicit consent and an edit, a deliberately mixed file is

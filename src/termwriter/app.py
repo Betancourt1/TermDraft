@@ -372,7 +372,11 @@ class TermWriterApp(App[None]):
         self._pending_session_state: SessionState | None = None
         self._exit_requested = False
         self.workspace_files: tuple[Path, ...] = ()
+        self.workspace_directories: tuple[Path, ...] = ()
+        self._workspace_scan_applied = False
+        self._workspace_warnings: tuple[str, ...] = ()
         self._workspace_index_revision = 0
+        self._workspace_index_task: Worker[None] | None = None
         self._file_search_requested = False
         self._preview_timer: Timer | None = None
         self._external_watch_timer: Timer | None = None
@@ -450,6 +454,11 @@ class TermWriterApp(App[None]):
             name="external-file-watch",
         )
         self.set_interval(
+            self.external_poll_interval,
+            self._check_workspace_in_background,
+            name="external-workspace-watch",
+        )
+        self.set_interval(
             0.05,
             self._process_orderly_shutdown_request,
             name="orderly-shutdown-check",
@@ -513,6 +522,7 @@ class TermWriterApp(App[None]):
 
     def on_app_focus(self, event: events.AppFocus) -> None:
         del event
+        self.call_after_refresh(self._check_workspace_in_background)
         if self.document is not None and not self._has_modal:
             self.call_after_refresh(self._check_external_in_background)
 
@@ -628,7 +638,15 @@ class TermWriterApp(App[None]):
         self._workspace_index_revision += 1
         if open_search:
             self._file_search_requested = True
-        return self._workspace_index_worker(self._workspace_index_revision)
+        worker = self._workspace_index_worker(self._workspace_index_revision)
+        self._workspace_index_task = worker
+        return worker
+
+    def _check_workspace_in_background(self) -> None:
+        worker = self._workspace_index_task
+        if self._exit_requested or self._critical_io or (worker is not None and worker.is_running):
+            return
+        self._refresh_workspace_index()
 
     @work(group="workspace-index", exclusive=True, thread=True, exit_on_error=False)
     def _workspace_index_worker(self, revision: int) -> None:
@@ -652,12 +670,21 @@ class TermWriterApp(App[None]):
             )
             self._file_search_requested = False
             return
+        structure_changed = self._workspace_scan_applied and (
+            result.scan.files != self.workspace_files
+            or result.scan.directories != self.workspace_directories
+        )
         self.workspace_files = result.scan.files
-        if result.scan.warnings:
+        self.workspace_directories = result.scan.directories
+        self._workspace_scan_applied = True
+        if structure_changed:
+            self.explorer.directory_tree.reload()
+        if result.scan.warnings and result.scan.warnings != self._workspace_warnings:
             self.notify(
                 f"Skipped {len(result.scan.warnings)} unreadable workspace location(s)",
                 severity="warning",
             )
+        self._workspace_warnings = result.scan.warnings
         if self._file_search_requested:
             self._file_search_requested = False
             if not self._has_modal and not self._exit_requested:
