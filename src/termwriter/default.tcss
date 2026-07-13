@@ -281,3 +281,7 @@ ModalScreen {
 #help-shortcuts {
     height: auto;
 }
+
+CommandPalette CommandList > .option-list--option {
+    padding: 0 3;
+}

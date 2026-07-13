@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from textual.color import Color
-from textual.command import SearchIcon
+from textual.command import CommandList, SearchIcon
 from textual.filter import Monochrome
 from textual.widgets import Input, Static
 
@@ -313,7 +313,10 @@ async def test_command_palette_and_help_expose_product_actions(tmp_path: Path) -
 
         await pilot.press("ctrl+backslash")
         assert app.screen.id == "--command-palette"
+        command_list = app.screen.query_one(CommandList)
+        option_padding = command_list.get_component_styles("option-list--option").padding
         search_icon = app.screen.query_one(SearchIcon)
+        assert option_padding.left == option_padding.right == 3
         assert search_icon.icon == SEARCH_ICON
         assert search_icon.styles.color == Color.parse(SEARCH_ICON_COLOR)
         await pilot.press("escape")
