@@ -16,6 +16,7 @@ from termwriter.screens.dialogs import (
     WorkspaceEntryDialog,
     WorkspaceEntryOperation,
 )
+from termwriter.services.external_changes import DiskProbe, probe_file
 from termwriter.services.recovery import RecoveryJournal
 from termwriter.services.session import DocumentViewState, SessionState, SessionStore
 from termwriter.services.workspace_entries import (
@@ -345,6 +346,45 @@ async def test_rename_marks_a_change_during_the_operation_as_a_conflict(
 
         assert isinstance(app.screen, ConflictDialog)
         assert renamed.read_text(encoding="utf-8") == "external"
+
+
+async def test_rename_retargets_open_document_when_post_move_probe_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    renamed = tmp_path / "renamed.md"
+    app = _app(path, tmp_path / "state")
+    original_probe = probe_file
+
+    def fail_renamed_probe(probed_path: Path) -> DiskProbe:
+        if probed_path == renamed:
+            raise OSError("injected post-move probe failure")
+        return original_probe(probed_path)
+
+    monkeypatch.setattr("termwriter.app.probe_file", fail_renamed_probe)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        app.action_rename_entry()
+        await pilot.pause()
+        dialog = app.screen
+        assert isinstance(dialog, WorkspaceEntryDialog)
+        dialog.query_one("#workspace-entry-input", Input).value = "renamed.md"
+        await pilot.press("enter")
+        for _ in range(200):
+            if app.document is not None and app.document.path == renamed:
+                break
+            await pilot.pause(0.01)
+
+        assert not path.exists()
+        assert renamed.read_text(encoding="utf-8") == "base"
+        assert app.document is not None
+        assert app.document.path == renamed
+        assert app.document.conflict
+        assert app.document.last_save_status == "File unavailable"
+        assert [app._tab_path(opened) for opened in app._open_documents] == [renamed]
+        assert app.screen is not dialog
 
 
 async def test_move_keeps_dirty_document_and_disk_at_the_original_path(tmp_path: Path) -> None:

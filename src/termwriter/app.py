@@ -264,7 +264,7 @@ class _WorkspaceEntryWorkerResult:
     operation: WorkspaceEntryOperation
     source: Path
     target: Path | None = None
-    snapshots: tuple[tuple[Path, FileSnapshot], ...] = ()
+    probes: tuple[DiskProbe, ...] = ()
     external_change: tuple[Path, FileSnapshot] | None = None
     error: str | None = None
 
@@ -3712,23 +3712,30 @@ class TermWriterApp(App[None]):
             else:
                 target = move_to_trash(self.workspace, source)
 
-            snapshots: tuple[tuple[Path, FileSnapshot], ...] = ()
+            probes: tuple[DiskProbe, ...] = ()
             if operation in {
                 WorkspaceEntryOperation.RENAME,
                 WorkspaceEntryOperation.MOVE,
             }:
-                snapshots = tuple(
-                    (
-                        self._retargeted_path(path, source, target),
-                        snapshot_file(self._retargeted_path(path, source, target)),
-                    )
-                    for path in affected_paths
-                )
+                collected_probes: list[DiskProbe] = []
+                for path in affected_paths:
+                    moved_path = self._retargeted_path(path, source, target)
+                    try:
+                        collected_probes.append(probe_file(moved_path))
+                    except Exception as error:
+                        collected_probes.append(
+                            DiskProbe(
+                                moved_path,
+                                None,
+                                f"Unexpected post-move probe failure: {error}",
+                            )
+                        )
+                probes = tuple(collected_probes)
             result = _WorkspaceEntryWorkerResult(
                 operation,
                 source,
                 target=target,
-                snapshots=snapshots,
+                probes=probes,
             )
         except (OSError, PersistenceError, WorkspaceEntryError, WorkspaceError) as error:
             result = _WorkspaceEntryWorkerResult(
@@ -3785,7 +3792,7 @@ class TermWriterApp(App[None]):
 
         operation = result.operation
         target = result.target
-        snapshots = dict(result.snapshots)
+        probes = {probe.path: probe for probe in result.probes}
         if operation in {
             WorkspaceEntryOperation.RENAME,
             WorkspaceEntryOperation.MOVE,
@@ -3815,7 +3822,8 @@ class TermWriterApp(App[None]):
                 baseline = document.snapshot
                 self._clear_recovery(previous_path)
                 document.retarget(new_path)
-                snapshot = snapshots.get(new_path)
+                probe = probes.get(new_path)
+                snapshot = None if probe is None else probe.snapshot
                 same_file = (
                     snapshot is not None
                     and baseline.exists
@@ -3830,13 +3838,19 @@ class TermWriterApp(App[None]):
                         "Renamed" if operation is WorkspaceEntryOperation.RENAME else "Moved"
                     )
                 else:
-                    kind = (
-                        ExternalChangeKind.DELETED
-                        if snapshot is not None and not snapshot.exists
-                        else ExternalChangeKind.CONFLICT
-                    )
+                    if probe is None or probe.error is not None:
+                        kind = ExternalChangeKind.INACCESSIBLE
+                        detail = (
+                            "The moved file could not be verified" if probe is None else probe.error
+                        )
+                    elif snapshot is not None and not snapshot.exists:
+                        kind = ExternalChangeKind.DELETED
+                        detail = None
+                    else:
+                        kind = ExternalChangeKind.CONFLICT
+                        detail = None
                     self._mark_external_warning(
-                        ExternalChange(kind, snapshot),
+                        ExternalChange(kind, snapshot, detail),
                         document=document,
                         notify_user=document is self.document,
                     )
