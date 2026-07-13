@@ -9,7 +9,11 @@ from textual.widgets import Input, Static
 
 from termwriter.app import TermWriterApp
 from termwriter.models.workspace import Workspace
-from termwriter.screens.dialogs import RemoveWorkspaceEntryDialog, WorkspaceEntryDialog
+from termwriter.screens.dialogs import (
+    ConflictDialog,
+    RemoveWorkspaceEntryDialog,
+    WorkspaceEntryDialog,
+)
 from termwriter.services.recovery import RecoveryJournal
 from termwriter.services.session import SessionStore
 from termwriter.services.workspace_entries import (
@@ -138,6 +142,78 @@ async def test_rename_keeps_a_clean_open_document_attached(tmp_path: Path) -> No
         assert app.document is not None
         assert app.document.path == renamed
         assert not app.document.dirty
+
+
+async def test_rename_refuses_an_open_document_changed_on_disk(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    app = _app(path, tmp_path / "state")
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        path.write_text("external", encoding="utf-8")
+        app.action_rename_entry()
+        await pilot.pause()
+        dialog = app.screen
+        assert isinstance(dialog, WorkspaceEntryDialog)
+        dialog.query_one("#workspace-entry-input", Input).value = "renamed.md"
+        await pilot.press("enter")
+        for _ in range(200):
+            if dialog.error is not None:
+                break
+            await pilot.pause(0.01)
+
+        assert dialog.error is not None
+        assert "changed on disk" in dialog.error
+        assert path.read_text(encoding="utf-8") == "external"
+        assert not (tmp_path / "renamed.md").exists()
+        assert app.document is not None
+        assert app.document.path == path
+        assert app.document.text == "base"
+        assert app.document.conflict
+
+
+async def test_rename_marks_a_change_during_the_operation_as_a_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    app = _app(path, tmp_path / "state")
+    original_rename = rename_entry
+
+    def change_then_rename(workspace: Workspace, source: Path, name: str) -> Path:
+        source.write_text("external", encoding="utf-8")
+        return original_rename(workspace, source, name)
+
+    monkeypatch.setattr("termwriter.app.rename_entry", change_then_rename)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        app.action_rename_entry()
+        await pilot.pause()
+        dialog = app.screen
+        assert isinstance(dialog, WorkspaceEntryDialog)
+        dialog.query_one("#workspace-entry-input", Input).value = "renamed.md"
+        await pilot.press("enter")
+        renamed = tmp_path / "renamed.md"
+        for _ in range(200):
+            if app.document is not None and app.document.path == renamed:
+                break
+            await pilot.pause(0.01)
+
+        assert app.document is not None
+        assert app.document.path == renamed
+        assert app.document.text == "base"
+        assert app.document.conflict
+        assert renamed.read_text(encoding="utf-8") == "external"
+
+        await pilot.press("i", "x", "ctrl+s")
+        for _ in range(200):
+            if isinstance(app.screen, ConflictDialog):
+                break
+            await pilot.pause(0.01)
+
+        assert isinstance(app.screen, ConflictDialog)
+        assert renamed.read_text(encoding="utf-8") == "external"
 
 
 async def test_move_keeps_dirty_document_and_disk_at_the_original_path(tmp_path: Path) -> None:

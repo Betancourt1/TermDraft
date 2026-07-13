@@ -236,6 +236,7 @@ class _WorkspaceEntryWorkerResult:
     source: Path
     target: Path | None = None
     snapshots: tuple[tuple[Path, FileSnapshot], ...] = ()
+    external_change: tuple[Path, FileSnapshot] | None = None
     error: str | None = None
 
 
@@ -3359,6 +3360,7 @@ class TermWriterApp(App[None]):
             event.value,
             dialog,
             tuple(document.path for document in affected),
+            tuple((document.path, document.snapshot) for document in affected),
         )
 
     def _handle_remove_entry_confirmation(self, source: Path, confirmed: bool | None) -> None:
@@ -3375,6 +3377,7 @@ class TermWriterApp(App[None]):
             "",
             None,
             removed_documents,
+            (),
         )
 
     @work(group="workspace-entry", exclusive=True, thread=True, exit_on_error=False)
@@ -3385,9 +3388,25 @@ class TermWriterApp(App[None]):
         value: str,
         dialog: WorkspaceEntryDialog | None,
         affected_paths: tuple[Path, ...],
+        expected_snapshots: tuple[tuple[Path, FileSnapshot], ...],
     ) -> None:
         worker = get_current_worker()
+        external_change: tuple[Path, FileSnapshot] | None = None
         try:
+            if operation in {
+                WorkspaceEntryOperation.RENAME,
+                WorkspaceEntryOperation.MOVE,
+            }:
+                for path, expected in expected_snapshots:
+                    current = snapshot_file(path)
+                    if not (
+                        current.has_same_content(expected) and current.has_same_origin(expected)
+                    ):
+                        external_change = (path, current)
+                        raise WorkspaceEntryError(
+                            f"{path.name} changed on disk; reload or close it "
+                            "before changing its path."
+                        )
             if operation is WorkspaceEntryOperation.CREATE_FILE:
                 target = create_markdown_file(self.workspace, source, value)
             elif operation is WorkspaceEntryOperation.CREATE_FOLDER:
@@ -3418,7 +3437,12 @@ class TermWriterApp(App[None]):
                 snapshots=snapshots,
             )
         except (OSError, PersistenceError, WorkspaceEntryError, WorkspaceError) as error:
-            result = _WorkspaceEntryWorkerResult(operation, source, error=str(error))
+            result = _WorkspaceEntryWorkerResult(
+                operation,
+                source,
+                external_change=external_change,
+                error=str(error),
+            )
         except Exception as error:
             result = _WorkspaceEntryWorkerResult(
                 operation,
@@ -3441,6 +3465,20 @@ class TermWriterApp(App[None]):
     ) -> None:
         if result.error is not None or result.target is None:
             self._finish_critical_io()
+            if result.external_change is not None:
+                path, external_snapshot = result.external_change
+                document = self._open_document_for_path(path)
+                if document is not None:
+                    kind = (
+                        ExternalChangeKind.DELETED
+                        if not external_snapshot.exists
+                        else ExternalChangeKind.CONFLICT
+                    )
+                    self._mark_external_warning(
+                        ExternalChange(kind, external_snapshot),
+                        document=document,
+                        notify_user=False,
+                    )
             if dialog is not None:
                 dialog.show_error(result.error or "The file operation did not return a result.")
             else:
@@ -3463,6 +3501,7 @@ class TermWriterApp(App[None]):
                 if document is None:
                     continue
                 new_path = self._retargeted_path(previous_path, result.source, target)
+                baseline = document.snapshot
                 self._clear_recovery(previous_path)
                 previous_view = self._session_views.pop(previous_path, None)
                 self._recent_paths = [
@@ -3470,11 +3509,30 @@ class TermWriterApp(App[None]):
                 ]
                 document.retarget(new_path)
                 snapshot = snapshots.get(new_path)
-                if snapshot is not None:
-                    document.accept_unchanged_snapshot(snapshot)
-                document.last_save_status = (
-                    "Renamed" if operation is WorkspaceEntryOperation.RENAME else "Moved"
+                same_file = (
+                    snapshot is not None
+                    and baseline.exists
+                    and snapshot.exists
+                    and snapshot.device == baseline.device
+                    and snapshot.inode == baseline.inode
+                    and snapshot.has_same_content(baseline)
                 )
+                if same_file and snapshot is not None:
+                    document.accept_unchanged_snapshot(snapshot)
+                    document.last_save_status = (
+                        "Renamed" if operation is WorkspaceEntryOperation.RENAME else "Moved"
+                    )
+                else:
+                    kind = (
+                        ExternalChangeKind.DELETED
+                        if snapshot is not None and not snapshot.exists
+                        else ExternalChangeKind.CONFLICT
+                    )
+                    self._mark_external_warning(
+                        ExternalChange(kind, snapshot),
+                        document=document,
+                        notify_user=document is self.document,
+                    )
                 if previous_view is not None:
                     self._session_views[new_path] = DocumentViewState(
                         new_path,
