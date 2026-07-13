@@ -241,7 +241,7 @@ Ctrl/Alt shortcuts remain available in both modes and can also be remapped.
 
 Use **Reload configuration** from the command palette after editing `config.toml`. Help is generated
 from the effective map, so it reflects remapped keys. Duplicate keys, unknown IDs/options, invalid
-TOML, and non-boolean editor options are rejected with a clear error.
+TOML, and invalid editor option values are rejected with a clear error.
 
 `theme.tcss` is [Textual CSS](https://textual.textualize.io/guide/CSS/), not browser CSS. It loads
 after TermWriter's bundled stylesheet, so matching selectors override the defaults:

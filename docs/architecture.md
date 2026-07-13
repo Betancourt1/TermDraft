@@ -264,9 +264,9 @@ The CLI resolves the configuration root in this order: explicit `--config-dir`,
 `TERMWRITER_CONFIG_HOME`, then `~/.termwriter`. Configuration is intentionally user-level rather
 than workspace-level, so merely opening a repository cannot install key behavior or visual rules.
 
-`config.toml` is parsed with the standard-library `tomllib`. Only three editor booleans, a positive
-`recovery.retention_days` integer representable from the current date, and a closed set of binding
-IDs are accepted. Values map binding
+`config.toml` is parsed with the standard-library `tomllib`. Only three editor booleans, the
+`startup_mode` string enum (`"command"` or `"write"`), a positive `recovery.retention_days` integer
+representable from the current date, and a closed set of binding IDs are accepted. Values map binding
 IDs to key strings, never to Textual action names; unknown sections, options, IDs, empty values, and
 duplicate effective keys fail closed. The retention value is consulted only after the user opens
 Recovery Manager; it cannot schedule deletion. The initializer uses exclusive creation, does not
