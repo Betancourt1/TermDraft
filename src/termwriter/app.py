@@ -127,6 +127,11 @@ class _SemanticViewPurpose(Enum):
     READ = auto()
 
 
+class _InteractionMode(Enum):
+    WRITE = "WRITE"
+    COMMAND = "COMMAND"
+
+
 class _RecoveryMutationKind(Enum):
     SAVE = auto()
     DELETE = auto()
@@ -329,6 +334,7 @@ class TermWriterApp(App[None]):
         self._preview_visible = True
         self._narrow = False
         self._narrow_pane = "editor"
+        self._interaction_mode = _InteractionMode.WRITE
         self._empty_editor: MarkdownEditor | None = None
         self._pending_open_document: Document | None = None
         self._pending_recovery_entry: RecoveryEntry | None = None
@@ -807,7 +813,7 @@ class TermWriterApp(App[None]):
         editor_id: str,
         read_only: bool,
     ) -> MarkdownEditor:
-        return MarkdownEditor(
+        editor = MarkdownEditor(
             text,
             auto_continue_lists=self.config.editor.auto_continue_lists,
             soft_wrap=self.config.editor.soft_wrap,
@@ -816,6 +822,8 @@ class TermWriterApp(App[None]):
             id=editor_id,
             classes="markdown-editor-buffer",
         )
+        editor.write_mode = self._interaction_mode is _InteractionMode.WRITE
+        return editor
 
     def _set_editor_baseline(self, document: Document) -> None:
         opened = self._open_entry_for_document(document)
@@ -2100,6 +2108,43 @@ class TermWriterApp(App[None]):
         if not self._has_modal:
             self._save_current()
 
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Enable modal command keys only while COMMAND mode owns the keyboard."""
+        del parameters
+        if action == "command_mode_key":
+            return self._interaction_mode is _InteractionMode.COMMAND and not self._has_modal
+        if action == "enter_command_mode":
+            return not self._has_modal
+        return True
+
+    def action_enter_command_mode(self) -> None:
+        self._set_interaction_mode(_InteractionMode.COMMAND)
+
+    def action_enter_write_mode(self) -> None:
+        if self.document is None:
+            self.notify("Open a Markdown file before entering WRITE mode", severity="warning")
+            return
+        if self._critical_io or self.editor.read_only:
+            self.notify("The current document is temporarily read-only", severity="warning")
+            return
+        self._set_interaction_mode(_InteractionMode.WRITE)
+        self._narrow_pane = "editor"
+        self._apply_panel_visibility()
+        self.editor.focus()
+
+    async def action_command_mode_key(self, action: str) -> None:
+        await self.run_action(action)
+
+    def _set_interaction_mode(self, mode: _InteractionMode) -> None:
+        if self._interaction_mode is mode:
+            return
+        self._interaction_mode = mode
+        write_mode = mode is _InteractionMode.WRITE
+        for editor in self.query(MarkdownEditor):
+            editor.write_mode = write_mode
+        self.refresh_bindings()
+        self._refresh_status()
+
     def _save_current(self, *, after: Callable[[], None] | None = None) -> None:
         if self._critical_io:
             self.notify("Wait for the current file operation to finish", severity="warning")
@@ -3289,16 +3334,17 @@ class TermWriterApp(App[None]):
         )
 
     def _focus_mode(self) -> str:
+        interaction = self._interaction_mode.value
         if self._narrow and self.preview.display:
-            return "PREVIEW"
+            return f"{interaction} · PREVIEW"
         focused = self.focused
         if isinstance(focused, MarkdownEditor):
-            return "EDIT"
+            return interaction
         if isinstance(focused, DirectoryTree):
-            return "FILES"
+            return f"{interaction} · FILES"
         if isinstance(focused, MarkdownPreview):
-            return "PREVIEW"
-        return "COMMAND"
+            return f"{interaction} · PREVIEW"
+        return interaction
 
     def _refresh_status(self) -> None:
         if self.query("#document-tabs"):

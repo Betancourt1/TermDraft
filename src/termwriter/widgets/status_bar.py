@@ -14,7 +14,7 @@ class TermWriterStatusBar(Static):
     """Render mode, path, dirty state, words, cursor, save, and conflict."""
 
     def __init__(self) -> None:
-        super().__init__("FILES | No file open", id="status-bar", markup=False)
+        super().__init__("WRITE · FILES | No file open", id="status-bar", markup=False)
 
     def show_document(
         self,

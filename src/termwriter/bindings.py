@@ -112,7 +112,44 @@ APP_BINDINGS: list[BindingType] = [
         priority=True,
         id=BINDING_ID_COMMAND_PALETTE,
     ),
+    Binding(
+        "escape",
+        "enter_command_mode",
+        "Command mode",
+        show=False,
+        priority=True,
+        id="enter_command_mode",
+    ),
 ]
+
+COMMAND_MODE_SHORTCUTS = (
+    ("i", "enter_write_mode", "Enter WRITE mode"),
+    ("w", "save", "Save the current document"),
+    ("q", "request_quit", "Quit safely"),
+    ("e", "toggle_explorer", "Show or hide files"),
+    ("f", "find_file", "Find a Markdown file"),
+    ("o", "open_recent", "Open a recent document"),
+    ("n", "next_tab", "Activate the next open document tab"),
+    ("p", "previous_tab", "Activate the previous open document tab"),
+    ("c", "close_tab", "Close the active tab safely"),
+    ("slash", "search_text", "Search workspace text"),
+    ("v", "toggle_preview", "Show, hide, or focus the preview"),
+    ("u", "editor_undo", "Undo"),
+    ("r", "editor_redo", "Redo"),
+    ("colon", "command_palette", "Open the command palette"),
+    ("question_mark", "show_help", "Show shortcut help"),
+)
+
+APP_BINDINGS.extend(
+    Binding(
+        key,
+        f"command_mode_key('{action}')",
+        description,
+        show=False,
+        priority=True,
+    )
+    for key, action, description in COMMAND_MODE_SHORTCUTS
+)
 
 EDITOR_BINDINGS: list[BindingType] = [
     Binding(
@@ -172,7 +209,7 @@ Definitions        Term followed on the next line by : Definition
 Rules              ---
 
 Enter continues bullets, numbered lists, tasks, and blockquotes. Press Enter on
-an empty marker to end the list. Press Esc to leave the indentation-enabled source editor. In the
+an empty marker to end the list. Press Esc for COMMAND mode and i to return to WRITE mode. In the
 focused preview, Tab and Shift+Tab select links and Enter activates the selection.
 Alt+Down and Alt+Up move between rendered headings and show the current heading position.
 Footnotes navigate internally; external URLs remain inert. Raw HTML is displayed as text and never
@@ -190,17 +227,35 @@ def format_shortcut_help(
     auto_continue_lists: bool = True,
 ) -> str:
     """Render help from the effective keymap so remapped keys stay truthful."""
-    rows = [
+    command_rows = [("Esc", "Enter COMMAND mode")]
+    command_rows.extend(
+        (_display_command_key(key), description)
+        for key, _action, description in COMMAND_MODE_SHORTCUTS
+    )
+    configured_rows = [
         (_display_keys(keybindings[binding_id]), description)
         for binding_id, description in _SHORTCUTS
     ]
-    rows.append(("Esc in editor", "Leave the editor and focus the next visible control"))
-    rows.append(("Tab / Shift+Tab in preview", "Select links or leave the preview"))
-    rows.append(("Enter in preview", "Activate the selected preview link"))
+    extra_rows = [
+        ("Tab / Shift+Tab in preview", "Select links or leave the preview"),
+        ("Enter in preview", "Activate the selected preview link"),
+    ]
     if auto_continue_lists:
-        rows.append(("Enter in a list", "Continue it; an empty marker ends it"))
+        extra_rows.append(("Enter in a list", "Continue it; an empty marker ends it"))
+    rows = [*command_rows, *configured_rows, *extra_rows]
     width = max(len(keys) for keys, _description in rows) + 3
-    return "\n".join(f"{keys:<{width}}{description}" for keys, description in rows)
+
+    def format_rows(section: list[tuple[str, str]]) -> str:
+        return "\n".join(f"{keys:<{width}}{description}" for keys, description in section)
+
+    return (
+        "Modes and COMMAND keys\n"
+        + format_rows(command_rows)
+        + "\n\nConfigured shortcuts (available in both modes)\n"
+        + format_rows(configured_rows)
+        + "\n\nEditor and preview controls\n"
+        + format_rows(extra_rows)
+    )
 
 
 def format_command_help(
@@ -217,7 +272,8 @@ def format_command_help(
             auto_continue_lists=auto_continue_lists,
         )
         + "\n\n"
-        + f"Press {palette} in the TUI to search all commands, including:\n"
+        + f"Press : in COMMAND mode or {palette} in either mode to search all commands, "
+        + "including:\n"
         + "  Save, find file, open recent, next/previous/close tab, search workspace text,\n"
         + "  toggle files, toggle preview,\n"
         + "  undo, redo,\n"
@@ -230,6 +286,10 @@ def format_command_help(
 
 def _display_keys(keys: str) -> str:
     return " / ".join(_display_key(key.strip()) for key in keys.split(","))
+
+
+def _display_command_key(key: str) -> str:
+    return {"slash": "/", "colon": ":", "question_mark": "?"}.get(key, key)
 
 
 def _display_key(key: str) -> str:

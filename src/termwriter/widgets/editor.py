@@ -27,6 +27,7 @@ class MarkdownEditor(TextArea):
         classes: str | None = None,
     ) -> None:
         self.auto_continue_lists = auto_continue_lists
+        self.write_mode = True
         super().__init__(
             text,
             language="markdown",
@@ -50,8 +51,18 @@ class MarkdownEditor(TextArea):
         if not self.read_only:
             super().redo()
 
+    def check_consume_key(self, key: str, character: str | None = None) -> bool:
+        """Let application command bindings own printable keys outside WRITE mode."""
+        if not self.write_mode:
+            return False
+        return super().check_consume_key(key, character)
+
     async def _on_key(self, event: events.Key) -> None:
         """Apply predictable Markdown continuation before TextArea handles Enter."""
+        if not self.write_mode:
+            event.stop()
+            event.prevent_default()
+            return
         if (
             event.key == "enter"
             and self.auto_continue_lists

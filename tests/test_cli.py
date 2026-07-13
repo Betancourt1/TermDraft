@@ -114,7 +114,9 @@ def test_cli_commands_show_effective_remapped_keys(
     assert "manage recovery drafts" in output
     assert "inspect semantic blocks" in output
     assert "read semantic blocks experimentally" in output
-    assert "Esc in editor" in output
+    assert "Modes and COMMAND keys" in output
+    assert "Enter COMMAND mode" in output
+    assert "Enter WRITE mode" in output
     assert "Tab / Shift+Tab in preview" in output
     assert "Select links or leave the preview" in output
     assert "Enter in preview" in output

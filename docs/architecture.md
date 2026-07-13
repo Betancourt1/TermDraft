@@ -249,9 +249,16 @@ Recovery Manager; it cannot schedule deletion. The initializer uses exclusive cr
 replace existing files, and creates new directories and files with mode 0700/0600 where POSIX
 permissions apply.
 
-Bindings keep stable IDs and are remapped through Textual's public `App.set_keymap`. Undo and redo
-are defined on the Markdown editor subclass with IDs so remapping removes their original TextArea
-keys rather than leaving hidden aliases. F1 and CLI help are generated from the effective keymap.
+TermWriter starts in WRITE mode. Esc changes the application to COMMAND mode, where the Markdown
+editor stops consuming printable input and the application owns a fixed mnemonic single-key map.
+`i` restores WRITE mode and editor focus. Modal dialogs suppress the COMMAND map so their inputs
+remain ordinary text fields. The persistent status bar always leads with the interaction mode and
+adds FILES or PREVIEW when focus leaves the source editor.
+
+Configured bindings keep stable IDs and are remapped through Textual's public `App.set_keymap`.
+They remain available in both interaction modes. Undo and redo are defined on the Markdown editor
+subclass with IDs so remapping removes their original TextArea keys rather than leaving hidden
+aliases. F1 and CLI help are generated from the effective keymap and include the fixed COMMAND map.
 The command palette exposes fixed application callbacks; configuration cannot add callbacks.
 
 Bundled layout rules live in `default.tcss`. When an existing user `theme.tcss` is present, the App

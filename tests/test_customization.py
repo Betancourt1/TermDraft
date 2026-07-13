@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from textual.color import Color
+from textual.widgets import Input, Static
 
 from termwriter.app import TermWriterApp
 from termwriter.config import EditorConfig, TermWriterConfig, load_config
@@ -127,6 +128,55 @@ async def test_remapped_save_and_undo_replace_their_default_keys(tmp_path: Path)
 
         await pilot.press("ctrl+g")
         assert path.read_text(encoding="utf-8") == "ybase"
+
+
+async def test_write_and_command_modes_protect_text_and_use_plain_keys(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    app = _app(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        status = app.query_one("#status-bar", Static)
+        assert str(status.render()).startswith("WRITE")
+
+        await pilot.press("x", "escape", "z")
+        assert app.editor.text == "xbase"
+        assert str(status.render()).startswith("COMMAND")
+
+        await pilot.press("u")
+        assert app.editor.text == "base"
+
+        await pilot.press("i", "w")
+        assert app.editor.text == "wbase"
+        assert str(status.render()).startswith("WRITE")
+
+
+async def test_command_mode_keys_pause_while_a_dialog_accepts_text(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    app = _app(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("escape", "f")
+        await pilot.press("w", "q", "e", "n", "o")
+
+        assert app.screen.id == "file-search-screen"
+        assert app.screen.query_one("#search-input", Input).value == "wqeno"
+
+
+async def test_command_mode_plain_w_saves_the_current_document(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    app = _app(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("x", "escape", "w")
+        for _ in range(100):
+            if path.read_text(encoding="utf-8") == "xbase":
+                break
+            await pilot.pause(0.01)
+
+        assert path.read_text(encoding="utf-8") == "xbase"
 
 
 async def test_configuration_reload_updates_keys_and_editor_options(tmp_path: Path) -> None:

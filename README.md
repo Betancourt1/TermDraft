@@ -39,12 +39,13 @@ rendering experiment.
 │  projects/               │ Today I learned…           │ Today I learned…     │
 │   termwriter.md          │                            │                      │
 ├──────────────────────────┴────────────────────────────┴──────────────────────┤
-│ EDIT | journal/2026-07-11.md ● modified | RECOVERY STORED | 36 words | Ln… │
+│ WRITE | journal/2026-07-11.md ● modified | RECOVERY STORED | 36 words | Ln…│
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-At widths below 100 columns, Ctrl+E switches between the editor and preview instead of squeezing
-both panes into an unusable layout. Ctrl+B can reclaim the explorer width at any terminal size.
+At widths below 100 columns, `v` in COMMAND mode switches between the editor and preview instead of
+squeezing both panes into an unusable layout. `e` can reclaim the explorer width at any terminal
+size. The configured Ctrl shortcuts remain available in both modes.
 
 ## Requirements
 
@@ -134,15 +135,16 @@ Nested ordered items use an indented normal marker:
 ```
 
 `1.1. Nested` is ordinary text in CommonMark, not a nested-list marker. Likewise, `__text__` means
-bold; portable Markdown has no underline syntax. F1 opens the effective shortcut list, and the
-command palette includes a compact Markdown syntax reference.
+bold; portable Markdown has no underline syntax. `?` in COMMAND mode or F1 opens the effective
+shortcut list, and the `:` command palette includes a compact Markdown syntax reference.
 
 The repository also includes a complete [Markdown syntax gallery](docs/markdown-gallery.md). Open it
 with `termwriter docs/markdown-gallery.md` to compare its editable syntax and preview side by side.
 
 Clicking a footnote label scrolls to its definition; `↩` returns to the most recently followed
-reference for that note. Esc leaves the indentation-enabled source editor for the next visible
-control; Ctrl+E toggles the preview and focuses it when shown. Once the preview has focus,
+reference for that note. Esc enters COMMAND mode without moving the cursor; `i` returns to WRITE
+mode and focuses the source editor. In COMMAND mode, `v` toggles the preview and focuses it when
+shown. Once the preview has focus,
 Tab/Shift+Tab select links and Enter activates the selection. Internal footnotes navigate; external
 URLs remain inert. Alt+Down and Alt+Up move through rendered headings and show the selected
 heading's level and position in the persistent status bar without stacking notifications.
@@ -196,6 +198,8 @@ command_palette = "ctrl+backslash"
 ```
 
 Tab, Shift+Tab, and Enter are reserved for preview link navigation and cannot be reassigned.
+The single-key COMMAND mode map is fixed in this version; the configured shortcuts below remain
+available in both modes and can still be remapped.
 
 Use **Reload configuration** from the command palette after editing `config.toml`. Help is generated
 from the effective map, so it reflects remapped keys. Duplicate keys, unknown IDs/options, invalid
@@ -217,7 +221,29 @@ after TermWriter's bundled stylesheet, so matching selectors override the defaul
 An existing `theme.tcss` is watched and reapplied when saved. If the theme file is created while
 TermWriter is already running, restart once so it can be added to the watched stylesheet list.
 
-## Shortcuts
+## Modes and shortcuts
+
+TermWriter starts in WRITE mode so opening a file still leads directly into writing. Press Esc to
+enter COMMAND mode; source text is protected there, so plain keys run commands instead of being
+inserted. Press `i` to return to WRITE mode.
+
+| COMMAND key | Action |
+| --- | --- |
+| `i` | Enter WRITE mode and focus the source editor |
+| `w` | Save |
+| `q` | Quit through the unsaved-change guard |
+| `e` | Show or hide the file explorer |
+| `f` | Find and open a workspace Markdown file |
+| `o` | Open the recent-document switcher |
+| `n` / `p` | Activate the next / previous open document tab |
+| `c` | Close the active tab through the safety guard |
+| `/` | Search workspace Markdown source |
+| `v` | Show/hide preview, or switch editor/preview when narrow |
+| `u` / `r` | Undo / redo |
+| `:` | Open the searchable command palette |
+| `?` | Shortcut help |
+
+Configured shortcuts remain available in both modes:
 
 | Key | Action |
 | --- | --- |
@@ -235,12 +261,11 @@ TermWriter is already running, restart once so it can be added to the watched st
 | Ctrl+Y or Ctrl+Shift+Z | Redo |
 | Ctrl+\ | Open the searchable command palette |
 | F1 | Shortcut help |
-| Esc in editor | Leave the editor and focus the next visible control |
 
-The editor keeps Tab and Shift+Tab for Markdown indentation. Esc leaves the editor for the next
-visible control. Inside the focused preview, Tab and Shift+Tab select links, and Enter activates the
-selection; reaching either end returns to the normal focus chain. F1 is the help key so a literal `?`
-remains editable Markdown. Some terminals do not distinguish
+The editor keeps Tab and Shift+Tab for Markdown indentation. Inside the focused preview, Tab and
+Shift+Tab select links, and Enter activates the selection; reaching either end returns to the normal
+focus chain. `?` opens help only in COMMAND mode and remains editable Markdown in WRITE mode. Some
+terminals do not distinguish
 Ctrl+Shift+Z from Ctrl+Z; Ctrl+Y remains the portable redo binding. On a bullet, numbered item,
 task, or blockquote, Enter inserts the next marker; Enter on an empty marker ends that structure.
 
