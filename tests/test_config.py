@@ -81,6 +81,7 @@ retention_days = 45
 [keybindings]
 save = "ctrl+alt+s"
 search_text = "ctrl+g"
+document_outline = "ctrl+shift+l"
 preview_next_heading = "ctrl+n"
 redo = "ctrl+r, ctrl+shift+r"
 command_cursor_left = "a"
@@ -99,6 +100,7 @@ command_cursor_left = "a"
     assert config.recovery == RecoveryConfig(retention_days=45)
     assert config.keybindings["save"] == "ctrl+alt+s"
     assert config.keybindings["search_text"] == "ctrl+g"
+    assert config.keybindings["document_outline"] == "ctrl+shift+l"
     assert config.keybindings["preview_next_heading"] == "ctrl+n"
     assert config.keybindings["redo"] == "ctrl+r,ctrl+shift+r"
     assert config.keybindings["command_cursor_left"] == "a"

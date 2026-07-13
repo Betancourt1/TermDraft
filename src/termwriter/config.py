@@ -29,6 +29,7 @@ BINDING_ID_PREVIOUS_TAB = "previous_tab"
 BINDING_ID_CLOSE_TAB = "close_tab"
 BINDING_ID_FIND_REPLACE = "find_replace"
 BINDING_ID_SEARCH_TEXT = "search_text"
+BINDING_ID_DOCUMENT_OUTLINE = "document_outline"
 BINDING_ID_TOGGLE_PREVIEW = "toggle_preview"
 BINDING_ID_PREVIEW_NEXT_HEADING = "preview_next_heading"
 BINDING_ID_PREVIEW_PREVIOUS_HEADING = "preview_previous_heading"
@@ -73,6 +74,7 @@ DEFAULT_KEYBINDINGS: Mapping[str, str] = MappingProxyType(
         BINDING_ID_CLOSE_TAB: "ctrl+f4",
         BINDING_ID_FIND_REPLACE: "ctrl+f",
         BINDING_ID_SEARCH_TEXT: "ctrl+shift+f",
+        BINDING_ID_DOCUMENT_OUTLINE: "ctrl+shift+o",
         BINDING_ID_TOGGLE_PREVIEW: "ctrl+e",
         BINDING_ID_PREVIEW_NEXT_HEADING: "alt+down",
         BINDING_ID_PREVIEW_PREVIOUS_HEADING: "alt+up",
@@ -144,6 +146,7 @@ retention_days = 30
 # close_tab = "ctrl+f4"
 # find_replace = "ctrl+f"
 # search_text = "ctrl+shift+f"
+# document_outline = "ctrl+shift+o"
 # toggle_preview = "ctrl+e"
 # preview_next_heading = "alt+down"
 # preview_previous_heading = "alt+up"

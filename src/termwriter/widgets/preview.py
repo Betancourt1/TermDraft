@@ -39,12 +39,21 @@ class _PreviewLink:
 
 
 @dataclass(frozen=True, slots=True)
-class _PreviewHeading:
-    """One rendered Markdown heading exposed by Textual's table of contents."""
+class PreviewHeading:
+    """One rendered heading addressable from source and preview views."""
 
-    block: MarkdownBlock
+    index: int
     label: str
     level: int
+    source_line: int
+
+
+@dataclass(frozen=True, slots=True)
+class _RenderedHeading:
+    """One public heading paired with its mounted preview block."""
+
+    block: MarkdownBlock
+    heading: PreviewHeading
 
 
 def _adjust_span_for_image_icons(
@@ -128,7 +137,7 @@ class MarkdownPreview(Markdown):
         self._footnote_link_origins: dict[str, int] = {}
         self._links: list[_PreviewLink] = []
         self._selected_link: int | None = None
-        self._headings: list[_PreviewHeading] = []
+        self._headings: list[_RenderedHeading] = []
         self._selected_heading: int | None = None
         super().__init__(
             self.source_text,
@@ -150,6 +159,19 @@ class MarkdownPreview(Markdown):
         self.source_text = source
         self._index_links()
         self._index_headings()
+
+    @property
+    def headings(self) -> tuple[PreviewHeading, ...]:
+        """Return the rendered heading index without exposing mounted widgets."""
+        return tuple(rendered.heading for rendered in self._headings)
+
+    def focus_heading(self, index: int) -> bool:
+        """Select and reveal one heading from the current rendered index."""
+        if not 0 <= index < len(self._headings):
+            return False
+        self.focus()
+        self._select_heading(index)
+        return True
 
     def _replace_image_icons(self) -> None:
         """Replace Textual's emoji image marker with Yazi's image icon."""
@@ -319,7 +341,7 @@ class MarkdownPreview(Markdown):
 
     def _index_headings(self) -> None:
         """Index mounted heading blocks through Textual's public table of contents."""
-        headings: list[_PreviewHeading] = []
+        headings: list[_RenderedHeading] = []
         for level, label, block_id in self.table_of_contents:
             if block_id is None:
                 continue
@@ -327,7 +349,17 @@ class MarkdownPreview(Markdown):
                 block = self.query_one(f"#{block_id}", MarkdownBlock)
             except NoMatches:
                 continue
-            headings.append(_PreviewHeading(block=block, label=label, level=level))
+            headings.append(
+                _RenderedHeading(
+                    block,
+                    PreviewHeading(
+                        index=len(headings),
+                        label=label,
+                        level=level,
+                        source_line=block.source_range[0],
+                    ),
+                )
+            )
         self._headings = headings
 
     def _select_href(self, href: str, *, scroll: bool) -> None:
@@ -359,8 +391,8 @@ class MarkdownPreview(Markdown):
         self.post_message(
             self.HeadingFocused(
                 self,
-                selected.label,
-                selected.level,
+                selected.heading.label,
+                selected.heading.level,
                 index + 1,
                 len(self._headings),
             )

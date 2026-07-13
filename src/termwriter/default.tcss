@@ -128,6 +128,10 @@ ModalScreen {
     height: 23;
 }
 
+#document-outline-dialog {
+    height: 28;
+}
+
 #recovery-manager-dialog {
     height: 32;
 }
@@ -242,6 +246,22 @@ ModalScreen {
 }
 
 #document-find-input, #document-replace-input {
+    margin-bottom: 1;
+}
+
+#document-outline-input {
+    margin-bottom: 1;
+}
+
+#document-outline-status {
+    height: 1;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#document-outline-results {
+    height: 1fr;
+    border: round $panel-lighten-2;
     margin-bottom: 1;
 }
 

@@ -182,6 +182,12 @@ integration. Boundary presses are inert, so key repeat does not flood the interf
 render clears both link and heading indexes
 before returning, so detached blocks cannot remain keyboard-actionable.
 
+The same heading index exposes immutable label, level, preview index, and zero-based source-line
+metadata to the document outline. Opening the outline first renders the active editor source instead
+of waiting for the normal debounce, then filters labels in a modal without reparsing Markdown.
+Source selections reuse the normal cursor-focus path; preview selections reveal the preview pane and
+delegate to the existing heading selection and scroll behavior.
+
 ## Workspace text search
 
 `services/text_search.py` performs bounded literal, fuzzy, whole-word, or regular-expression searches

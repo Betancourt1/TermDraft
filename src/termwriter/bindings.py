@@ -32,6 +32,7 @@ from termwriter.config import (
     BINDING_ID_COMMAND_TOGGLE_PREVIEW,
     BINDING_ID_COMMAND_UNDO,
     BINDING_ID_COMMAND_WRITE_MODE,
+    BINDING_ID_DOCUMENT_OUTLINE,
     BINDING_ID_FIND_FILE,
     BINDING_ID_FIND_REPLACE,
     BINDING_ID_NEXT_TAB,
@@ -128,6 +129,13 @@ APP_BINDINGS: list[BindingType] = [
         "Find",
         priority=True,
         id=BINDING_ID_FIND_REPLACE,
+    ),
+    Binding(
+        DEFAULT_KEYBINDINGS[BINDING_ID_DOCUMENT_OUTLINE],
+        "document_outline",
+        "Outline",
+        priority=True,
+        id=BINDING_ID_DOCUMENT_OUTLINE,
     ),
     Binding(
         DEFAULT_KEYBINDINGS[BINDING_ID_TOGGLE_PREVIEW],
@@ -253,6 +261,7 @@ _SHORTCUTS = (
     (BINDING_ID_CLOSE_TAB, "Close the active tab safely"),
     (BINDING_ID_FIND_REPLACE, "Find and replace in the active document"),
     (BINDING_ID_SEARCH_TEXT, "Search workspace text (literal / fuzzy / word / regex)"),
+    (BINDING_ID_DOCUMENT_OUTLINE, "Search headings in the active document"),
     (BINDING_ID_TOGGLE_PREVIEW, "Show or hide preview; switch pane when narrow"),
     (BINDING_ID_PREVIEW_NEXT_HEADING, "Select the next heading in the focused preview"),
     (

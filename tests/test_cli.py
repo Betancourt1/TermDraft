@@ -140,6 +140,7 @@ def test_cli_commands_show_effective_remapped_keys(
     assert "Ctrl+G" in output
     assert "Open the command palette" in output
     assert "Search workspace text (literal / fuzzy / word / regex)" in output
+    assert "Search headings in the active document" in output
     assert "manage recovery drafts" in output
     assert "inspect semantic blocks" in output
     assert "read semantic blocks experimentally" in output

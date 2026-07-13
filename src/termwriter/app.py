@@ -66,6 +66,11 @@ from termwriter.screens.dialogs import (
     WorkspaceEntryOperation,
 )
 from termwriter.screens.document_find import DocumentFindDialog
+from termwriter.screens.document_outline import (
+    DocumentOutlineDialog,
+    OutlineDestination,
+    OutlineSelection,
+)
 from termwriter.screens.recent_documents import RecentDocumentsDialog
 from termwriter.screens.semantic_inspector import SemanticInspectorDialog
 from termwriter.screens.semantic_reader import SemanticReaderDialog
@@ -3967,6 +3972,53 @@ class TermWriterApp(App[None]):
             self._finish_document_find,
         )
 
+    async def action_document_outline(self) -> None:
+        if self._has_modal:
+            return
+        self._sync_editor_state()
+        document = self.document
+        if document is None:
+            self.notify("Open a Markdown document first", severity="warning")
+            return
+
+        if self._preview_timer is not None:
+            self._preview_timer.stop()
+            self._preview_timer = None
+        self._preview_revision += 1
+        self._preview_heading_announcement = None
+        source = document.text
+        try:
+            await self.preview.render_source(source)
+        except Exception as error:
+            self.notify(
+                escape(str(error)),
+                severity="error",
+                title="Document outline unavailable",
+            )
+            return
+        if self.document is not document or document.text != source or self._has_modal:
+            return
+        if not self.preview.headings:
+            self.notify("The active document has no headings", severity="warning")
+            return
+        self.push_screen(
+            DocumentOutlineDialog(self.preview.headings),
+            self._handle_outline_selection,
+        )
+
+    def _handle_outline_selection(self, selection: OutlineSelection | None) -> None:
+        if selection is None or self.document is None:
+            return
+        heading = selection.heading
+        if selection.destination is OutlineDestination.SOURCE:
+            self._focus_editor_at(heading.source_line, 0)
+            return
+
+        self._preview_visible = True
+        self._narrow_pane = "preview"
+        self._apply_panel_visibility()
+        self.preview.focus_heading(heading.index)
+
     @on(DocumentFindDialog.MatchSelected)
     def _document_find_match_selected(self, event: DocumentFindDialog.MatchSelected) -> None:
         if self.screen is event.dialog:
@@ -4258,6 +4310,12 @@ class TermWriterApp(App[None]):
                 "find_replace",
                 "Find literal matches and replace them in the active source",
                 self.action_find_replace,
+            ),
+            (
+                "Open document outline",
+                "document_outline",
+                "Filter headings and jump to source or rendered preview",
+                self.action_document_outline,
             ),
             (
                 "Toggle file explorer",

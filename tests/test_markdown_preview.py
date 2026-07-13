@@ -16,7 +16,7 @@ from termwriter.services.markdown_preview import (
     FOOTNOTE_LABEL_TOKEN,
     preview_parser,
 )
-from termwriter.widgets.preview import MarkdownPreview
+from termwriter.widgets.preview import MarkdownPreview, PreviewHeading
 
 
 def _token_types(tokens: list[Token]) -> list[str]:
@@ -533,6 +533,31 @@ async def test_keyboard_navigates_rendered_headings_and_posts_typed_positions() 
         await pilot.press("alt+down")
         assert preview.query_one(".keyboard-heading-selected", MarkdownBlock)
         assert not preview.query(".keyboard-link-selected")
+
+
+async def test_heading_index_exposes_levels_and_source_lines() -> None:
+    class PreviewApp(App[None]):
+        def compose(self) -> ComposeResult:
+            yield MarkdownPreview()
+
+    app = PreviewApp()
+    async with app.run_test() as pilot:
+        preview = app.query_one(MarkdownPreview)
+        await preview.render_source("# Top\n\nSetext\n------\n\n### Last\n")
+
+        assert preview.headings == (
+            PreviewHeading(0, "Top", 1, 0),
+            PreviewHeading(1, "Setext", 2, 2),
+            PreviewHeading(2, "Last", 3, 5),
+        )
+
+        assert preview.focus_heading(1)
+        assert not preview.focus_heading(99)
+        await pilot.pause()
+        selected = preview.query_one(".keyboard-heading-selected", MarkdownBlock)
+        selected_content = selected.render()
+        assert isinstance(selected_content, Content)
+        assert selected_content.plain == "Setext"
 
 
 async def test_heading_bindings_only_run_while_preview_has_focus() -> None:

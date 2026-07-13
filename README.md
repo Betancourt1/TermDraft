@@ -13,6 +13,7 @@ The current release is a functional MVP focused on a dependable writing loop:
 - find files quickly;
 - find and replace literal text in the active document;
 - search source text across the workspace without an external command;
+- filter the active document's headings and jump to source or preview;
 - search commands from a palette;
 - customize editor options, keybindings, and Textual CSS without reinstalling;
 - keep several independently dirty documents open with independent runtime undo histories;
@@ -171,6 +172,8 @@ shown. Once the preview has focus,
 Tab/Shift+Tab select links and Enter activates the selection. Internal footnotes navigate; external
 URLs remain inert. Alt+Down and Alt+Up move through rendered headings and show the selected
 heading's level and position in the persistent status bar without stacking notifications.
+Ctrl+Shift+O opens a searchable outline of the active document. Enter jumps to the heading's source
+line, while **Show in preview** reveals and selects the rendered heading, including in narrow mode.
 Unreferenced definitions are omitted by the footnote parser, and definition lists
 use bold terms plus quoted bodies rather than a dedicated `<dl>` layout. Alerts use a conservative
 titled-blockquote presentation rather than GitHub's color and icon treatment. Math, underline,
@@ -214,6 +217,7 @@ previous_tab = "ctrl+pageup"
 close_tab = "ctrl+f4"
 find_replace = "ctrl+f"
 search_text = "ctrl+shift+f"
+document_outline = "ctrl+shift+o"
 toggle_preview = "ctrl+e"
 preview_next_heading = "alt+down"
 preview_previous_heading = "alt+up"
@@ -298,6 +302,7 @@ Configured shortcuts remain available in both modes:
 | Ctrl+F4 | Close the active tab through the safety guard |
 | Ctrl+F | Find and replace in the active document |
 | Ctrl+Shift+F | Search workspace Markdown source |
+| Ctrl+Shift+O | Filter document headings and jump to source or preview |
 | Ctrl+E | Show/hide preview, or switch editor/preview when narrow |
 | Alt+Down / Alt+Up in preview | Select next / previous rendered heading |
 | Ctrl+Z | Undo |
