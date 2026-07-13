@@ -63,10 +63,17 @@ from termwriter.screens.dialogs import (
     WorkspaceEntryDialog,
     WorkspaceEntryOperation,
 )
+from termwriter.screens.document_find import DocumentFindDialog
 from termwriter.screens.recent_documents import RecentDocumentsDialog
 from termwriter.screens.semantic_inspector import SemanticInspectorDialog
 from termwriter.screens.semantic_reader import SemanticReaderDialog
 from termwriter.services.coordinate_diagnostic import diagnose_coordinate
+from termwriter.services.document_search import (
+    DocumentSearchMatch,
+    location_to_offset,
+    offset_to_location,
+    replace_document_matches,
+)
 from termwriter.services.external_changes import (
     DiskProbe,
     ExternalChange,
@@ -3870,6 +3877,96 @@ class TermWriterApp(App[None]):
             self._handle_text_search_result,
         )
 
+    def action_find_replace(self) -> None:
+        if self._has_modal:
+            return
+        self._sync_editor_state()
+        document = self.document
+        if document is None:
+            self.notify("Open a Markdown document first", severity="warning")
+            return
+        source = self.editor.text
+        cursor_offset = location_to_offset(source, self.editor.cursor_location)
+        self.push_screen(
+            DocumentFindDialog(source, cursor_offset, read_only=self.editor.read_only),
+            self._finish_document_find,
+        )
+
+    @on(DocumentFindDialog.MatchSelected)
+    def _document_find_match_selected(self, event: DocumentFindDialog.MatchSelected) -> None:
+        if self.screen is event.dialog:
+            self._select_document_match(event.match)
+
+    def _select_document_match(self, match: DocumentSearchMatch) -> None:
+        source = self.editor.text
+        start = offset_to_location(source, match.start)
+        end = offset_to_location(source, match.end)
+        self.editor.move_cursor(start)
+        self.editor.move_cursor(end, select=True, center=True)
+
+    @on(DocumentFindDialog.ReplaceRequested)
+    def _document_find_replace_requested(
+        self,
+        event: DocumentFindDialog.ReplaceRequested,
+    ) -> None:
+        dialog = event.dialog
+        if self.screen is not dialog or self.document is None or self.editor.read_only:
+            return
+        source = self.editor.text
+        if source != dialog.source:
+            dialog.update_source(
+                source,
+                location_to_offset(source, self.editor.cursor_location),
+            )
+            return
+        start = offset_to_location(source, event.match.start)
+        end = offset_to_location(source, event.match.end)
+        self.editor.replace(
+            event.replacement,
+            start,
+            end,
+            maintain_selection_offset=False,
+        )
+        anchor = event.match.start + len(event.replacement)
+        self._after_document_replacement()
+        dialog.update_source(self.editor.text, anchor)
+
+    @on(DocumentFindDialog.ReplaceAllRequested)
+    def _document_find_replace_all_requested(
+        self,
+        event: DocumentFindDialog.ReplaceAllRequested,
+    ) -> None:
+        dialog = event.dialog
+        if self.screen is not dialog or self.document is None or self.editor.read_only:
+            return
+        source = self.editor.text
+        if source != dialog.source:
+            dialog.update_source(
+                source,
+                location_to_offset(source, self.editor.cursor_location),
+            )
+            return
+        replaced = replace_document_matches(source, event.matches, event.replacement)
+        if replaced != source:
+            self.editor.replace(
+                replaced,
+                self.editor.document.start,
+                self.editor.document.end,
+                maintain_selection_offset=False,
+            )
+            self._after_document_replacement()
+        dialog.update_source(self.editor.text, 0)
+
+    def _after_document_replacement(self) -> None:
+        self._sync_editor_state()
+        self._schedule_preview()
+        self._schedule_recovery()
+        self._refresh_status()
+
+    def _finish_document_find(self, _result: None) -> None:
+        if self.document is not None:
+            self.editor.focus()
+
     def action_manage_recovery(self) -> None:
         if self._has_modal or self._critical_io:
             return
@@ -4068,6 +4165,12 @@ class TermWriterApp(App[None]):
                 "search_text",
                 "Find literal, fuzzy, whole-word, or regex matches in Markdown source",
                 self.action_search_text,
+            ),
+            (
+                "Find and replace in document",
+                "find_replace",
+                "Find literal matches and replace them in the active source",
+                self.action_find_replace,
             ),
             (
                 "Toggle file explorer",

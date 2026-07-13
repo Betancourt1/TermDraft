@@ -211,6 +211,21 @@ different file revalidates its path, activates an existing buffer when present, 
 A pending line/column target survives recovery and mixed-line-ending dialogs and is applied only
 after the target document is installed.
 
+## Active-document find and replace
+
+`services/document_search.py` finds every non-overlapping escaped-literal span in the active editor
+source. The `regex` engine's full Unicode case folding preserves original source offsets even when a
+match expands during comparison. The dialog owns only its immutable source snapshot, query,
+replacement text, match tuple, and selected index; typed messages ask the app coordinator to select
+or replace source.
+
+Selection converts source offsets to TextArea locations without changing Markdown. A single replace
+uses the selected range, while Replace all builds one final string and submits one full-document
+TextArea edit, preserving a one-step undo. The coordinator then follows the normal Changed path for
+dirty state, preview, and recovery. Modal focus prevents document switching during the operation;
+the coordinator still rejects a request if the live editor source no longer matches the dialog
+snapshot. Read-only documents can search but cannot emit replacement requests.
+
 ## Background document I/O
 
 Full Markdown reads, disk probes, content hashes, existing-file publication, Save As publication,

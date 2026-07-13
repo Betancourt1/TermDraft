@@ -10,6 +10,7 @@ The current release is a functional MVP focused on a dependable writing loop:
 - read a safe GFM-style rendered preview without leaving the terminal;
 - create, rename, move, and trash Markdown files and workspace folders;
 - find files quickly;
+- find and replace literal text in the active document;
 - search source text across the workspace without an external command;
 - search commands from a palette;
 - customize editor options, keybindings, and Textual CSS without reinstalling;
@@ -209,6 +210,7 @@ recent_documents = "ctrl+o"
 next_tab = "ctrl+pagedown"
 previous_tab = "ctrl+pageup"
 close_tab = "ctrl+f4"
+find_replace = "ctrl+f"
 search_text = "ctrl+shift+f"
 toggle_preview = "ctrl+e"
 preview_next_heading = "alt+down"
@@ -288,6 +290,7 @@ Configured shortcuts remain available in both modes:
 | Ctrl+O | Open the recent-document switcher |
 | Ctrl+PageDown / Ctrl+PageUp | Activate next / previous open document tab |
 | Ctrl+F4 | Close the active tab through the safety guard |
+| Ctrl+F | Find and replace in the active document |
 | Ctrl+Shift+F | Search workspace Markdown source |
 | Ctrl+E | Show/hide preview, or switch editor/preview when narrow |
 | Alt+Down / Alt+Up in preview | Select next / previous rendered heading |
@@ -306,6 +309,12 @@ focus chain. `?` opens help only in COMMAND mode and remains editable Markdown i
 terminals do not distinguish
 Ctrl+Shift+Z from Ctrl+Z; Ctrl+Y remains the portable redo binding. On a bullet, numbered item,
 task, or blockquote, Enter inserts the next marker; Enter on an empty marker ends that structure.
+
+Ctrl+F opens incremental literal find and replace for the active source. Matching starts at the
+cursor, wraps, and is Unicode case-insensitive unless **Match case** is enabled. F3 and Shift+F3 move
+between matches. Replace changes one selected span; Replace all applies one editor operation, so the
+whole replacement is one undo step. Read-only documents keep search available and disable every
+replacement control.
 
 Workspace text search runs only after Enter is pressed in its dialog. Choose literal, whole-word, or
 regular-expression matching, or fuzzy subsequence ranking; optionally match case and restrict paths

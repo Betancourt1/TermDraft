@@ -124,6 +124,10 @@ ModalScreen {
     height: 31;
 }
 
+#document-find-dialog {
+    height: 23;
+}
+
 #recovery-manager-dialog {
     height: 32;
 }
@@ -235,6 +239,33 @@ ModalScreen {
 
 #search-input, #file-search-filter, #text-search-input {
     margin-bottom: 1;
+}
+
+#document-find-input, #document-replace-input {
+    margin-bottom: 1;
+}
+
+#document-find-case {
+    height: 2;
+}
+
+#document-find-status {
+    height: 1;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#document-find-buttons {
+    height: 6;
+    grid-size: 2 2;
+    grid-columns: 1fr 1fr;
+    grid-rows: 3 3;
+    grid-gutter: 0 1;
+}
+
+#document-find-buttons Button {
+    width: 1fr;
+    margin: 0;
 }
 
 #file-search-status {
