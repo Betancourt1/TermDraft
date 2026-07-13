@@ -68,6 +68,24 @@ class MarkdownDirectoryTree(DirectoryTree):
                 continue
         return filtered
 
+    async def _on_click(self, event: events.Click) -> None:
+        """Select on one click and activate on a double click."""
+        event.prevent_default()
+        async with self.lock:
+            line = event.style.meta.get("line")
+            if not isinstance(line, int):
+                return
+            node = self.get_node_at_line(line)
+            if node is None:
+                return
+            if event.style.meta.get("toggle", False):
+                self._toggle_node(node)
+            elif event.chain == 1:
+                self.cursor_line = line
+            else:
+                self.cursor_line = line
+                self.action_select_cursor()
+
 
 class FileExplorer(Vertical):
     """Explorer panel with a plain-text active-file indicator."""

@@ -863,6 +863,35 @@ async def test_explorer_is_wider_resizable_and_has_no_horizontal_scrollbar(
         assert app.explorer.size.width == EXPLORER_MIN_WIDTH
 
 
+async def test_explorer_single_click_selects_and_double_click_opens(tmp_path: Path) -> None:
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    app = TermWriterApp(
+        Workspace.from_target(tmp_path),
+        recovery_journal=RecoveryJournal(tmp_path / "recovery"),
+        session_store=SessionStore(tmp_path / "sessions"),
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        tree = app.explorer.directory_tree
+        await pilot.pause(0.03)
+
+        await pilot.click(tree, offset=(4, 1))
+
+        assert tree.cursor_node is not None
+        assert tree.cursor_node.data is not None
+        assert tree.cursor_node.data.path == second
+        assert app.document is None
+
+        await pilot.click(tree, offset=(4, 1), times=2)
+        await pilot.pause(0.03)
+
+        assert app.document is not None
+        assert app.document.path == second
+
+
 async def test_editor_and_preview_use_compact_scrollbars(tmp_path: Path) -> None:
     path = tmp_path / "note.md"
     path.write_text("\n".join(f"line {index}" for index in range(100)), encoding="utf-8")
