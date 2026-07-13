@@ -9,6 +9,7 @@ from textual.content import Content
 from textual.widgets import Button
 from textual.widgets.markdown import MarkdownBlock
 
+from termwriter.icons import IMAGE_ICON, TEXTUAL_IMAGE_ICON
 from termwriter.services.markdown_preview import (
     FOOTNOTE_BACKREF_PREFIX,
     FOOTNOTE_DEFINITION_PREFIX,
@@ -263,6 +264,25 @@ async def test_textual_mounts_normalized_extensions_without_unhandled_blocks() -
         await pilot.pause()
         assert preview.children
         assert preview.query_one(f"#{FOOTNOTE_DEFINITION_PREFIX}1")
+
+
+async def test_image_placeholders_use_a_monochrome_symbol() -> None:
+    class PreviewApp(App[None]):
+        def compose(self) -> ComposeResult:
+            yield MarkdownPreview()
+
+    app = PreviewApp()
+    async with app.run_test() as pilot:
+        preview = app.query_one(MarkdownPreview)
+        await preview.render_source("![Diagram](diagram.png)\n")
+        await pilot.pause()
+        content = ""
+        for block in preview.query(MarkdownBlock):
+            rendered = block.render()
+            if isinstance(rendered, Content):
+                content += rendered.plain
+        assert IMAGE_ICON in content
+        assert TEXTUAL_IMAGE_ICON not in content
 
 
 async def test_markdown_gallery_mounts_without_changing_its_source() -> None:

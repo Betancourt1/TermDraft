@@ -18,6 +18,7 @@ from termwriter.config import (
     BINDING_ID_PREVIEW_PREVIOUS_HEADING,
     DEFAULT_KEYBINDINGS,
 )
+from termwriter.icons import IMAGE_ICON, TEXTUAL_IMAGE_ICON
 from termwriter.services.markdown_preview import (
     FOOTNOTE_BACKREF_PREFIX,
     FOOTNOTE_DEFINITION_PREFIX,
@@ -134,9 +135,23 @@ class MarkdownPreview(Markdown):
         self._footnote_origins.clear()
         self._footnote_link_origins.clear()
         await self.update(source)
+        self._replace_image_icons()
         self.source_text = source
         self._index_links()
         self._index_headings()
+
+    def _replace_image_icons(self) -> None:
+        """Replace Textual's emoji image marker while preserving link spans."""
+        for block in self.query(MarkdownBlock):
+            content = block.render()
+            if not isinstance(content, Content) or TEXTUAL_IMAGE_ICON not in content.plain:
+                continue
+            block.set_content(
+                Content(
+                    content.plain.replace(TEXTUAL_IMAGE_ICON, IMAGE_ICON),
+                    spans=list(content.spans),
+                )
+            )
 
     def unhandled_token(self, token: Token) -> MarkdownBlock | None:
         """Mount the one custom block used as a footnote definition target."""

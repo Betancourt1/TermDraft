@@ -11,6 +11,7 @@ from pathlib import Path, PurePath
 from rich.markup import escape
 from textual import events, on, work
 from textual.app import App, ComposeResult, SystemCommand
+from textual.command import CommandPalette, SearchIcon
 from textual.containers import Horizontal
 from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
@@ -24,6 +25,7 @@ from termwriter.bindings import (
     format_shortcut_help,
 )
 from termwriter.config import ConfigError, TermWriterConfig, load_config
+from termwriter.icons import SEARCH_ICON
 from termwriter.models.document import Document, FileSnapshot
 from termwriter.models.workspace import (
     ScanResult,
@@ -776,6 +778,11 @@ class TermWriterApp(App[None]):
     def file_selected(self, event: DirectoryTree.FileSelected) -> None:
         event.stop()
         self._request_open(event.path)
+
+    @on(CommandPalette.Opened)
+    def command_palette_opened(self) -> None:
+        """Use TermWriter's monochrome search symbol in Textual's palette."""
+        self.screen.query_one(SearchIcon).icon = SEARCH_ICON
 
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
         if not isinstance(event.widget, MarkdownPreview):

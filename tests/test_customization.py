@@ -5,10 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from textual.color import Color
+from textual.command import SearchIcon
 from textual.widgets import Input, Static
 
 from termwriter.app import TermWriterApp
 from termwriter.config import EditorConfig, TermWriterConfig, load_config
+from termwriter.icons import SEARCH_ICON
 from termwriter.models.workspace import Workspace
 from termwriter.screens.dialogs import HelpDialog
 from termwriter.services.recovery import RecoveryJournal
@@ -279,6 +281,7 @@ async def test_command_palette_and_help_expose_product_actions(tmp_path: Path) -
 
         await pilot.press("ctrl+backslash")
         assert app.screen.id == "--command-palette"
+        assert app.screen.query_one(SearchIcon).icon == SEARCH_ICON
         await pilot.press("escape")
 
         app.action_show_markdown_help()

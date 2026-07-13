@@ -10,11 +10,16 @@ from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import DirectoryTree, Static
 
+from termwriter.icons import FILE_ICON, FOLDER_ICON, OPEN_FOLDER_ICON
 from termwriter.models.workspace import IGNORED_DIRECTORIES, MARKDOWN_SUFFIXES, Workspace
 
 
 class MarkdownDirectoryTree(DirectoryTree):
     """Directory tree that omits unsafe paths and non-Markdown files."""
+
+    ICON_FILE = FILE_ICON
+    ICON_NODE = FOLDER_ICON
+    ICON_NODE_EXPANDED = OPEN_FOLDER_ICON
 
     def __init__(self, workspace: Workspace) -> None:
         self.workspace = workspace
