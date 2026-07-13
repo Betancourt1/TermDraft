@@ -140,21 +140,6 @@ COMMAND_MODE_SHORTCUTS = (
     ("question_mark", "show_help", "Show shortcut help"),
 )
 
-_ACTION_BINDING_IDS = {
-    "save": BINDING_ID_SAVE,
-    "request_quit": BINDING_ID_QUIT,
-    "toggle_explorer": BINDING_ID_TOGGLE_EXPLORER,
-    "find_file": BINDING_ID_FIND_FILE,
-    "open_recent": BINDING_ID_RECENT_DOCUMENTS,
-    "next_tab": BINDING_ID_NEXT_TAB,
-    "previous_tab": BINDING_ID_PREVIOUS_TAB,
-    "close_tab": BINDING_ID_CLOSE_TAB,
-    "search_text": BINDING_ID_SEARCH_TEXT,
-    "toggle_preview": BINDING_ID_TOGGLE_PREVIEW,
-    "editor_undo": BINDING_ID_UNDO,
-    "editor_redo": BINDING_ID_REDO,
-    "show_help": BINDING_ID_SHOW_HELP,
-}
 _COMMAND_MODE_KEYS = {action: key for key, action, _description in COMMAND_MODE_SHORTCUTS}
 
 APP_BINDINGS.extend(
@@ -301,18 +286,10 @@ def format_command_help(
     )
 
 
-def format_action_shortcuts(action: str, keybindings: Mapping[str, str]) -> str:
-    """Display the effective keys for one command-palette action."""
-    labels: list[str] = []
+def format_action_shortcuts(action: str) -> str:
+    """Display the single-key COMMAND shortcut for a palette action."""
     command_key = _COMMAND_MODE_KEYS.get(action)
-    if command_key is not None:
-        labels.append(_display_command_key(command_key))
-    binding_id = _ACTION_BINDING_IDS.get(action)
-    if binding_id is not None:
-        configured = _display_keys(keybindings[binding_id])
-        if configured not in labels:
-            labels.append(configured)
-    return " · ".join(labels) if labels else "Palette only"
+    return _display_command_key(command_key) if command_key is not None else "Palette only"
 
 
 def _display_keys(keys: str) -> str:

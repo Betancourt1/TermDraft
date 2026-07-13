@@ -3406,7 +3406,7 @@ class TermWriterApp(App[None]):
             yield SystemCommand(title, self._command_help(action, description), callback)
 
     def _command_help(self, action: str, description: str) -> str:
-        shortcuts = format_action_shortcuts(action, self.config.keybindings)
+        shortcuts = format_action_shortcuts(action)
         return f"Keys: {shortcuts}  ·  {description}"
 
     def _focus_mode(self) -> str:
