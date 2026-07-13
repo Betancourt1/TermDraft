@@ -9,6 +9,7 @@ The current release is a functional MVP focused on a dependable writing loop:
 - edit source with soft wrapping, Unicode, syntax highlighting, undo, redo, and list continuation;
 - read a safe GFM-style rendered preview without leaving the terminal;
 - create, rename, move, and trash Markdown files and workspace folders;
+- save the active buffer under a new path or duplicate it without leaving the original tab;
 - find files quickly;
 - find and replace literal text in the active document;
 - search source text across the workspace without an external command;
@@ -203,6 +204,7 @@ retention_days = 30
 
 [keybindings]
 save = "ctrl+s"
+save_as = "ctrl+shift+s"
 quit = "ctrl+q"
 toggle_explorer = "ctrl+b"
 find_file = "ctrl+p"
@@ -284,6 +286,7 @@ Configured shortcuts remain available in both modes:
 | Key | Action |
 | --- | --- |
 | Ctrl+S | Save |
+| Ctrl+Shift+S | Save under a new path and retarget the active tab |
 | Ctrl+Q | Quit through the unsaved-change guard |
 | Ctrl+B | Show or hide the file explorer |
 | Ctrl+P | Find and open a workspace Markdown file |
@@ -404,13 +407,15 @@ in Textual thread workers. A completed probe is
 classified on the UI thread
 against the latest dirty state, so an edit made during a watcher or transition check cannot be
 silently reloaded or left behind. During actual publication the editor is temporarily read-only;
-quit, switching, duplicate saves, and Save As dismissal wait until the non-cancellable writer has
+quit, switching, additional saves, and Save As dismissal wait until the non-cancellable writer has
 finished. Stale worker results are rejected with document identity, path, and baseline tickets.
 
-Save As first rejects exact or normalized spelling variants owned by any open buffer, including a
-buffer whose disk file disappeared, then publishes a fully written temporary file with a no-clobber
-hard-link step. If the target appears concurrently, TermWriter reports a conflict instead of
-replacing it.
+Save As and Duplicate first reject exact or normalized spelling variants owned by any open buffer,
+including a buffer whose disk file disappeared, then publish a fully written temporary file with a
+no-clobber hard-link step. If the target appears concurrently, TermWriter reports a conflict instead
+of replacing it. Save As retargets the active tab and marks the new path clean while leaving the old
+disk file untouched. Duplicate writes the same live source but leaves the original tab, dirty state,
+disk baseline, and recovery draft unchanged.
 
 If both local and disk content changed, the only choices are:
 
@@ -556,9 +561,9 @@ mode, Python environment, dependency versions, and workload, then compare the me
 - Ordinary POSIX permission bits are preserved where the filesystem permits. Special setuid/setgid
   bits are not guaranteed. Ownership, ACLs, extended attributes, Finder metadata, and hard-link
   identity are not preserved by replacement.
-- Conflict Save As, recovery retargeting, recovery archiving, and quarantine restoration depend on
+- Save As, Duplicate, recovery retargeting, recovery archiving, and quarantine restoration depend on
   hard-link support in the relevant filesystem and fail cleanly when that publication mechanism is
-  unavailable. Conflict Save As is currently available only from conflict recovery.
+  unavailable.
 - A second hash check narrows but cannot eliminate the race between that check and `os.replace` if
   another process writes at exactly that moment. Cooperative file locking would not protect against
   editors that ignore the lock.

@@ -56,6 +56,7 @@ from termwriter.screens.dialogs import (
     RecoveryRetentionDialog,
     RecoveryRetentionRequest,
     SaveAsDialog,
+    SaveAsOperation,
     TextSearchDialog,
     TrashWorkspaceEntryDialog,
     UnsavedChangesDialog,
@@ -2401,6 +2402,14 @@ class TermWriterApp(App[None]):
         if not self._has_modal:
             self._save_current()
 
+    def action_save_as(self) -> None:
+        if not self._has_modal and not self._critical_io:
+            self._open_save_as_dialog(operation=SaveAsOperation.RETARGET)
+
+    def action_duplicate_document(self) -> None:
+        if not self._has_modal and not self._critical_io:
+            self._open_save_as_dialog(operation=SaveAsOperation.DUPLICATE)
+
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Enable modal command keys only while COMMAND mode owns the keyboard."""
         if action == "command_mode_key":
@@ -2732,7 +2741,10 @@ class TermWriterApp(App[None]):
 
     def _handle_conflict_decision(self, decision: ConflictDecision | None) -> None:
         if decision is ConflictDecision.SAVE_AS:
-            self._open_save_as_dialog()
+            self._open_save_as_dialog(
+                operation=SaveAsOperation.RETARGET,
+                conflict_copy=True,
+            )
         elif decision is ConflictDecision.RELOAD:
             self._reload_current_from_disk(automatic=False)
         elif decision is ConflictDecision.DISCARD:
@@ -2743,14 +2755,30 @@ class TermWriterApp(App[None]):
         else:
             self._cancel_pending_transition()
 
-    def _open_save_as_dialog(self, error: str | None = None) -> None:
+    def _open_save_as_dialog(
+        self,
+        error: str | None = None,
+        *,
+        operation: SaveAsOperation,
+        conflict_copy: bool = False,
+    ) -> None:
+        self._sync_editor_state()
         document = self.document
         if document is None:
-            self._cancel_pending_transition()
+            self.notify("Open a Markdown document first", severity="warning")
             return
         relative = document.path.relative_to(self.workspace.root)
-        suggested = relative.with_name(f"{relative.stem}-local{relative.suffix}").as_posix()
-        self.push_screen(SaveAsDialog(suggested, error), self._handle_save_as_closed)
+        suffix = "local" if conflict_copy else "copy"
+        suggested = relative.with_name(f"{relative.stem}-{suffix}{relative.suffix}").as_posix()
+        self.push_screen(
+            SaveAsDialog(
+                suggested,
+                error,
+                operation=operation,
+                conflict_copy=conflict_copy,
+            ),
+            self._handle_save_as_closed,
+        )
 
     @on(SaveAsDialog.Submitted)
     def _handle_save_as_submission(self, event: SaveAsDialog.Submitted) -> None:
@@ -2765,7 +2793,10 @@ class TermWriterApp(App[None]):
             event.dialog.show_error("Enter a Markdown filename.")
             return
         ticket = self._document_ticket(document)
-        if self._begin_critical_io(document, freeze_editor=True, status="Saving copy…"):
+        status = (
+            "Duplicating…" if event.dialog.operation is SaveAsOperation.DUPLICATE else "Saving as…"
+        )
+        if self._begin_critical_io(document, freeze_editor=True, status=status):
             event.dialog.set_busy(True)
             occupied_paths = tuple(self._tab_path(opened) for opened in self._open_documents)
             self._save_as_worker(
@@ -2831,11 +2862,23 @@ class TermWriterApp(App[None]):
     ) -> None:
         if not self._ticket_is_current(ticket):
             self._finish_critical_io()
-            dialog.show_error("The active document changed before Save As completed.")
+            dialog.show_error("The active document changed before the copy completed.")
             return
         if outcome.error is not None or outcome.target is None or outcome.saved is None:
             self._finish_critical_io()
-            dialog.show_error(outcome.error or "Save As did not return a result.")
+            dialog.show_error(outcome.error or "The copy operation did not return a result.")
+            return
+
+        if dialog.operation is SaveAsOperation.DUPLICATE:
+            self._refresh_workspace_index()
+            self.explorer.directory_tree.reload()
+            self._finish_critical_io()
+            dialog.set_busy(False)
+            dialog.dismiss(True)
+            if outcome.saved.warning:
+                self.notify(outcome.saved.warning, severity="warning")
+            else:
+                self.notify(f"Duplicated as {escape(outcome.target.name)}")
             return
 
         document = ticket.document
@@ -4100,6 +4143,18 @@ class TermWriterApp(App[None]):
         del screen
         commands = (
             ("Save document", "save", "Save the open Markdown source", self.action_save),
+            (
+                "Save document as…",
+                "save_as",
+                "Save the active source to a new path and retarget its tab",
+                self.action_save_as,
+            ),
+            (
+                "Duplicate document…",
+                "duplicate_document",
+                "Write the active source to a new path without changing its tab",
+                self.action_duplicate_document,
+            ),
             (
                 "Create Markdown file",
                 "create_file",

@@ -245,7 +245,7 @@ edit into a conflict instead of an automatic reload. A transition probe that obs
 edit re-enters the normal Save / Discard / Cancel guard.
 
 Actual publication and reload/open installation are critical operations. The editor becomes
-temporarily read-only, duplicate save/switch/quit actions are rejected, and Save As disables its
+temporarily read-only, additional save/switch/quit actions are rejected, and Save As disables its
 input and dismissal controls. This is intentional because cancelling a Textual thread worker does
 not stop an operating-system write already in progress. Read/probe workers may finish after
 cancellation, but a cancelled or stale worker cannot pass its ticket check. `atomic_save` remains one
@@ -340,12 +340,17 @@ publication, even if that directory is renamed. A failed `os.replace` leaves the
 bytes intact. A failure after publication is different: the name may already point to the new bytes,
 so the application reports uncertainty and does not advance its in-memory baseline.
 
-For a new Save As destination, an immutable snapshot of open buffer paths first reserves exact and
-normalized spelling keys for all live document identities, including paths whose files disappeared.
-This conservative rule also prevents case/Unicode spelling variants from becoming duplicate buffers
-when the filesystem treats them as one entry. The fully written temporary file is then hard-linked
-to the final name. Hard-link creation fails if the name exists, providing no-clobber publication.
-The temporary name is then removed.
+For a new Save As or Duplicate destination, an immutable snapshot of open tab paths first reserves
+exact and normalized spelling keys, including deferred tabs and paths whose files disappeared. This
+conservative rule also prevents case/Unicode spelling variants from becoming duplicate buffers when
+the filesystem treats them as one entry. The fully written temporary file is then hard-linked to the
+final name. Hard-link creation fails if the name exists, providing no-clobber publication. The
+temporary name is then removed.
+
+Save As retargets the active `Document`, transfers its cached view, advances its clean snapshot, and
+clears the old path's recovery journal only after publication. Duplicate deliberately does none of
+those things: it refreshes the workspace index after writing the live source and leaves the original
+document path, dirty state, baseline, and recovery queue intact.
 
 Same-directory `os.replace` provides atomic namespace replacement on normal local POSIX filesystems;
 it does not prove identical behavior on every network filesystem. `fsync` improves crash durability

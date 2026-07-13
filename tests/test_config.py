@@ -79,7 +79,7 @@ startup_mode = "write"
 retention_days = 45
 
 [keybindings]
-save = "ctrl+shift+s"
+save = "ctrl+alt+s"
 search_text = "ctrl+g"
 preview_next_heading = "ctrl+n"
 redo = "ctrl+r, ctrl+shift+r"
@@ -97,7 +97,7 @@ command_cursor_left = "a"
         startup_mode="write",
     )
     assert config.recovery == RecoveryConfig(retention_days=45)
-    assert config.keybindings["save"] == "ctrl+shift+s"
+    assert config.keybindings["save"] == "ctrl+alt+s"
     assert config.keybindings["search_text"] == "ctrl+g"
     assert config.keybindings["preview_next_heading"] == "ctrl+n"
     assert config.keybindings["redo"] == "ctrl+r,ctrl+shift+r"

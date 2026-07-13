@@ -19,6 +19,7 @@ CONFIG_FILE_NAME = "config.toml"
 THEME_FILE_NAME = "theme.tcss"
 
 BINDING_ID_SAVE = "save"
+BINDING_ID_SAVE_AS = "save_as"
 BINDING_ID_QUIT = "quit"
 BINDING_ID_TOGGLE_EXPLORER = "toggle_explorer"
 BINDING_ID_FIND_FILE = "find_file"
@@ -62,6 +63,7 @@ BINDING_ID_COMMAND_DOCUMENT_END = "command_document_end"
 DEFAULT_KEYBINDINGS: Mapping[str, str] = MappingProxyType(
     {
         BINDING_ID_SAVE: "ctrl+s",
+        BINDING_ID_SAVE_AS: "ctrl+shift+s",
         BINDING_ID_QUIT: "ctrl+q",
         BINDING_ID_TOGGLE_EXPLORER: "ctrl+b",
         BINDING_ID_FIND_FILE: "ctrl+p",
@@ -132,6 +134,7 @@ retention_days = 30
 [keybindings]
 # Bindings override keys only. They cannot define actions or commands.
 # save = "ctrl+s"
+# save_as = "ctrl+shift+s"
 # quit = "ctrl+q"
 # toggle_explorer = "ctrl+b"
 # find_file = "ctrl+p"

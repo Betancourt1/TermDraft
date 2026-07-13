@@ -42,6 +42,7 @@ from termwriter.config import (
     BINDING_ID_RECENT_DOCUMENTS,
     BINDING_ID_REDO,
     BINDING_ID_SAVE,
+    BINDING_ID_SAVE_AS,
     BINDING_ID_SEARCH_TEXT,
     BINDING_ID_SHOW_HELP,
     BINDING_ID_TOGGLE_EXPLORER,
@@ -57,6 +58,13 @@ APP_BINDINGS: list[BindingType] = [
         "Save",
         priority=True,
         id=BINDING_ID_SAVE,
+    ),
+    Binding(
+        DEFAULT_KEYBINDINGS[BINDING_ID_SAVE_AS],
+        "save_as",
+        "Save as",
+        priority=True,
+        id=BINDING_ID_SAVE_AS,
     ),
     Binding(
         DEFAULT_KEYBINDINGS[BINDING_ID_QUIT],
@@ -235,6 +243,7 @@ EDITOR_BINDINGS: list[BindingType] = [
 
 _SHORTCUTS = (
     (BINDING_ID_SAVE, "Save the current document"),
+    (BINDING_ID_SAVE_AS, "Save the active document under a new path"),
     (BINDING_ID_QUIT, "Quit safely"),
     (BINDING_ID_TOGGLE_EXPLORER, "Show or hide files"),
     (BINDING_ID_FIND_FILE, "Find a Markdown file"),

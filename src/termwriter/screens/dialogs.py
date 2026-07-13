@@ -59,6 +59,11 @@ class WorkspaceEntryOperation(Enum):
     TRASH = auto()
 
 
+class SaveAsOperation(Enum):
+    RETARGET = auto()
+    DUPLICATE = auto()
+
+
 class RecoveryManagerAction(Enum):
     """Explicit operations available from the recovery inventory."""
 
@@ -628,15 +633,33 @@ class SaveAsDialog(ModalScreen[bool]):
         def control(self) -> SaveAsDialog:
             return self.dialog
 
-    def __init__(self, suggested_path: str, error: str | None = None) -> None:
+    def __init__(
+        self,
+        suggested_path: str,
+        error: str | None = None,
+        *,
+        operation: SaveAsOperation = SaveAsOperation.RETARGET,
+        conflict_copy: bool = False,
+    ) -> None:
         self.suggested_path = suggested_path
         self.error = error
+        self.operation = operation
+        self.conflict_copy = conflict_copy
         self._busy = False
         super().__init__()
 
     def compose(self) -> ComposeResult:
+        if self.operation is SaveAsOperation.DUPLICATE:
+            title = "Duplicate document"
+            confirm_label = "Duplicate"
+        elif self.conflict_copy:
+            title = "Save local version as"
+            confirm_label = "Save copy"
+        else:
+            title = "Save document as"
+            confirm_label = "Save as"
         with Vertical(classes="dialog", id="save-as-dialog"):
-            yield Static("Save local version as", classes="dialog-title", markup=False)
+            yield Static(title, classes="dialog-title", markup=False)
             yield Input(
                 self.suggested_path,
                 placeholder="notes/local-copy.md",
@@ -646,7 +669,7 @@ class SaveAsDialog(ModalScreen[bool]):
             yield Static(self.error or "", id="save-as-error", markup=False)
             with Horizontal(classes="dialog-buttons"):
                 yield Button(
-                    "Save copy",
+                    confirm_label,
                     id="save-as-confirm",
                     variant="primary",
                     disabled=self._busy,
