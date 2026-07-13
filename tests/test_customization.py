@@ -6,6 +6,7 @@ from pathlib import Path
 
 from textual.color import Color
 from textual.command import SearchIcon
+from textual.filter import Monochrome
 from textual.widgets import Input, Static
 
 from termwriter.app import TermWriterApp
@@ -23,6 +24,34 @@ def _app(path: Path, config: TermWriterConfig | None = None) -> TermWriterApp:
         recovery_journal=RecoveryJournal(path.parent / ".test-recovery"),
         config=config,
     )
+
+
+def test_default_theme_is_black_and_grayscale(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    app = _app(path)
+
+    theme = app.current_theme
+    colors = (
+        theme.primary,
+        theme.secondary,
+        theme.warning,
+        theme.error,
+        theme.success,
+        theme.accent,
+        theme.foreground,
+        theme.background,
+        theme.surface,
+        theme.panel,
+        theme.boost,
+    )
+    parsed_colors = [Color.parse(color) for color in colors if color is not None]
+
+    assert theme.name == "termwriter-monochrome"
+    assert theme.background == "#000000"
+    assert len(parsed_colors) == len(colors)
+    assert all(color.r == color.g == color.b for color in parsed_colors)
+    assert any(isinstance(line_filter, Monochrome) for line_filter in app.get_line_filters())
 
 
 async def test_enter_continues_task_list_and_undo_reverts_the_whole_edit(tmp_path: Path) -> None:

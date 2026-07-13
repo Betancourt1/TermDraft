@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum, auto
@@ -14,7 +14,9 @@ from textual.app import App, ComposeResult, SystemCommand
 from textual.color import Color
 from textual.command import CommandPalette, SearchIcon
 from textual.containers import Horizontal
+from textual.filter import LineFilter, Monochrome
 from textual.screen import ModalScreen, Screen
+from textual.theme import Theme
 from textual.timer import Timer
 from textual.widgets import ContentSwitcher, DirectoryTree, Static, Tab, Tabs, TextArea
 from textual.worker import Worker, get_current_worker
@@ -101,6 +103,38 @@ from termwriter.widgets.editor import MarkdownEditor
 from termwriter.widgets.file_tree import FileExplorer
 from termwriter.widgets.preview import MarkdownPreview
 from termwriter.widgets.status_bar import TermWriterStatusBar
+
+_MONOCHROME_THEME = Theme(
+    name="termwriter-monochrome",
+    primary="#303030",
+    secondary="#505050",
+    warning="#b8b8b8",
+    error="#e8e8e8",
+    success="#909090",
+    accent="#a8a8a8",
+    foreground="#e6e6e6",
+    background="#000000",
+    surface="#080808",
+    panel="#121212",
+    boost="#1c1c1c",
+    variables={
+        "block-cursor-background": "#e6e6e6",
+        "block-cursor-foreground": "#000000",
+        "border": "#5f5f5f",
+        "border-blurred": "#303030",
+        "button-color-foreground": "#000000",
+        "footer-background": "#121212",
+        "footer-key-foreground": "#f2f2f2",
+        "input-cursor-background": "#f2f2f2",
+        "input-cursor-foreground": "#000000",
+        "input-selection-background": "#505050",
+        "input-selection-foreground": "#ffffff",
+        "scrollbar": "#5f5f5f",
+        "scrollbar-hover": "#777777",
+        "scrollbar-active": "#a0a0a0",
+    },
+)
+_MONOCHROME_FILTER = Monochrome()
 
 
 def _paths_reserve_same_spelling(left: Path, right: Path) -> bool:
@@ -290,6 +324,8 @@ class TermWriterApp(App[None]):
         if watch_user_css:
             css_paths.append(self.config.theme_path)
         super().__init__(css_path=css_paths, watch_css=watch_user_css)
+        self.register_theme(_MONOCHROME_THEME)
+        self.theme = _MONOCHROME_THEME.name
         self.set_keymap(dict(self.config.keybindings))
         self.workspace = workspace
         self.document: Document | None = None
@@ -361,6 +397,10 @@ class TermWriterApp(App[None]):
         self._critical_changed_status = False
         self._watch_probe_worker: Worker[None] | None = None
         self._inactive_watch_index = 0
+
+    def get_line_filters(self) -> Sequence[LineFilter]:
+        """Keep every rendered surface inside the grayscale palette."""
+        return (*super().get_line_filters(), _MONOCHROME_FILTER)
 
     def compose(self) -> ComposeResult:
         yield Static(f"TermWriter  ·  {self.workspace.root}", id="title-bar", markup=False)
