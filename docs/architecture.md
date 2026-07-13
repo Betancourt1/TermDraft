@@ -251,9 +251,10 @@ permissions apply.
 
 TermWriter starts in WRITE mode. Esc changes the application to COMMAND mode, where the Markdown
 editor stops consuming printable input and the application owns a fixed mnemonic single-key map.
-`i` restores WRITE mode and editor focus. Modal dialogs suppress the COMMAND map so their inputs
-remain ordinary text fields. The persistent status bar always leads with the interaction mode and
-adds FILES or PREVIEW when focus leaves the source editor.
+The four directional arrows still pass through the editor's cursor navigation without mutating
+source. `i` restores WRITE mode and editor focus. Modal dialogs suppress the COMMAND map so their
+inputs remain ordinary text fields. The persistent status bar always leads with the interaction
+mode and adds FILES or PREVIEW when focus leaves the source editor.
 
 Configured bindings keep stable IDs and are remapped through Textual's public `App.set_keymap`.
 They remain available in both interaction modes. Undo and redo are defined on the Markdown editor

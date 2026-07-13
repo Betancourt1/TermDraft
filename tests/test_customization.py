@@ -151,6 +151,21 @@ async def test_write_and_command_modes_protect_text_and_use_plain_keys(tmp_path:
         assert str(status.render()).startswith("WRITE")
 
 
+async def test_command_mode_arrows_navigate_without_modifying_text(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("one\nthree", encoding="utf-8")
+    app = _app(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("escape", "right", "right", "down", "left")
+
+        assert app.editor.cursor_location == (1, 1)
+        assert app.editor.text == "one\nthree"
+
+        await pilot.press("backspace", "delete", "enter", "x")
+        assert app.editor.text == "one\nthree"
+
+
 async def test_command_mode_keys_pause_while_a_dialog_accepts_text(tmp_path: Path) -> None:
     path = tmp_path / "note.md"
     path.write_text("base", encoding="utf-8")

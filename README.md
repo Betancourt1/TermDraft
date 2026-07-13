@@ -225,7 +225,8 @@ TermWriter is already running, restart once so it can be added to the watched st
 
 TermWriter starts in WRITE mode so opening a file still leads directly into writing. Press Esc to
 enter COMMAND mode; source text is protected there, so plain keys run commands instead of being
-inserted. Press `i` to return to WRITE mode.
+inserted. The arrow keys continue to move the cursor without changing the document. Press `i` to
+return to WRITE mode.
 
 | COMMAND key | Action |
 | --- | --- |

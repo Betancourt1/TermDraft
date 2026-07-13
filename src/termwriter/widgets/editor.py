@@ -9,6 +9,8 @@ from textual.widgets import TextArea
 from termwriter.bindings import EDITOR_BINDINGS
 from termwriter.services.markdown_continuation import continuation_edit
 
+_COMMAND_NAVIGATION_KEYS = frozenset({"up", "down", "left", "right"})
+
 
 class MarkdownEditor(TextArea):
     """A soft-wrapped TextArea that always edits Markdown source."""
@@ -59,7 +61,7 @@ class MarkdownEditor(TextArea):
 
     async def _on_key(self, event: events.Key) -> None:
         """Apply predictable Markdown continuation before TextArea handles Enter."""
-        if not self.write_mode:
+        if not self.write_mode and event.key not in _COMMAND_NAVIGATION_KEYS:
             event.stop()
             event.prevent_default()
             return
