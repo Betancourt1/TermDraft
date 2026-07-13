@@ -7,7 +7,7 @@ from markdown_it.token import Token
 from textual.actions import ActionError
 from textual.actions import parse as parse_action
 from textual.binding import Binding, BindingType
-from textual.content import Content
+from textual.content import Content, Span
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.widgets import Markdown
@@ -18,7 +18,7 @@ from termwriter.config import (
     BINDING_ID_PREVIEW_PREVIOUS_HEADING,
     DEFAULT_KEYBINDINGS,
 )
-from termwriter.icons import IMAGE_ICON, TEXTUAL_IMAGE_ICON
+from termwriter.icons import IMAGE_ICON, IMAGE_ICON_COLOR, TEXTUAL_IMAGE_ICON
 from termwriter.services.markdown_preview import (
     FOOTNOTE_BACKREF_PREFIX,
     FOOTNOTE_DEFINITION_PREFIX,
@@ -45,6 +45,17 @@ class _PreviewHeading:
     block: MarkdownBlock
     label: str
     level: int
+
+
+def _adjust_span_for_image_icons(
+    span: Span,
+    positions: tuple[int, ...],
+    removed: int,
+) -> Span:
+    """Keep an inline style aligned after shorter image markers are inserted."""
+    start = span.start - removed * sum(position < span.start for position in positions)
+    end = span.end - removed * sum(position < span.end for position in positions)
+    return Span(start, end, span.style)
 
 
 class _FootnoteLabel(MarkdownBlock):
@@ -141,17 +152,35 @@ class MarkdownPreview(Markdown):
         self._index_headings()
 
     def _replace_image_icons(self) -> None:
-        """Replace Textual's emoji image marker while preserving link spans."""
+        """Replace Textual's emoji image marker with Yazi's image icon."""
         for block in self.query(MarkdownBlock):
             content = block.render()
             if not isinstance(content, Content) or TEXTUAL_IMAGE_ICON not in content.plain:
                 continue
-            block.set_content(
-                Content(
-                    content.plain.replace(TEXTUAL_IMAGE_ICON, IMAGE_ICON),
-                    spans=list(content.spans),
-                )
+            positions: list[int] = []
+            start = 0
+            while (position := content.plain.find(TEXTUAL_IMAGE_ICON, start)) != -1:
+                positions.append(position)
+                start = position + len(TEXTUAL_IMAGE_ICON)
+
+            removed = len(TEXTUAL_IMAGE_ICON) - len(IMAGE_ICON)
+            image_positions = tuple(positions)
+
+            replacement = Content(
+                content.plain.replace(TEXTUAL_IMAGE_ICON, IMAGE_ICON),
+                spans=[
+                    _adjust_span_for_image_icons(span, image_positions, removed)
+                    for span in content.spans
+                ],
             )
+            for index, position in enumerate(positions):
+                icon_position = position - removed * index
+                replacement = replacement.stylize(
+                    IMAGE_ICON_COLOR,
+                    icon_position,
+                    icon_position + 1,
+                )
+            block.set_content(replacement)
 
     def unhandled_token(self, token: Token) -> MarkdownBlock | None:
         """Mount the one custom block used as a footnote definition target."""

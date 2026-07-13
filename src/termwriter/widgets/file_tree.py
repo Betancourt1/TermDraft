@@ -5,19 +5,28 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 
+from rich.style import Style
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import DirectoryTree, Static
+from textual.widgets._directory_tree import DirEntry
+from textual.widgets._tree import TreeNode
 
-from termwriter.icons import FILE_ICON, FOLDER_ICON, OPEN_FOLDER_ICON
+from termwriter.icons import (
+    FOLDER_ICON,
+    FOLDER_ICON_COLOR,
+    MARKDOWN_ICON,
+    MARKDOWN_ICON_COLOR,
+    OPEN_FOLDER_ICON,
+)
 from termwriter.models.workspace import IGNORED_DIRECTORIES, MARKDOWN_SUFFIXES, Workspace
 
 
 class MarkdownDirectoryTree(DirectoryTree):
     """Directory tree that omits unsafe paths and non-Markdown files."""
 
-    ICON_FILE = FILE_ICON
+    ICON_FILE = MARKDOWN_ICON
     ICON_NODE = FOLDER_ICON
     ICON_NODE_EXPANDED = OPEN_FOLDER_ICON
 
@@ -25,6 +34,19 @@ class MarkdownDirectoryTree(DirectoryTree):
         self.workspace = workspace
         super().__init__(workspace.root, id="file-tree")
         self.show_root = False
+
+    def render_label(
+        self,
+        node: TreeNode[DirEntry],
+        base_style: Style,
+        style: Style,
+    ) -> Text:
+        """Render Yazi's icon colors without recoloring file names."""
+        label = super().render_label(node, base_style, style)
+        if self.is_mounted:
+            color = FOLDER_ICON_COLOR if node.allow_expand else MARKDOWN_ICON_COLOR
+            label.stylize(color, 0, 1)
+        return label
 
     def filter_paths(self, paths: Iterable[Path]) -> Iterable[Path]:
         filtered: list[Path] = []

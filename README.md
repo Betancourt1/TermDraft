@@ -98,8 +98,8 @@ Markdown files remain available in the explorer and search.
 
 The CLI rejects missing paths, non-Markdown file targets, and Markdown file symlinks before the TUI
 starts. The explorer omits `.git`, `.venv`, `node_modules`, `__pycache__`, and all symlinks.
-Files, folders, search, and image placeholders use monochrome Unicode line symbols instead of color
-emoji. They do not require a Nerd Font.
+Files, folders, search, and image placeholders use the same Nerd Font icon language as Yazi. A Nerd
+Font or a Symbols Nerd Font fallback is required to display them.
 
 Show every CLI option or the effective in-app commands without starting the TUI:
 

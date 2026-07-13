@@ -9,7 +9,7 @@ from textual.content import Content
 from textual.widgets import Button
 from textual.widgets.markdown import MarkdownBlock
 
-from termwriter.icons import IMAGE_ICON, TEXTUAL_IMAGE_ICON
+from termwriter.icons import IMAGE_ICON, IMAGE_ICON_COLOR, TEXTUAL_IMAGE_ICON
 from termwriter.services.markdown_preview import (
     FOOTNOTE_BACKREF_PREFIX,
     FOOTNOTE_DEFINITION_PREFIX,
@@ -266,7 +266,7 @@ async def test_textual_mounts_normalized_extensions_without_unhandled_blocks() -
         assert preview.query_one(f"#{FOOTNOTE_DEFINITION_PREFIX}1")
 
 
-async def test_image_placeholders_use_a_monochrome_symbol() -> None:
+async def test_image_placeholders_use_yazi_icon_without_moving_link_spans() -> None:
     class PreviewApp(App[None]):
         def compose(self) -> ComposeResult:
             yield MarkdownPreview()
@@ -277,12 +277,24 @@ async def test_image_placeholders_use_a_monochrome_symbol() -> None:
         await preview.render_source("![Diagram](diagram.png)\n")
         await pilot.pause()
         content = ""
+        image_content: Content | None = None
         for block in preview.query(MarkdownBlock):
             rendered = block.render()
             if isinstance(rendered, Content):
                 content += rendered.plain
+                if IMAGE_ICON in rendered.plain:
+                    image_content = rendered
         assert IMAGE_ICON in content
         assert TEXTUAL_IMAGE_ICON not in content
+        assert image_content is not None
+        assert any(
+            image_content.plain[span.start : span.end] == f"{IMAGE_ICON}Diagram"
+            for span in image_content.spans
+        )
+        assert any(
+            span.style == IMAGE_ICON_COLOR and (span.start, span.end) == (0, 1)
+            for span in image_content.spans
+        )
 
 
 async def test_markdown_gallery_mounts_without_changing_its_source() -> None:
