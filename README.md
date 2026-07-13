@@ -263,6 +263,10 @@ Configured shortcuts remain available in both modes:
 | Ctrl+\ | Open the searchable command palette |
 | F1 | Shortcut help |
 
+The command palette repeats each command's effective COMMAND-mode and configured keys in its help
+line. Commands without a direct shortcut are labeled `Palette only`. Reload configuration before
+opening the palette to see changes made in `config.toml`.
+
 The editor keeps Tab and Shift+Tab for Markdown indentation. Inside the focused preview, Tab and
 Shift+Tab select links, and Enter activates the selection; reaching either end returns to the normal
 focus chain. `?` opens help only in COMMAND mode and remains editable Markdown in WRITE mode. Some

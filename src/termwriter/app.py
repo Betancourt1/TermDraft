@@ -20,6 +20,7 @@ from textual.worker import Worker, get_current_worker
 from termwriter.bindings import (
     APP_BINDINGS,
     MARKDOWN_SYNTAX_HELP,
+    format_action_shortcuts,
     format_shortcut_help,
 )
 from termwriter.config import ConfigError, TermWriterConfig, load_config
@@ -3255,83 +3256,108 @@ class TermWriterApp(App[None]):
     def get_system_commands(self, screen: Screen[object]) -> Iterable[SystemCommand]:
         """Expose only TermWriter actions in the searchable command palette."""
         del screen
-        yield SystemCommand("Save document", "Save the open Markdown source", self.action_save)
-        yield SystemCommand(
-            "Find file", "Search Markdown paths in the workspace", self.action_find_file
+        commands = (
+            ("Save document", "save", "Save the open Markdown source", self.action_save),
+            (
+                "Find file",
+                "find_file",
+                "Search Markdown paths in the workspace",
+                self.action_find_file,
+            ),
+            (
+                "Open recent document",
+                "open_recent",
+                "Switch to a recently used Markdown document",
+                self.action_open_recent,
+            ),
+            (
+                "Next document tab",
+                "next_tab",
+                "Activate the next open Markdown buffer",
+                self.action_next_tab,
+            ),
+            (
+                "Previous document tab",
+                "previous_tab",
+                "Activate the previous open Markdown buffer",
+                self.action_previous_tab,
+            ),
+            (
+                "Close document tab",
+                "close_tab",
+                "Close the active buffer with save protection",
+                self.action_close_tab,
+            ),
+            (
+                "Search workspace text",
+                "search_text",
+                "Find literal, fuzzy, whole-word, or regex matches in Markdown source",
+                self.action_search_text,
+            ),
+            (
+                "Toggle file explorer",
+                "toggle_explorer",
+                "Show or hide the workspace tree",
+                self.action_toggle_explorer,
+            ),
+            (
+                "Toggle preview",
+                "toggle_preview",
+                "Show, hide, or switch to the rendered preview",
+                self.action_toggle_preview,
+            ),
+            ("Undo", "editor_undo", "Undo the last editor change", self.action_editor_undo),
+            ("Redo", "editor_redo", "Redo the last undone editor change", self.action_editor_redo),
+            (
+                "Reload configuration",
+                "reload_config",
+                "Reload config.toml keybindings, editor, and retention options",
+                self.action_reload_config,
+            ),
+            (
+                "Manage recovery drafts",
+                "manage_recovery",
+                "Restore, retarget, export, archive, or clean recovery entries",
+                self.action_manage_recovery,
+            ),
+            ("Shortcut help", "show_help", "Show the effective keybindings", self.action_show_help),
+            (
+                "Markdown syntax help",
+                "show_markdown_help",
+                "Show supported Markdown and nesting examples",
+                self.action_show_markdown_help,
+            ),
+            (
+                "Inspect semantic blocks",
+                "inspect_semantic_blocks",
+                "Inspect read-only parser ranges for the active Markdown source",
+                self.action_inspect_semantic_blocks,
+            ),
+            (
+                "Read semantic blocks (experimental)",
+                "read_semantic_blocks",
+                "Render headings and paragraphs with source fallback for other blocks",
+                self.action_read_semantic_blocks,
+            ),
+            (
+                "Inspect cursor coordinates",
+                "inspect_cursor_coordinates",
+                "Compare source, UTF-8, wrapped, grapheme, and terminal cursor positions",
+                self.action_inspect_cursor_coordinates,
+            ),
+            (
+                "Quit safely",
+                "request_quit",
+                "Prompt before discarding changes",
+                self.action_request_quit,
+            ),
         )
-        yield SystemCommand(
-            "Open recent document",
-            "Switch to a recently used Markdown document",
-            self.action_open_recent,
-        )
-        yield SystemCommand(
-            "Next document tab",
-            "Activate the next open Markdown buffer",
-            self.action_next_tab,
-        )
-        yield SystemCommand(
-            "Previous document tab",
-            "Activate the previous open Markdown buffer",
-            self.action_previous_tab,
-        )
-        yield SystemCommand(
-            "Close document tab",
-            "Close the active buffer with save protection",
-            self.action_close_tab,
-        )
-        yield SystemCommand(
-            "Search workspace text",
-            "Find literal, fuzzy, whole-word, or regex matches in Markdown source",
-            self.action_search_text,
-        )
-        yield SystemCommand(
-            "Toggle file explorer",
-            "Show or hide the workspace tree",
-            self.action_toggle_explorer,
-        )
-        yield SystemCommand(
-            "Toggle preview",
-            "Show, hide, or switch to the rendered preview",
-            self.action_toggle_preview,
-        )
-        yield SystemCommand("Undo", "Undo the last editor change", self.action_editor_undo)
-        yield SystemCommand("Redo", "Redo the last undone editor change", self.action_editor_redo)
-        yield SystemCommand(
-            "Reload configuration",
-            "Reload config.toml keybindings, editor, and retention options",
-            self.action_reload_config,
-        )
-        yield SystemCommand(
-            "Manage recovery drafts",
-            "Restore, retarget, export, archive, or clean recovery entries",
-            self.action_manage_recovery,
-        )
-        yield SystemCommand(
-            "Shortcut help", "Show the effective keybindings", self.action_show_help
-        )
-        yield SystemCommand(
-            "Markdown syntax help",
-            "Show supported Markdown and nesting examples",
-            self.action_show_markdown_help,
-        )
-        yield SystemCommand(
-            "Inspect semantic blocks",
-            "Inspect read-only parser ranges for the active Markdown source",
-            self.action_inspect_semantic_blocks,
-        )
-        yield SystemCommand(
-            "Read semantic blocks (experimental)",
-            "Render headings and paragraphs with source fallback for other blocks",
-            self.action_read_semantic_blocks,
-        )
-        yield SystemCommand(
-            "Inspect cursor coordinates",
-            "Compare source, UTF-8, wrapped, grapheme, and terminal cursor positions",
-            self.action_inspect_cursor_coordinates,
-        )
-        yield SystemCommand(
-            "Quit safely", "Prompt before discarding changes", self.action_request_quit
-        )
+        for title, action, description, callback in commands:
+            yield SystemCommand(title, self._command_help(action, description), callback)
+
+    def _command_help(self, action: str, description: str) -> str:
+        shortcuts = format_action_shortcuts(action, self.config.keybindings)
+        return f"Keys: {shortcuts}  ·  {description}"
 
     def _focus_mode(self) -> str:
         interaction = self._interaction_mode.value

@@ -128,6 +128,8 @@ async def test_remapped_save_and_undo_replace_their_default_keys(tmp_path: Path)
 
         await pilot.press("ctrl+g")
         assert path.read_text(encoding="utf-8") == "ybase"
+        commands = {command.title: command for command in app.get_system_commands(app.screen)}
+        assert commands["Save document"].help.startswith("Keys: w · Ctrl+G  ·  ")
 
 
 async def test_write_and_command_modes_protect_text_and_use_plain_keys(tmp_path: Path) -> None:
@@ -269,6 +271,11 @@ async def test_command_palette_and_help_expose_product_actions(tmp_path: Path) -
             "Markdown syntax help",
             "Quit safely",
         } <= command_titles
+        commands = {command.title: command for command in app.get_system_commands(app.screen)}
+        assert commands["Save document"].help.startswith("Keys: w · Ctrl+S  ·  ")
+        assert commands["Shortcut help"].help.startswith("Keys: ? · F1  ·  ")
+        assert commands["Reload configuration"].help.startswith("Keys: Palette only  ·  ")
+        assert all(command.help.startswith("Keys: ") for command in commands.values())
 
         await pilot.press("ctrl+backslash")
         assert app.screen.id == "--command-palette"
