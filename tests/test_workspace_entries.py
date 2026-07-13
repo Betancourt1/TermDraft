@@ -12,7 +12,7 @@ from termwriter.app import TermWriterApp
 from termwriter.models.workspace import Workspace
 from termwriter.screens.dialogs import (
     ConflictDialog,
-    RemoveWorkspaceEntryDialog,
+    TrashWorkspaceEntryDialog,
     WorkspaceEntryDialog,
 )
 from termwriter.services.recovery import RecoveryJournal
@@ -22,7 +22,7 @@ from termwriter.services.workspace_entries import (
     create_folder,
     create_markdown_file,
     move_entry,
-    remove_entry,
+    move_to_trash,
     rename_entry,
 )
 
@@ -61,17 +61,53 @@ def test_rename_and_move_preserve_file_contents(tmp_path: Path) -> None:
     assert moved.read_text(encoding="utf-8") == "# Draft\n"
 
 
-def test_remove_folder_includes_contents_hidden_by_the_explorer(tmp_path: Path) -> None:
+@pytest.fixture
+def fake_trash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    trash = tmp_path.parent / f"{tmp_path.name}-trash"
+    trash.mkdir()
+
+    def move(source: Path) -> None:
+        Path(source).rename(trash / Path(source).name)
+
+    monkeypatch.setattr(workspace_entries, "send2trash", move)
+    return trash
+
+
+def test_trash_folder_includes_contents_hidden_by_the_explorer(
+    tmp_path: Path,
+    fake_trash: Path,
+) -> None:
     workspace = Workspace.from_target(tmp_path)
     folder = tmp_path / "notes"
     folder.mkdir()
     (folder / "visible.md").write_text("visible", encoding="utf-8")
     (folder / "hidden.txt").write_text("hidden", encoding="utf-8")
 
-    removed = remove_entry(workspace, folder)
+    removed = move_to_trash(workspace, folder)
 
     assert removed == folder
     assert not folder.exists()
+    assert (fake_trash / "notes" / "visible.md").read_text(encoding="utf-8") == "visible"
+    assert (fake_trash / "notes" / "hidden.txt").read_text(encoding="utf-8") == "hidden"
+
+
+def test_trash_failure_preserves_the_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = Workspace.from_target(tmp_path)
+    source = tmp_path / "note.md"
+    source.write_text("source", encoding="utf-8")
+
+    def fail(_source: Path) -> None:
+        raise OSError("trash unavailable")
+
+    monkeypatch.setattr(workspace_entries, "send2trash", fail)
+
+    with pytest.raises(WorkspaceEntryError, match=r"Cannot move .* to Trash"):
+        move_to_trash(workspace, source)
+
+    assert source.read_text(encoding="utf-8") == "source"
 
 
 def test_workspace_operations_reject_replacement_escape_and_self_move(tmp_path: Path) -> None:
@@ -281,8 +317,9 @@ async def test_move_keeps_dirty_document_and_disk_at_the_original_path(tmp_path:
         assert app.document.text == "xbase"
 
 
-async def test_remove_folder_warns_about_hidden_contents_and_removes_after_confirmation(
+async def test_trash_folder_warns_about_hidden_contents_and_moves_after_confirmation(
     tmp_path: Path,
+    fake_trash: Path,
 ) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
@@ -294,8 +331,8 @@ async def test_remove_folder_warns_about_hidden_contents_and_removes_after_confi
 
     async with app.run_test(size=(100, 30)) as pilot:
         app.push_screen(
-            RemoveWorkspaceEntryDialog(folder, workspace_root),
-            lambda confirmed: app._handle_remove_entry_confirmation(folder, confirmed),
+            TrashWorkspaceEntryDialog(folder, workspace_root),
+            lambda confirmed: app._handle_trash_entry_confirmation(folder, confirmed),
         )
         await pilot.pause()
 
@@ -309,18 +346,19 @@ async def test_remove_folder_warns_about_hidden_contents_and_removes_after_confi
             await pilot.pause(0.01)
 
         assert not folder.exists()
+        assert (fake_trash / "notes" / "note.md").read_text(encoding="utf-8") == "note"
 
 
-async def test_remove_refuses_to_delete_an_open_document(tmp_path: Path) -> None:
+async def test_trash_refuses_to_move_an_open_document(tmp_path: Path) -> None:
     path = tmp_path / "note.md"
     path.write_text("content", encoding="utf-8")
     app = _app(path, tmp_path / "state")
 
     async with app.run_test(size=(100, 30)) as pilot:
-        app.action_remove_entry()
+        app.action_trash_entry()
         await pilot.pause()
 
-        assert not isinstance(app.screen, RemoveWorkspaceEntryDialog)
+        assert not isinstance(app.screen, TrashWorkspaceEntryDialog)
         assert path.read_text(encoding="utf-8") == "content"
         assert app.document is not None
         assert app.document.path == path

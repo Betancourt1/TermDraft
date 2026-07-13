@@ -5,11 +5,12 @@ from __future__ import annotations
 import ctypes
 import errno
 import os
-import shutil
 import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
+
+from send2trash import send2trash
 
 from termwriter.models.workspace import (
     IGNORED_DIRECTORIES,
@@ -176,14 +177,11 @@ def move_entry(workspace: Workspace, source: Path, target: Path) -> Path:
     return safe_target
 
 
-def remove_entry(workspace: Workspace, source: Path) -> Path:
-    """Permanently remove one file or folder tree after UI confirmation."""
+def move_to_trash(workspace: Workspace, source: Path) -> Path:
+    """Move one file or folder tree to the operating system Trash."""
     safe_source = _validate_visible_path(workspace, source, must_exist=True)
     try:
-        if safe_source.is_dir():
-            shutil.rmtree(safe_source)
-        else:
-            safe_source.unlink()
+        send2trash(safe_source)
     except OSError as error:
-        raise WorkspaceEntryError(f"Cannot remove {safe_source}: {error}") from error
+        raise WorkspaceEntryError(f"Cannot move {safe_source} to Trash: {error}") from error
     return safe_source

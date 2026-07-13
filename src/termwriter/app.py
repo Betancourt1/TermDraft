@@ -54,9 +54,9 @@ from termwriter.screens.dialogs import (
     RecoveryManagerRequest,
     RecoveryRetentionDialog,
     RecoveryRetentionRequest,
-    RemoveWorkspaceEntryDialog,
     SaveAsDialog,
     TextSearchDialog,
+    TrashWorkspaceEntryDialog,
     UnsavedChangesDialog,
     UnsavedDecision,
     WorkspaceEntryDialog,
@@ -108,7 +108,7 @@ from termwriter.services.workspace_entries import (
     create_folder,
     create_markdown_file,
     move_entry,
-    remove_entry,
+    move_to_trash,
     rename_entry,
 )
 from termwriter.widgets.editor import MarkdownEditor
@@ -3257,7 +3257,7 @@ class TermWriterApp(App[None]):
     def action_move_entry(self) -> None:
         self._open_workspace_entry_dialog(WorkspaceEntryOperation.MOVE)
 
-    def action_remove_entry(self) -> None:
+    def action_trash_entry(self) -> None:
         if self._exit_requested or self._has_modal or self._critical_io:
             return
         self._sync_editor_state()
@@ -3276,8 +3276,8 @@ class TermWriterApp(App[None]):
             )
             return
         self.push_screen(
-            RemoveWorkspaceEntryDialog(source, self.workspace.root),
-            lambda confirmed: self._handle_remove_entry_confirmation(source, confirmed),
+            TrashWorkspaceEntryDialog(source, self.workspace.root),
+            lambda confirmed: self._handle_trash_entry_confirmation(source, confirmed),
         )
 
     @on(WorkspaceEntryDialog.Submitted)
@@ -3363,7 +3363,7 @@ class TermWriterApp(App[None]):
             tuple((document.path, document.snapshot) for document in affected),
         )
 
-    def _handle_remove_entry_confirmation(self, source: Path, confirmed: bool | None) -> None:
+    def _handle_trash_entry_confirmation(self, source: Path, confirmed: bool | None) -> None:
         if not confirmed or self._critical_io or self._exit_requested:
             return
         removed_documents = tuple(
@@ -3372,7 +3372,7 @@ class TermWriterApp(App[None]):
         if not self._begin_critical_io(None, freeze_editor=False):
             return
         self._workspace_entry_worker(
-            WorkspaceEntryOperation.REMOVE,
+            WorkspaceEntryOperation.TRASH,
             source,
             "",
             None,
@@ -3416,7 +3416,7 @@ class TermWriterApp(App[None]):
             elif operation is WorkspaceEntryOperation.MOVE:
                 target = move_entry(self.workspace, source, Path(value))
             else:
-                target = remove_entry(self.workspace, source)
+                target = move_to_trash(self.workspace, source)
 
             snapshots: tuple[tuple[Path, FileSnapshot], ...] = ()
             if operation in {
@@ -3546,7 +3546,7 @@ class TermWriterApp(App[None]):
                 self.explorer.set_active(self.document.path)
             self._refresh_document_tabs()
             self._persist_session()
-        elif operation is WorkspaceEntryOperation.REMOVE:
+        elif operation is WorkspaceEntryOperation.TRASH:
             for path in affected_paths:
                 self._forget_session_path(path)
                 self._clear_recovery(path)
@@ -3565,14 +3565,14 @@ class TermWriterApp(App[None]):
             WorkspaceEntryOperation.CREATE_FOLDER: f"Created folder {relative}",
             WorkspaceEntryOperation.RENAME: f"Renamed to {relative}",
             WorkspaceEntryOperation.MOVE: f"Moved to {relative}",
-            WorkspaceEntryOperation.REMOVE: f"Removed {relative}",
+            WorkspaceEntryOperation.TRASH: f"Moved {relative} to Trash",
         }
         self.notify(escape(messages[operation]))
         if operation is WorkspaceEntryOperation.CREATE_FILE:
             self.call_after_refresh(self._request_open, target)
         elif operation in {
             WorkspaceEntryOperation.CREATE_FOLDER,
-            WorkspaceEntryOperation.REMOVE,
+            WorkspaceEntryOperation.TRASH,
         }:
             self.explorer.directory_tree.focus()
 
@@ -3808,10 +3808,10 @@ class TermWriterApp(App[None]):
                 self.action_move_entry,
             ),
             (
-                "Remove selected file or folder",
-                "remove_entry",
-                "Permanently remove the selected entry after confirmation",
-                self.action_remove_entry,
+                "Move selected file or folder to Trash",
+                "trash_entry",
+                "Move the selected entry to the operating system Trash",
+                self.action_trash_entry,
             ),
             (
                 "Find file",

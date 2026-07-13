@@ -276,7 +276,7 @@ def format_command_help(
         + "\n\n"
         + f"Press : in COMMAND mode or {palette} in either mode to search all commands, "
         + "including:\n"
-        + "  Save, create/rename/move/remove files and folders, find file, open recent,\n"
+        + "  Save, create/rename/move/trash files and folders, find file, open recent,\n"
         + "  next/previous/close tab, search workspace text,\n"
         + "  toggle files, toggle preview,\n"
         + "  undo, redo,\n"

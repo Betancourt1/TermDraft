@@ -56,7 +56,7 @@ class WorkspaceEntryOperation(Enum):
     CREATE_FOLDER = auto()
     RENAME = auto()
     MOVE = auto()
-    REMOVE = auto()
+    TRASH = auto()
 
 
 class RecoveryManagerAction(Enum):
@@ -810,8 +810,8 @@ class WorkspaceEntryDialog(ModalScreen[bool]):
         self.query_one("#workspace-entry-input", Input).focus()
 
 
-class RemoveWorkspaceEntryDialog(ModalScreen[bool]):
-    """Confirm permanent removal without hiding recursive folder impact."""
+class TrashWorkspaceEntryDialog(ModalScreen[bool]):
+    """Confirm a recoverable move to Trash, including a folder's hidden contents."""
 
     BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel", show=False)]
 
@@ -823,8 +823,8 @@ class RemoveWorkspaceEntryDialog(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         relative = self.source.relative_to(self.workspace_root).as_posix()
         is_directory = self.source.is_dir()
-        title = "Remove folder?" if is_directory else "Remove file?"
-        message = f"Permanently remove {relative}?"
+        title = "Move folder to Trash?" if is_directory else "Move file to Trash?"
+        message = f"Move {relative} to the operating system Trash?"
         if is_directory:
             message += (
                 " Everything inside it will be removed, including files hidden by the explorer."
@@ -833,7 +833,11 @@ class RemoveWorkspaceEntryDialog(ModalScreen[bool]):
             yield Static(title, classes="dialog-title", markup=False)
             yield Static(message, classes="dialog-message", markup=False)
             with Horizontal(classes="dialog-buttons"):
-                yield Button("Remove", id="remove-workspace-entry-confirm", variant="error")
+                yield Button(
+                    "Move to Trash",
+                    id="remove-workspace-entry-confirm",
+                    variant="warning",
+                )
                 yield Button("Cancel", id="remove-workspace-entry-cancel", variant="primary")
 
     @on(Button.Pressed)
