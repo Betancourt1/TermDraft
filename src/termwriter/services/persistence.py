@@ -137,6 +137,7 @@ def _snapshot_from_data(
         digest=hashlib.sha256(data).hexdigest(),
         size=len(data),
         mtime_ns=file_stat.st_mtime_ns,
+        ctime_ns=file_stat.st_ctime_ns,
         mode=stat.S_IMODE(file_stat.st_mode),
         device=file_stat.st_dev,
         inode=file_stat.st_ino,
@@ -182,8 +183,20 @@ def _stable_read_at(
         finally:
             os.close(descriptor)
 
-        identity_before = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-        identity_after = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        identity_before = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        identity_after = (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
         if identity_before == identity_after and len(data) == after.st_size:
             return data, _snapshot_from_data(data, after, parent_stat)
     raise FileChangedDuringReadError(f"File changed while it was being read: {name}")
@@ -226,6 +239,59 @@ def snapshot_file(path: Path) -> FileSnapshot:
             return FileSnapshot.missing()
         raise
     try:
+        return _snapshot_at(directory_descriptor, path.name, parent_stat)
+    finally:
+        os.close(directory_descriptor)
+
+
+def snapshot_file_if_metadata_changed(
+    path: Path,
+    baseline: FileSnapshot,
+) -> FileSnapshot:
+    """Avoid hashing when the file and parent metadata still match a baseline."""
+    try:
+        directory_descriptor, parent_stat = _open_directory(path.parent)
+    except PersistenceError as error:
+        if isinstance(error.__cause__, FileNotFoundError):
+            if not baseline.exists and baseline.parent_device is None:
+                return baseline
+            return FileSnapshot.missing()
+        raise
+    try:
+        try:
+            file_stat = os.stat(
+                path.name,
+                dir_fd=directory_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            missing = FileSnapshot.missing(
+                parent_device=parent_stat.st_dev,
+                parent_inode=parent_stat.st_ino,
+            )
+            return baseline if missing == baseline else missing
+
+        metadata_matches = baseline.exists and (
+            baseline.size,
+            baseline.mtime_ns,
+            baseline.ctime_ns,
+            baseline.mode,
+            baseline.device,
+            baseline.inode,
+            baseline.parent_device,
+            baseline.parent_inode,
+        ) == (
+            file_stat.st_size,
+            file_stat.st_mtime_ns,
+            file_stat.st_ctime_ns,
+            stat.S_IMODE(file_stat.st_mode),
+            file_stat.st_dev,
+            file_stat.st_ino,
+            parent_stat.st_dev,
+            parent_stat.st_ino,
+        )
+        if metadata_matches:
+            return baseline
         return _snapshot_at(directory_descriptor, path.name, parent_stat)
     finally:
         os.close(directory_descriptor)

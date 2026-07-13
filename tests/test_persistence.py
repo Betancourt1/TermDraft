@@ -17,6 +17,7 @@ from termwriter.services.persistence import (
     atomic_save,
     load_file,
     snapshot_file,
+    snapshot_file_if_metadata_changed,
 )
 
 
@@ -284,6 +285,87 @@ def test_invalid_utf8_is_rejected(tmp_path: Path) -> None:
 def test_loading_missing_file_raises(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         load_file(tmp_path / "missing.md")
+
+
+def test_unchanged_metadata_reuses_snapshot_without_reading_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("unchanged", encoding="utf-8")
+    baseline = snapshot_file(path)
+
+    def fail_read(
+        directory_descriptor: int,
+        name: str,
+        parent_stat: os.stat_result,
+        *,
+        attempts: int = 2,
+    ) -> tuple[bytes, FileSnapshot]:
+        del directory_descriptor, name, parent_stat, attempts
+        raise AssertionError("unchanged watcher probes must not read file content")
+
+    monkeypatch.setattr(persistence, "_stable_read_at", fail_read)
+
+    current = snapshot_file_if_metadata_changed(path, baseline)
+
+    assert current is baseline
+
+
+def test_stat_first_snapshot_detects_rewrite_with_restored_mtime(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("aaaa", encoding="utf-8")
+    baseline = snapshot_file(path)
+    original_stat = path.stat()
+    path.write_text("bbbb", encoding="utf-8")
+    os.utime(path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    if path.stat().st_ctime_ns == baseline.ctime_ns:
+        pytest.skip("filesystem does not expose a changed ctime for this rewrite")
+
+    current = snapshot_file_if_metadata_changed(path, baseline)
+
+    assert current.digest != baseline.digest
+    assert current.mtime_ns == baseline.mtime_ns
+    assert current.ctime_ns != baseline.ctime_ns
+
+
+def test_metadata_touch_hashes_once_then_returns_to_stat_only_probes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("same", encoding="utf-8")
+    baseline = snapshot_file(path)
+    original_read = persistence._stable_read_at
+    reads = 0
+
+    def count_read(
+        directory_descriptor: int,
+        name: str,
+        parent_stat: os.stat_result,
+        *,
+        attempts: int = 2,
+    ) -> tuple[bytes, FileSnapshot]:
+        nonlocal reads
+        reads += 1
+        return original_read(
+            directory_descriptor,
+            name,
+            parent_stat,
+            attempts=attempts,
+        )
+
+    monkeypatch.setattr(persistence, "_stable_read_at", count_read)
+    assert baseline.mtime_ns is not None
+    os.utime(path, ns=(path.stat().st_atime_ns, baseline.mtime_ns + 1_000_000))
+
+    refreshed = snapshot_file_if_metadata_changed(path, baseline)
+    unchanged = snapshot_file_if_metadata_changed(path, refreshed)
+
+    assert refreshed.digest == baseline.digest
+    assert refreshed is not baseline
+    assert unchanged is refreshed
+    assert reads == 1
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO creation is POSIX-only")

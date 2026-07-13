@@ -50,6 +50,7 @@ class FileSnapshot:
     digest: str | None = None
     size: int | None = None
     mtime_ns: int | None = None
+    ctime_ns: int | None = None
     mode: int | None = None
     device: int | None = None
     inode: int | None = None

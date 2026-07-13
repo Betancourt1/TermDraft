@@ -26,6 +26,7 @@ _BASE_SNAPSHOT = FileSnapshot(
     digest=_BASE_DIGEST,
     size=4,
     mtime_ns=123,
+    ctime_ns=124,
     mode=0o600,
     device=10,
     inode=20,

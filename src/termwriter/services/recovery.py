@@ -863,6 +863,7 @@ def _snapshot_payload(snapshot: FileSnapshot) -> dict[str, object]:
         "digest": snapshot.digest,
         "size": snapshot.size,
         "mtime_ns": snapshot.mtime_ns,
+        "ctime_ns": snapshot.ctime_ns,
         "mode": snapshot.mode,
         "device": snapshot.device,
         "inode": snapshot.inode,
@@ -877,6 +878,7 @@ def _snapshot_from_payload(payload: Any) -> FileSnapshot:
     optional_fields = (
         "size",
         "mtime_ns",
+        "ctime_ns",
         "mode",
         "device",
         "inode",

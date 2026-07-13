@@ -611,13 +611,14 @@ async def test_watcher_probe_allows_edit_and_classifies_result_against_latest_di
     release = Event()
     probe_threads: list[int] = []
 
-    def blocked_probe(requested: Path) -> DiskProbe:
+    def blocked_probe(requested: Path, baseline: FileSnapshot) -> DiskProbe:
+        del baseline
         probe_threads.append(get_ident())
         started.set()
         assert release.wait(2)
         return probe_file(requested)
 
-    monkeypatch.setattr("termwriter.app.probe_file", blocked_probe)
+    monkeypatch.setattr("termwriter.app.probe_file_if_metadata_changed", blocked_probe)
 
     async with app.run_test(size=(100, 30)) as pilot:
         path.write_text("external", encoding="utf-8")

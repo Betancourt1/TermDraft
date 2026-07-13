@@ -406,10 +406,12 @@ saved baseline before a close or quit continuation can run.
 If a clean open file disappears or becomes inaccessible, a guarded transition offers Save local as,
 Continue without copy, or Cancel. Ctrl+S never recreates the missing original path silently.
 
-The active file is also checked every two seconds. A clean external edit reloads safely and leaves a
-visible `Reloaded externally` status. A dirty external edit, deletion, or inaccessible path keeps the
-editor source intact, marks a persistent conflict, and shows one warning; only an explicit save or
-transition opens the decision dialog. Checks pause while another modal workflow is active.
+The active file is also checked every two seconds. Unchanged file and parent metadata avoids reading
+or hashing the source; a size, time, mode, or identity change triggers the full content check. A clean
+external edit reloads safely and leaves a visible `Reloaded externally` status. A dirty external
+edit, deletion, or inaccessible path keeps the editor source intact, marks a persistent conflict,
+and shows one warning; only an explicit save or transition opens the decision dialog. Checks pause
+while another modal workflow is active.
 
 The same interval scans visible Markdown paths and folders in the background. External creates,
 deletes, and renames refresh the explorer and file-search index within about two seconds, or when
@@ -515,9 +517,11 @@ mode, Python environment, dependency versions, and workload, then compare the me
   Markdown-file conflict guard still applies, but recovery metadata is not a multi-writer history.
 - The watcher polls the active file plus one rotating inactive tab and scans visible workspace
   structure every two seconds. It is not an operating-system event watcher. Inactive changes set a
-  persistent `!` tab state but never reload a hidden editor or open a dialog. File probing and
-  workspace scanning run in workers, so a completed check can arrive after the disk changed again;
-  save and transition checks remain authoritative. Very large workspace trees cost more to rescan.
+  persistent `!` tab state but never reload a hidden editor or open a dialog. Periodic file probes
+  trust unchanged size, mtime, ctime, mode, file identity, and parent identity to skip hashing;
+  explicit save, transition, activation, and focus checks remain full-content and authoritative.
+  File probing and workspace scanning run in workers, so a completed check can arrive after the disk
+  changed again. Very large workspace trees cost more to rescan.
 - Files must be valid UTF-8, with or without a UTF-8 BOM.
 - Uniform LF and CRLF sources round-trip through edits. Textual prefers CRLF when it is present,
   otherwise LF and then CR. After explicit consent and an edit, a deliberately mixed file is

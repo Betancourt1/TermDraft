@@ -440,8 +440,11 @@ permissions.
 
 Checks run before save, before guarded close/quit transitions, when a tab is reactivated, on
 `AppFocus`, and every two seconds through Textual's interval timer. Each periodic pass probes the
-active document plus one rotating inactive tab, so hashing work stays bounded as tab counts grow.
-Probing occurs in a worker and classification occurs against the latest UI-thread document state.
+active document plus one rotating inactive tab. Periodic probes compare size, mtime, ctime, mode,
+file identity, and parent identity first; exact metadata matches reuse the immutable baseline without
+opening the file, while any difference performs the stable hashed read. Save, transition,
+activation, and focus checks keep using unconditional full hashes. Probing occurs in a worker and
+classification occurs against the latest UI-thread document state.
 The watcher path never opens a modal: it reloads a clean external edit only when that document is
 active. An inactive edit instead gets a persistent `!` tab state; activation performs the normal
 authoritative check and can then reload or report a conflict. Polling pauses while a modal, critical

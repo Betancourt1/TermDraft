@@ -72,6 +72,7 @@ from termwriter.services.external_changes import (
     ExternalChangeKind,
     classify_external_change,
     probe_file,
+    probe_file_if_metadata_changed,
 )
 from termwriter.services.persistence import (
     ExternalModificationError,
@@ -564,7 +565,7 @@ class TermWriterApp(App[None]):
         del event
         self.call_after_refresh(self._check_workspace_in_background)
         if self.document is not None and not self._has_modal:
-            self.call_after_refresh(self._check_external_in_background)
+            self.call_after_refresh(self._check_external_in_background, True)
 
     @property
     def _has_modal(self) -> bool:
@@ -2062,7 +2063,7 @@ class TermWriterApp(App[None]):
         self._continue_session_orphan_scan()
         self._refresh_status()
         if not newly_opened:
-            self.call_after_refresh(self._check_external_in_background)
+            self.call_after_refresh(self._check_external_in_background, True)
 
     def _continue_session_orphan_scan(self) -> None:
         if self._restoring_session_tabs:
@@ -3071,7 +3072,7 @@ class TermWriterApp(App[None]):
         if continuation is not None:
             continuation()
 
-    def _check_external_in_background(self) -> None:
+    def _check_external_in_background(self, force_full_hash: bool = False) -> None:
         document = self.document
         if (
             self._exit_requested
@@ -3098,10 +3099,14 @@ class TermWriterApp(App[None]):
         tickets = tuple(
             _WatchTicket(candidate, candidate.path, candidate.snapshot) for candidate in documents
         )
-        self._watch_probe_worker = self._watch_documents_worker(tickets)
+        self._watch_probe_worker = self._watch_documents_worker(tickets, force_full_hash)
 
     @work(group="document-probe", exclusive=True, thread=True, exit_on_error=False)
-    def _watch_documents_worker(self, tickets: tuple[_WatchTicket, ...]) -> None:
+    def _watch_documents_worker(
+        self,
+        tickets: tuple[_WatchTicket, ...],
+        force_full_hash: bool,
+    ) -> None:
         worker = get_current_worker()
         results: list[_WatchResult] = []
         for ticket in tickets:
@@ -3112,7 +3117,11 @@ class TermWriterApp(App[None]):
                     safe_path = self.workspace.validate_document_path(ticket.path)
                 except WorkspaceNotFoundError:
                     safe_path = ticket.path
-                probe = probe_file(safe_path)
+                probe = (
+                    probe_file(safe_path)
+                    if force_full_hash
+                    else probe_file_if_metadata_changed(safe_path, ticket.snapshot)
+                )
             except Exception as error:
                 probe = DiskProbe(ticket.path, None, str(error))
             results.append(_WatchResult(ticket, probe))

@@ -7,7 +7,11 @@ from enum import Enum, auto
 from pathlib import Path
 
 from termwriter.models.document import Document, FileSnapshot
-from termwriter.services.persistence import PersistenceError, snapshot_file
+from termwriter.services.persistence import (
+    PersistenceError,
+    snapshot_file,
+    snapshot_file_if_metadata_changed,
+)
 
 
 class ExternalChangeKind(Enum):
@@ -42,6 +46,15 @@ def probe_file(path: Path) -> DiskProbe:
     """Hash a path into a snapshot without raising expected access errors."""
     try:
         snapshot = snapshot_file(path)
+    except (OSError, PersistenceError) as error:
+        return DiskProbe(path=path, snapshot=None, error=str(error))
+    return DiskProbe(path=path, snapshot=snapshot)
+
+
+def probe_file_if_metadata_changed(path: Path, baseline: FileSnapshot) -> DiskProbe:
+    """Probe a watcher path, hashing only after its metadata changes."""
+    try:
+        snapshot = snapshot_file_if_metadata_changed(path, baseline)
     except (OSError, PersistenceError) as error:
         return DiskProbe(path=path, snapshot=None, error=str(error))
     return DiskProbe(path=path, snapshot=snapshot)
