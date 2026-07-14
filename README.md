@@ -75,23 +75,25 @@ Unicode-aware whole-word matching and time-limited regular expressions.
 From the repository:
 
 ```bash
+git clone https://github.com/Betancourt1/TermDraft.git
+cd TermDraft
 python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -e .
+python -m pip install .
 ```
 
 For development tools:
 
 ```bash
-pip install -e ".[dev]"
+python -m pip install -e ".[dev]"
 ```
 
 ## Releases and distribution
 
-Repository installation is the supported path while public distribution is prepared. After a
-public tagged release, the intended first-party package channel is a dedicated Homebrew tap. See
-[`docs/releasing.md`](docs/releasing.md) for the maintainer checklist, including the public package
-and tap validation. No public Homebrew formula is available yet.
+[GitHub Releases](https://github.com/Betancourt1/TermDraft/releases) is the canonical source for
+tagged artifacts and checksums. The intended first-party package channel is a dedicated Homebrew
+tap. See [`docs/releasing.md`](docs/releasing.md) for the maintainer checklist, including public
+artifact and tap validation. No public Homebrew formula is available yet.
 
 ## Running
 

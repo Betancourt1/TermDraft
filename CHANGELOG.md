@@ -5,6 +5,8 @@ Notable changes to TermDraft are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-07-14
+
 ### Added
 
 - Resizable file-explorer and editor/preview dividers.
@@ -39,3 +41,6 @@ Notable changes to TermDraft are recorded here. The format follows
 
 - Established the local-first terminal writing loop with a file explorer, Markdown source editor,
   rendered preview, protected saves, and crash-recovery journals.
+
+[Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v1.0.0

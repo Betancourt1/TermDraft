@@ -37,24 +37,29 @@ keep release preparation separate from feature work.
    git tag -a vX.Y.Z -m "TermDraft X.Y.Z"
    ```
 
-3. Push `main`, then push the tag.
+3. Push `main`, then push the tag:
+
+   ```bash
+   git push origin main
+   git push origin vX.Y.Z
+   ```
 4. Inspect the draft GitHub release before publishing it. Confirm the source distribution and wheel
    names, SHA-256 checksums, release notes, and macOS/Linux installation smoke results.
 5. Publish the GitHub release only after every artifact and check matches the tagged commit.
 
 ## 3. Update Homebrew after publication
 
-The first-party formula belongs in a separate `OWNER/homebrew-tap` repository. Keeping the tap
-separate preserves the application repository's source history while giving Homebrew formula
+The first-party formula belongs in the separate `Betancourt1/homebrew-tap` repository. Keeping the
+tap separate preserves the application repository's source history while giving Homebrew formula
 changes, audits, and rollbacks their own small history.
 
 1. Update the formula from the public source distribution URL, not a local artifact or draft URL.
 2. Copy the public source distribution's SHA-256 checksum into the formula.
-3. Commit and push the formula change in `OWNER/homebrew-tap`.
+3. Commit and push the formula change in `Betancourt1/homebrew-tap`.
 4. Test a clean install, the command, and removal:
 
    ```bash
-   brew install OWNER/tap/termdraft
+   brew install Betancourt1/tap/termdraft
    termdraft --version
    brew uninstall termdraft
    ```
@@ -63,7 +68,7 @@ changes, audits, and rollbacks their own small history.
 
    ```bash
    brew update
-   brew upgrade OWNER/tap/termdraft
+   brew upgrade Betancourt1/tap/termdraft
    termdraft --version
    brew uninstall termdraft
    ```
