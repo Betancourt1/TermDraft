@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import signal
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
 
 import pytest
+from textual.pilot import Pilot
 from textual.widgets import Button, Input, Static
 
 from termdraft.app import TermDraftApp, _RecoveryCleanupWorkerResult
@@ -62,6 +64,19 @@ def app_for_file(
         recovery_journal=recovery_journal or RecoveryJournal(path.parent / ".test-recovery"),
         session_store=session_store,
     )
+
+
+async def _wait_until(
+    pilot: Pilot[None],
+    predicate: Callable[[], bool],
+    *,
+    attempts: int = 200,
+) -> None:
+    for _ in range(attempts):
+        if predicate():
+            return
+        await pilot.pause(0.01)
+    raise AssertionError("Timed out waiting for application state")
 
 
 async def test_app_starts_and_opens_an_explicit_file(tmp_path: Path) -> None:
@@ -428,7 +443,16 @@ async def test_conflict_save_as_preserves_both_versions(tmp_path: Path) -> None:
         await pilot.press("ctrl+s")
         await pilot.click("#conflict-save-as")
         await pilot.press("enter")
-        await pilot.pause(0.03)
+        await _wait_until(
+            pilot,
+            lambda: bool(
+                app.document
+                and app.document.path == local_copy
+                and not app.document.dirty
+                and not app._critical_io
+                and local_copy.exists()
+            ),
+        )
 
         assert path.read_text(encoding="utf-8") == "external"
         assert local_copy.read_text(encoding="utf-8") == "xbase"
@@ -512,6 +536,17 @@ async def test_save_as_replaces_pending_recovery_timer_for_future_edits(
         await pilot.press("ctrl+s")
         await pilot.click("#conflict-save-as")
         await pilot.press("enter")
+
+        await _wait_until(
+            pilot,
+            lambda: bool(
+                app.document
+                and app.document.path == local_copy
+                and not app._critical_io
+                and not isinstance(app.screen, SaveAsDialog)
+                and journal.load(path) is None
+            ),
+        )
 
         assert app.document is not None
         assert app.document.path == local_copy
@@ -663,6 +698,7 @@ async def test_clean_deleted_file_can_be_explicitly_discarded_on_quit(tmp_path: 
         assert app.screen.allow_discard
 
         await pilot.click("#conflict-discard")
+        await _wait_until(pilot, lambda: not app.is_running)
         assert not app.is_running
 
 
@@ -1043,7 +1079,17 @@ async def test_mixed_line_ending_edit_requires_consent_and_normalizes(tmp_path: 
         assert app.document is None
 
         await pilot.click("#mixed-normalize")
-        await pilot.press("i", "x", "ctrl+s")
+        await _wait_until(
+            pilot,
+            lambda: app.document is not None and not isinstance(app.screen, MixedLineEndingsDialog),
+        )
+        await pilot.press("i", "x")
+        await _wait_until(pilot, lambda: bool(app.document and app.document.dirty))
+        await pilot.press("ctrl+s")
+        await _wait_until(
+            pilot,
+            lambda: bool(app.document and not app.document.dirty and not app._critical_io),
+        )
 
         assert app.document is not None
         assert app.document.line_ending_label == "CRLF"
@@ -1072,7 +1118,17 @@ async def test_lf_first_mixed_source_reports_textuals_crlf_target(tmp_path: Path
         assert isinstance(app.screen, MixedLineEndingsDialog)
         assert app.screen.target == "CRLF"
         await pilot.click("#mixed-normalize")
-        await pilot.press("i", "x", "ctrl+s")
+        await _wait_until(
+            pilot,
+            lambda: app.document is not None and not isinstance(app.screen, MixedLineEndingsDialog),
+        )
+        await pilot.press("i", "x")
+        await _wait_until(pilot, lambda: bool(app.document and app.document.dirty))
+        await pilot.press("ctrl+s")
+        await _wait_until(
+            pilot,
+            lambda: bool(app.document and not app.document.dirty and not app._critical_io),
+        )
 
         assert path.read_bytes() == b"xone\r\ntwo\r\nthree"
 
@@ -1524,6 +1580,7 @@ async def test_startup_can_restore_a_recovery_draft(tmp_path: Path) -> None:
         assert app.document is None
 
         await pilot.click("#recovery-restore")
+        await _wait_until(pilot, lambda: app.document is not None)
 
         assert app.document is not None
         assert app.document.text == "draft"
@@ -1532,6 +1589,16 @@ async def test_startup_can_restore_a_recovery_draft(tmp_path: Path) -> None:
         assert not app.document.recovery_conflict
 
         await pilot.press("ctrl+s")
+        await _wait_until(
+            pilot,
+            lambda: bool(
+                app.document
+                and not app.document.dirty
+                and not app._critical_io
+                and path.read_text(encoding="utf-8") == "draft"
+                and journal.load(path) is None
+            ),
+        )
         assert path.read_text(encoding="utf-8") == "draft"
         assert journal.load(path) is None
 
@@ -1681,11 +1748,7 @@ async def test_workspace_startup_recovers_a_deleted_source_via_save_as(
         assert app.screen.source_missing
         await pilot.pause()
         await pilot.click("#recovery-restore")
-
-        for _ in range(200):
-            if app.document is not None:
-                break
-            await pilot.pause(0.01)
+        await _wait_until(pilot, lambda: app.document is not None)
 
         assert app.document is not None
         assert app.document.path == path
@@ -1736,11 +1799,7 @@ async def test_workspace_startup_recovers_when_source_is_invalid_utf8(
         assert app.screen.source_missing
         await pilot.pause()
         await pilot.click("#recovery-restore")
-
-        for _ in range(200):
-            if app.document is not None:
-                break
-            await pilot.pause(0.01)
+        await _wait_until(pilot, lambda: app.document is not None)
 
         assert app.document is not None
         assert app.document.text == "draft"
