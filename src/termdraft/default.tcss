@@ -1,0 +1,376 @@
+/* Bundled defaults. ~/.termdraft/theme.tcss is loaded afterwards. */
+
+Screen {
+    layout: vertical;
+    background: $background;
+}
+
+#title-bar {
+    height: 1;
+    padding: 0 1;
+    background: $primary;
+    color: $text;
+    text-style: bold;
+}
+
+#document-tabs {
+    height: 3;
+    display: none;
+}
+
+#workspace {
+    height: 1fr;
+}
+
+#file-explorer {
+    width: 34;
+    min-width: 20;
+    max-width: 48;
+    height: 1fr;
+    background: $surface;
+}
+
+.horizontal-resize-handle {
+    width: 1;
+    height: 1fr;
+    background: $panel-lighten-2;
+    pointer: ew-resize;
+}
+
+.horizontal-resize-handle:hover {
+    background: $accent;
+}
+
+#explorer-title {
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+    text-style: bold;
+    text-overflow: ellipsis;
+}
+
+#file-tree {
+    height: 1fr;
+    overflow-x: hidden;
+}
+
+#workbench {
+    width: 1fr;
+    height: 1fr;
+}
+
+#markdown-editor {
+    width: 1fr;
+    min-width: 20;
+    height: 1fr;
+}
+
+.markdown-editor-buffer {
+    width: 1fr;
+    height: 1fr;
+    border: none;
+}
+
+.markdown-editor-buffer, #markdown-preview {
+    scrollbar-size-vertical: 1;
+    scrollbar-size-horizontal: 0;
+    scrollbar-background: transparent;
+    scrollbar-background-hover: transparent;
+    scrollbar-background-active: transparent;
+}
+
+#markdown-preview {
+    width: 1fr;
+    min-width: 20;
+    height: 1fr;
+    padding: 0 2;
+    overflow-y: auto;
+}
+
+#markdown-preview:focus {
+    outline: tall $accent;
+}
+
+#status-bar {
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+    color: $text-muted;
+    text-overflow: ellipsis;
+}
+
+ModalScreen {
+    align: center middle;
+    background: $background 65%;
+}
+
+.dialog {
+    width: 68;
+    max-width: 94%;
+    height: auto;
+    max-height: 90%;
+    padding: 1 2;
+    background: $surface;
+    border: round $primary;
+    overflow-y: auto;
+}
+
+.dialog-title {
+    height: 1;
+    margin-bottom: 1;
+    text-style: bold;
+}
+
+.dialog-message {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.dialog-buttons {
+    height: 3;
+    align-horizontal: right;
+}
+
+.dialog-buttons Button {
+    margin-left: 1;
+}
+
+#unsaved-dialog {
+    width: 60;
+    max-width: 94%;
+    padding: 0 1;
+}
+
+#search-dialog, #text-search-dialog {
+    height: 31;
+}
+
+#document-find-dialog {
+    height: 23;
+}
+
+#document-outline-dialog {
+    height: 28;
+}
+
+#recovery-manager-dialog {
+    height: 32;
+}
+
+#semantic-inspector-dialog {
+    height: 34;
+}
+
+#semantic-reader-dialog {
+    height: 36;
+}
+
+#coordinate-inspector-dialog {
+    height: auto;
+    max-height: 28;
+}
+
+#semantic-reader-content {
+    height: 1fr;
+    border: round $panel-lighten-2;
+    margin-bottom: 1;
+    padding: 0 1;
+}
+
+.semantic-reading-block {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.semantic-reading-label {
+    height: 1;
+    color: $text-muted;
+}
+
+.semantic-render-candidate, .semantic-rendered-block, .semantic-source-fallback {
+    height: auto;
+}
+
+.semantic-rendered-block, .semantic-source-fallback {
+    padding: 0 1;
+}
+
+.semantic-source-fallback {
+    background: $panel;
+}
+
+#semantic-blocks {
+    height: 1fr;
+    min-height: 6;
+    border: round $panel-lighten-2;
+    margin-bottom: 1;
+}
+
+#semantic-block-detail {
+    height: 9;
+    overflow-y: auto;
+    color: $text-muted;
+}
+
+#recovery-manager-records {
+    height: 1fr;
+    min-height: 5;
+    border: round $panel-lighten-2;
+    margin-bottom: 1;
+}
+
+#recovery-manager-detail {
+    height: auto;
+    min-height: 2;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#recovery-manager-target {
+    margin-bottom: 1;
+}
+
+#recovery-manager-buttons {
+    height: 6;
+    grid-size: 3 2;
+    grid-columns: 1fr 1fr 1fr;
+    grid-rows: 3 3;
+    grid-gutter: 0 1;
+}
+
+#recovery-manager-buttons Button {
+    width: 1fr;
+    margin: 0;
+}
+
+#recovery-retention-records {
+    height: 5;
+    min-height: 3;
+    border: round $panel-lighten-2;
+    margin-bottom: 1;
+}
+
+#recovery-retention-buttons {
+    height: 6;
+    grid-size: 1 2;
+    grid-columns: 1fr;
+    grid-rows: 3 3;
+}
+
+#recovery-retention-buttons Button {
+    width: 1fr;
+    margin: 0;
+}
+
+#search-input, #file-search-filter, #text-search-input {
+    margin-bottom: 1;
+}
+
+#document-find-input, #document-replace-input {
+    margin-bottom: 1;
+}
+
+#document-outline-input {
+    margin-bottom: 1;
+}
+
+#document-outline-status {
+    height: 1;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#document-outline-results {
+    height: 1fr;
+    border: round $panel-lighten-2;
+    margin-bottom: 1;
+}
+
+#document-find-case {
+    height: 2;
+}
+
+#document-find-status {
+    height: 1;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#document-find-buttons {
+    height: 6;
+    grid-size: 2 2;
+    grid-columns: 1fr 1fr;
+    grid-rows: 3 3;
+    grid-gutter: 0 1;
+}
+
+#document-find-buttons Button {
+    width: 1fr;
+    margin: 0;
+}
+
+#file-search-status {
+    height: 1;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#text-search-options {
+    height: 6;
+}
+
+#text-search-mode {
+    width: 1fr;
+    height: 3;
+}
+
+#text-search-case {
+    width: 1fr;
+    height: 3;
+}
+
+#text-search-filter {
+    margin-bottom: 1;
+}
+
+#search-results, #text-search-results {
+    height: 1fr;
+    border: round $panel-lighten-2;
+}
+
+#text-search-status {
+    height: 1;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#save-as-error {
+    color: $error;
+    height: auto;
+    min-height: 1;
+}
+
+#workspace-entry-feedback {
+    height: auto;
+    min-height: 1;
+}
+
+.workspace-entry-feedback--warning {
+    color: $warning;
+}
+
+.workspace-entry-feedback--error {
+    color: $error;
+}
+
+#help-shortcuts {
+    height: auto;
+}
+
+CommandPalette CommandList > .option-list--option {
+    padding: 0 3;
+}
+
+CommandPalette CommandList > .option-list--separator {
+    color: $background;
+}

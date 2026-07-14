@@ -9,12 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from termwriter.config import (
+from termdraft.config import (
     CONFIG_FILE_NAME,
     CONFIG_HOME_ENV,
     CONFIG_TEMPLATE,
     DEFAULT_KEYBINDINGS,
     KNOWN_BINDING_IDS,
+    LEGACY_CONFIG_HOME_ENV,
     THEME_FILE_NAME,
     THEME_TEMPLATE,
     ConfigError,
@@ -26,17 +27,29 @@ from termwriter.config import (
 )
 
 
-def test_config_root_defaults_to_dot_directory() -> None:
-    assert get_config_root(environ={}) == Path.home() / ".termwriter"
+def test_config_root_defaults_to_dot_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert get_config_root(environ={}) == tmp_path / ".termdraft"
 
 
 def test_config_root_honors_environment_and_explicit_path(tmp_path: Path) -> None:
     environment_root = tmp_path / "environment"
+    legacy_environment_root = tmp_path / "legacy-environment"
     explicit_root = tmp_path / "explicit"
-    environment = {CONFIG_HOME_ENV: str(environment_root)}
+    environment = {
+        CONFIG_HOME_ENV: str(environment_root),
+        LEGACY_CONFIG_HOME_ENV: str(legacy_environment_root),
+    }
 
     assert get_config_root(environ=environment) == environment_root
     assert get_config_root(explicit_root, environ=environment) == explicit_root
+    assert get_config_root(environ={LEGACY_CONFIG_HOME_ENV: str(legacy_environment_root)}) == (
+        legacy_environment_root
+    )
 
 
 def test_relative_config_roots_become_absolute(
@@ -49,9 +62,47 @@ def test_relative_config_roots_become_absolute(
     assert get_config_root(environ={CONFIG_HOME_ENV: "environment"}) == tmp_path / "environment"
 
 
-def test_empty_environment_root_is_rejected() -> None:
+@pytest.mark.parametrize("environment_name", [CONFIG_HOME_ENV, LEGACY_CONFIG_HOME_ENV])
+def test_empty_environment_root_is_rejected(environment_name: str) -> None:
     with pytest.raises(ConfigError, match="must not be empty"):
-        get_config_root(environ={CONFIG_HOME_ENV: "  "})
+        get_config_root(environ={environment_name: "  "})
+
+
+def test_config_root_prefers_existing_new_directory_over_legacy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    legacy_root = tmp_path / ".termwriter"
+    canonical_root = tmp_path / ".termdraft"
+    legacy_root.mkdir()
+
+    assert get_config_root(environ={}) == legacy_root
+
+    canonical_root.mkdir()
+
+    assert get_config_root(environ={}) == canonical_root
+
+
+def test_load_config_uses_existing_legacy_config_and_theme(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    legacy_root = tmp_path / ".termwriter"
+    legacy_root.mkdir()
+    (legacy_root / CONFIG_FILE_NAME).write_text(
+        "[editor]\nsoft_wrap = false\n",
+        encoding="utf-8",
+    )
+    legacy_theme = "#status-bar { color: red; }\n"
+    (legacy_root / THEME_FILE_NAME).write_text(legacy_theme, encoding="utf-8")
+
+    config = load_config(environ={})
+
+    assert config.root == legacy_root
+    assert config.editor.soft_wrap is False
+    assert config.theme_path.read_text(encoding="utf-8") == legacy_theme
 
 
 def test_missing_config_returns_effective_defaults(tmp_path: Path) -> None:
@@ -66,7 +117,7 @@ def test_missing_config_returns_effective_defaults(tmp_path: Path) -> None:
 
 
 def test_config_applies_editor_and_keybinding_overrides(tmp_path: Path) -> None:
-    root = tmp_path / ".termwriter"
+    root = tmp_path / ".termdraft"
     root.mkdir()
     (root / CONFIG_FILE_NAME).write_text(
         """\
@@ -130,7 +181,7 @@ command_cursor_left = "a"
     ],
 )
 def test_invalid_config_values_are_rejected(tmp_path: Path, content: str, message: str) -> None:
-    root = tmp_path / ".termwriter"
+    root = tmp_path / ".termdraft"
     root.mkdir()
     (root / CONFIG_FILE_NAME).write_text(content, encoding="utf-8")
 
@@ -143,7 +194,7 @@ def test_invalid_config_values_are_rejected(tmp_path: Path, content: str, messag
     ["ctrl+x,ctrl+x", "ctrl+x, ctrl+x"],
 )
 def test_duplicate_tokens_within_one_binding_are_rejected(tmp_path: Path, binding: str) -> None:
-    root = tmp_path / ".termwriter"
+    root = tmp_path / ".termdraft"
     root.mkdir()
     (root / CONFIG_FILE_NAME).write_text(f'[keybindings]\nsave = "{binding}"\n', encoding="utf-8")
 
@@ -152,7 +203,7 @@ def test_duplicate_tokens_within_one_binding_are_rejected(tmp_path: Path, bindin
 
 
 def test_duplicate_tokens_across_effective_bindings_are_rejected(tmp_path: Path) -> None:
-    root = tmp_path / ".termwriter"
+    root = tmp_path / ".termdraft"
     root.mkdir()
     (root / CONFIG_FILE_NAME).write_text('[keybindings]\nsave = "ctrl+q"\n', encoding="utf-8")
 
@@ -161,7 +212,7 @@ def test_duplicate_tokens_across_effective_bindings_are_rejected(tmp_path: Path)
 
 
 def test_command_navigation_key_collisions_are_rejected(tmp_path: Path) -> None:
-    root = tmp_path / ".termwriter"
+    root = tmp_path / ".termdraft"
     root.mkdir()
     (root / CONFIG_FILE_NAME).write_text(
         '[keybindings]\ncommand_cursor_left = "l"\n',
@@ -173,7 +224,7 @@ def test_command_navigation_key_collisions_are_rejected(tmp_path: Path) -> None:
 
 
 def test_duplicate_character_aliases_are_rejected(tmp_path: Path) -> None:
-    root = tmp_path / ".termwriter"
+    root = tmp_path / ".termdraft"
     root.mkdir()
     (root / CONFIG_FILE_NAME).write_text(
         '[keybindings]\nsave = "?"\nquit = "question_mark"\n',
@@ -186,7 +237,7 @@ def test_duplicate_character_aliases_are_rejected(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("binding", ["tab", "shift+tab", "enter", "TAB"])
 def test_preview_link_control_keys_are_reserved(tmp_path: Path, binding: str) -> None:
-    root = tmp_path / ".termwriter"
+    root = tmp_path / ".termdraft"
     root.mkdir()
     (root / CONFIG_FILE_NAME).write_text(
         f'[keybindings]\npreview_next_heading = "{binding}"\n',
@@ -198,7 +249,7 @@ def test_preview_link_control_keys_are_reserved(tmp_path: Path, binding: str) ->
 
 
 def test_invalid_toml_and_unreadable_shape_raise_clear_errors(tmp_path: Path) -> None:
-    root = tmp_path / ".termwriter"
+    root = tmp_path / ".termdraft"
     root.mkdir()
     (root / CONFIG_FILE_NAME).write_text("[editor\n", encoding="utf-8")
 
@@ -212,7 +263,7 @@ def test_invalid_toml_and_unreadable_shape_raise_clear_errors(tmp_path: Path) ->
 
 
 def test_templates_are_valid_and_initialization_is_private(tmp_path: Path) -> None:
-    root = tmp_path / ".termwriter"
+    root = tmp_path / ".termdraft"
 
     config = initialize_config(root)
 
@@ -228,7 +279,7 @@ def test_templates_are_valid_and_initialization_is_private(tmp_path: Path) -> No
 
 
 def test_initialization_does_not_replace_existing_files(tmp_path: Path) -> None:
-    root = tmp_path / ".termwriter"
+    root = tmp_path / ".termdraft"
     root.mkdir(mode=0o750)
     config_path = root / CONFIG_FILE_NAME
     theme_path = root / THEME_FILE_NAME
@@ -249,7 +300,7 @@ def test_initialization_does_not_replace_existing_files(tmp_path: Path) -> None:
 
 
 def test_initialization_fills_only_missing_file(tmp_path: Path) -> None:
-    root = tmp_path / ".termwriter"
+    root = tmp_path / ".termdraft"
     root.mkdir()
     config_path = root / CONFIG_FILE_NAME
     config_path.write_text("[editor]\nsoft_wrap = false\n", encoding="utf-8")
@@ -261,7 +312,7 @@ def test_initialization_fills_only_missing_file(tmp_path: Path) -> None:
 
 
 def test_initialization_rejects_non_directory_root(tmp_path: Path) -> None:
-    root = tmp_path / ".termwriter"
+    root = tmp_path / ".termdraft"
     root.write_text("not a directory", encoding="utf-8")
 
     with pytest.raises(ConfigError, match="not a directory"):
@@ -269,7 +320,7 @@ def test_initialization_rejects_non_directory_root(tmp_path: Path) -> None:
 
 
 def test_initialization_rejects_non_file_destination(tmp_path: Path) -> None:
-    root = tmp_path / ".termwriter"
+    root = tmp_path / ".termdraft"
     root.mkdir()
     (root / CONFIG_FILE_NAME).mkdir()
 
@@ -280,7 +331,7 @@ def test_initialization_rejects_non_file_destination(tmp_path: Path) -> None:
 def test_failed_initial_write_removes_partial_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    root = tmp_path / ".termwriter"
+    root = tmp_path / ".termdraft"
 
     def fail_write(_descriptor: int, _content: object) -> int:
         raise OSError("interrupted write")

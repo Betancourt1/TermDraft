@@ -9,14 +9,14 @@ from textual.content import Content
 from textual.widgets import Button
 from textual.widgets.markdown import MarkdownBlock
 
-from termwriter.icons import IMAGE_ICON, IMAGE_ICON_COLOR, TEXTUAL_IMAGE_ICON
-from termwriter.services.markdown_preview import (
+from termdraft.icons import IMAGE_ICON, IMAGE_ICON_COLOR, TEXTUAL_IMAGE_ICON
+from termdraft.services.markdown_preview import (
     FOOTNOTE_BACKREF_PREFIX,
     FOOTNOTE_DEFINITION_PREFIX,
     FOOTNOTE_LABEL_TOKEN,
     preview_parser,
 )
-from termwriter.widgets.preview import MarkdownPreview, PreviewHeading
+from termdraft.widgets.preview import MarkdownPreview, PreviewHeading
 
 
 def _token_types(tokens: list[Token]) -> list[str]:
@@ -460,7 +460,7 @@ async def test_malformed_reserved_fragment_stays_inert() -> None:
     app = PreviewApp()
     async with app.run_test() as pilot:
         preview = app.query_one(MarkdownPreview)
-        await preview.render_source("[boom](#termwriter-footnote-%5B)\n")
+        await preview.render_source("[boom](#termdraft-footnote-%5B)\n")
         preview.focus()
 
         await pilot.press("tab", "enter")

@@ -3,14 +3,14 @@ requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "termwriter"
+name = "termdraft"
 version = "0.3.0"
 description = "A local-first Markdown editor for the terminal"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "TermWriter contributors" }]
+authors = [{ name = "TermDraft contributors" }]
 keywords = ["markdown", "terminal", "text-editor", "tui"]
 classifiers = [
     "Environment :: Console",
@@ -42,14 +42,14 @@ dev = [
 ]
 
 [project.scripts]
-termwriter = "termwriter.cli:main"
-termwriter-benchmark = "termwriter.benchmark:main"
+termdraft = "termdraft.cli:main"
+termdraft-benchmark = "termdraft.benchmark:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-termwriter = ["*.tcss"]
+termdraft = ["*.tcss"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"

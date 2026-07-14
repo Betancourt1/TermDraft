@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from termwriter.app import TermWriterApp
-from termwriter.cli import SignalHandler, _run_with_shutdown_signals, main
-from termwriter.models.workspace import Workspace
+from termdraft.app import TermDraftApp
+from termdraft.cli import SignalHandler, _run_with_shutdown_signals, main
+from termdraft.models.workspace import Workspace
 
 
 def test_cli_reports_missing_path(
@@ -28,10 +28,10 @@ def test_cli_launches_valid_workspace(
 ) -> None:
     launched: list[Path] = []
 
-    def fake_run(app: TermWriterApp) -> None:
+    def fake_run(app: TermDraftApp) -> None:
         launched.append(app.workspace.root)
 
-    monkeypatch.setattr(TermWriterApp, "run", fake_run)
+    monkeypatch.setattr(TermDraftApp, "run", fake_run)
 
     result = main(["--config-dir", str(tmp_path / "config"), str(tmp_path)])
 
@@ -53,12 +53,12 @@ def test_cli_safe_mode_ignores_only_the_user_theme(
         "#title-bar { background: #010203; }\n",
         encoding="utf-8",
     )
-    launched: list[TermWriterApp] = []
+    launched: list[TermDraftApp] = []
 
-    def fake_run(app: TermWriterApp) -> None:
+    def fake_run(app: TermDraftApp) -> None:
         launched.append(app)
 
-    monkeypatch.setattr(TermWriterApp, "run", fake_run)
+    monkeypatch.setattr(TermDraftApp, "run", fake_run)
 
     result = main(["--config-dir", str(config_root), "--safe-mode", str(tmp_path)])
 
@@ -72,22 +72,22 @@ def test_cli_forwards_shutdown_signal_and_restores_handlers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app = TermWriterApp(Workspace.from_target(tmp_path))
+    app = TermDraftApp(Workspace.from_target(tmp_path))
     calls: list[tuple[int, SignalHandler]] = []
 
     def fake_signal(signal_number: int, handler: SignalHandler) -> SignalHandler:
         calls.append((signal_number, handler))
         return signal.SIG_IGN
 
-    def failed_run(running_app: TermWriterApp) -> None:
+    def failed_run(running_app: TermDraftApp) -> None:
         installed_handler = calls[0][1]
         assert callable(installed_handler)
         installed_handler(signal.SIGTERM, None)
         assert running_app is app
         raise RuntimeError("run failed")
 
-    monkeypatch.setattr("termwriter.cli.signal.signal", fake_signal)
-    monkeypatch.setattr(TermWriterApp, "run", failed_run)
+    monkeypatch.setattr("termdraft.cli.signal.signal", fake_signal)
+    monkeypatch.setattr(TermDraftApp, "run", failed_run)
 
     with pytest.raises(RuntimeError, match="run failed"):
         _run_with_shutdown_signals(app)
@@ -136,7 +136,7 @@ def test_cli_commands_show_effective_remapped_keys(
 
     assert result == 0
     output = capsys.readouterr().out
-    assert "TermWriter commands" in output
+    assert "TermDraft commands" in output
     assert "Ctrl+G" in output
     assert "Open the command palette" in output
     assert "Search workspace text (literal / fuzzy / word / regex)" in output

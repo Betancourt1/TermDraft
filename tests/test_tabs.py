@@ -9,24 +9,24 @@ import pytest
 from textual.pilot import Pilot
 from textual.widgets import Tab
 
-from termwriter.app import TermWriterApp
-from termwriter.config import load_config
-from termwriter.models.workspace import Workspace, WorkspaceAccessError
-from termwriter.screens.dialogs import (
+from termdraft.app import TermDraftApp
+from termdraft.config import load_config
+from termdraft.models.workspace import Workspace, WorkspaceAccessError
+from termdraft.screens.dialogs import (
     RecoveryManagerDialog,
     TextSearchDialog,
     UnsavedChangesDialog,
 )
-from termwriter.services.recovery import RecoveryJournal
-from termwriter.services.session import DocumentViewState, SessionState, SessionStore
+from termdraft.services.recovery import RecoveryJournal
+from termdraft.services.session import DocumentViewState, SessionState, SessionStore
 
 
 def _app(
     first: Path,
     *,
     recovery_debounce: float = 0.01,
-) -> TermWriterApp:
-    return TermWriterApp(
+) -> TermDraftApp:
+    return TermDraftApp(
         Workspace.from_target(first),
         preview_debounce=0.01,
         recovery_debounce=recovery_debounce,
@@ -35,7 +35,7 @@ def _app(
 
 
 async def _wait_for_document(
-    app: TermWriterApp,
+    app: TermDraftApp,
     pilot: Pilot[None],
     path: Path,
 ) -> None:
@@ -46,7 +46,7 @@ async def _wait_for_document(
     raise AssertionError(f"document did not activate: {path}")
 
 
-async def _open(app: TermWriterApp, pilot: Pilot[None], path: Path) -> None:
+async def _open(app: TermDraftApp, pilot: Pilot[None], path: Path) -> None:
     app._request_open(path)
     await _wait_for_document(app, pilot, path)
 
@@ -145,7 +145,7 @@ async def test_switch_flushes_recovery_before_long_debounce_expires(tmp_path: Pa
     first.write_text("first", encoding="utf-8")
     second.write_text("second", encoding="utf-8")
     journal = RecoveryJournal(tmp_path / "recovery")
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(first),
         preview_debounce=0.01,
         recovery_debounce=10,
@@ -171,7 +171,7 @@ async def test_dirty_tab_close_uses_cancel_then_discard_guard(tmp_path: Path) ->
     first.write_text("first", encoding="utf-8")
     second.write_text("second", encoding="utf-8")
     journal = RecoveryJournal(tmp_path / "recovery")
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(first),
         preview_debounce=0.01,
         recovery_debounce=0.01,
@@ -241,7 +241,7 @@ async def test_orderly_signal_journals_every_dirty_tab_even_during_quit_dialog(
     first.write_text("first", encoding="utf-8")
     second.write_text("second", encoding="utf-8")
     journal = RecoveryJournal(tmp_path / "recovery")
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(first),
         preview_debounce=0.01,
         recovery_debounce=60.0,
@@ -409,7 +409,7 @@ async def test_recovery_manager_protects_every_dirty_open_tab(tmp_path: Path) ->
     first.write_text("first", encoding="utf-8")
     second.write_text("second", encoding="utf-8")
     journal = RecoveryJournal(tmp_path / "recovery")
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(first),
         preview_debounce=0.01,
         recovery_debounce=0.01,
@@ -474,7 +474,7 @@ async def test_tab_bindings_are_remappable_and_commands_are_discoverable(
         '[keybindings]\nprevious_tab = "alt+h"\n',
         encoding="utf-8",
     )
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(first),
         preview_debounce=0.01,
         recovery_journal=RecoveryJournal(tmp_path / "recovery"),
@@ -512,7 +512,7 @@ async def test_directory_restart_restores_tab_order_and_active_tab(tmp_path: Pat
             (first, second),
         )
     )
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(tmp_path),
         preview_debounce=0.01,
         recovery_journal=RecoveryJournal(tmp_path / "recovery"),
@@ -552,7 +552,7 @@ async def test_directory_restart_defers_every_inactive_tab(tmp_path: Path) -> No
             paths,
         )
     )
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(tmp_path),
         preview_debounce=0.01,
         recovery_journal=RecoveryJournal(tmp_path / "recovery"),
@@ -586,7 +586,7 @@ async def test_explicit_file_launch_does_not_restore_other_session_tabs(
             (first, second),
         )
     )
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(first),
         preview_debounce=0.01,
         recovery_journal=RecoveryJournal(tmp_path / "recovery"),
@@ -611,7 +611,7 @@ async def test_missing_restored_tab_is_pruned_and_survivor_opens(tmp_path: Path)
             (missing, survivor),
         )
     )
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(tmp_path),
         preview_debounce=0.01,
         recovery_journal=RecoveryJournal(tmp_path / "recovery"),
@@ -649,7 +649,7 @@ async def test_invalid_deferred_tab_is_pruned_after_startup(
             (first, deferred),
         )
     )
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(tmp_path),
         preview_debounce=0.01,
         recovery_journal=RecoveryJournal(tmp_path / "recovery"),
@@ -700,7 +700,7 @@ async def test_transient_deferred_failure_can_be_retried_after_last_active_tab_c
             (first, deferred),
         )
     )
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(tmp_path),
         preview_debounce=0.01,
         recovery_journal=RecoveryJournal(tmp_path / "recovery"),
@@ -745,7 +745,7 @@ async def test_transient_deferred_failure_can_be_retried_after_last_active_tab_c
         assert app.document_tabs.active == retained.tab_id
 
 
-async def _wait_until_session_saved(app: TermWriterApp, pilot: Pilot[None]) -> None:
+async def _wait_until_session_saved(app: TermDraftApp, pilot: Pilot[None]) -> None:
     for _ in range(200):
         if not app._session_save_in_flight and app._pending_session_state is None:
             return

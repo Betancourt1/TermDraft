@@ -8,14 +8,14 @@ from pathlib import Path
 from textual.pilot import Pilot
 from textual.widgets import Button, Input, Static
 
-from termwriter.app import TermWriterApp
-from termwriter.models.workspace import Workspace
-from termwriter.screens.document_find import DocumentFindDialog
-from termwriter.services.recovery import RecoveryJournal
+from termdraft.app import TermDraftApp
+from termdraft.models.workspace import Workspace
+from termdraft.screens.document_find import DocumentFindDialog
+from termdraft.services.recovery import RecoveryJournal
 
 
-def _app(path: Path, journal: RecoveryJournal | None = None) -> TermWriterApp:
-    return TermWriterApp(
+def _app(path: Path, journal: RecoveryJournal | None = None) -> TermDraftApp:
+    return TermDraftApp(
         Workspace.from_target(path),
         preview_debounce=0.01,
         recovery_debounce=0.01,
@@ -31,7 +31,7 @@ async def _wait_until(pilot: Pilot[None], condition: Callable[[], bool]) -> None
     raise AssertionError("condition did not become true")
 
 
-def _selected_source(app: TermWriterApp) -> str:
+def _selected_source(app: TermDraftApp) -> str:
     return app.editor.document.get_text_range(*app.editor.selection)
 
 

@@ -72,9 +72,9 @@ jobs:
         run: |
           python -m venv .wheel-venv
           .wheel-venv/bin/python -m pip install dist/*.whl
-          .wheel-venv/bin/termwriter --version
-          .wheel-venv/bin/python -m termwriter --version
-          .wheel-venv/bin/termwriter --help
-          .wheel-venv/bin/termwriter --commands
-          .wheel-venv/bin/termwriter-benchmark --help
+          .wheel-venv/bin/termdraft --version
+          .wheel-venv/bin/python -m termdraft --version
+          .wheel-venv/bin/termdraft --help
+          .wheel-venv/bin/termdraft --commands
+          .wheel-venv/bin/termdraft-benchmark --help
           .wheel-venv/bin/python -m pip check

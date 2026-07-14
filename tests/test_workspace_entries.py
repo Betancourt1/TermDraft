@@ -7,19 +7,19 @@ from pathlib import Path
 import pytest
 from textual.widgets import Input, Static
 
-import termwriter.services.workspace_entries as workspace_entries
-from termwriter.app import TermWriterApp
-from termwriter.models.workspace import Workspace
-from termwriter.screens.dialogs import (
+import termdraft.services.workspace_entries as workspace_entries
+from termdraft.app import TermDraftApp
+from termdraft.models.workspace import Workspace
+from termdraft.screens.dialogs import (
     ConflictDialog,
     TrashWorkspaceEntryDialog,
     WorkspaceEntryDialog,
     WorkspaceEntryOperation,
 )
-from termwriter.services.external_changes import DiskProbe, probe_file
-from termwriter.services.recovery import RecoveryJournal
-from termwriter.services.session import DocumentViewState, SessionState, SessionStore
-from termwriter.services.workspace_entries import (
+from termdraft.services.external_changes import DiskProbe, probe_file
+from termdraft.services.recovery import RecoveryJournal
+from termdraft.services.session import DocumentViewState, SessionState, SessionStore
+from termdraft.services.workspace_entries import (
     WorkspaceEntryError,
     create_file,
     create_folder,
@@ -29,8 +29,8 @@ from termwriter.services.workspace_entries import (
 )
 
 
-def _app(target: Path, state_root: Path) -> TermWriterApp:
-    return TermWriterApp(
+def _app(target: Path, state_root: Path) -> TermDraftApp:
+    return TermDraftApp(
         Workspace.from_target(target),
         preview_debounce=0.01,
         recovery_journal=RecoveryJournal(state_root / "recovery"),
@@ -348,7 +348,7 @@ async def test_rename_marks_a_change_during_the_operation_as_a_conflict(
         source.write_text("external", encoding="utf-8")
         return original_rename(workspace, source, name)
 
-    monkeypatch.setattr("termwriter.app.rename_entry", change_then_rename)
+    monkeypatch.setattr("termdraft.app.rename_entry", change_then_rename)
 
     async with app.run_test(size=(100, 30)) as pilot:
         app.action_rename_entry()
@@ -394,7 +394,7 @@ async def test_rename_retargets_open_document_when_post_move_probe_fails(
             raise OSError("injected post-move probe failure")
         return original_probe(probed_path)
 
-    monkeypatch.setattr("termwriter.app.probe_file", fail_renamed_probe)
+    monkeypatch.setattr("termdraft.app.probe_file", fail_renamed_probe)
 
     async with app.run_test(size=(100, 30)) as pilot:
         app.action_rename_entry()

@@ -7,7 +7,7 @@ from dataclasses import asdict
 
 import pytest
 
-from termwriter.benchmark import (
+from termdraft.benchmark import (
     BenchmarkConfig,
     build_parser,
     make_markdown,

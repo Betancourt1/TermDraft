@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from termwriter.models.workspace import (
+from termdraft.models.workspace import (
     UnsafePathError,
     Workspace,
     WorkspaceNotFoundError,

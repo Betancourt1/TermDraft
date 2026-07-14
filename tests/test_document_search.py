@@ -1,6 +1,6 @@
 """Exact active-document matching and replacement helpers."""
 
-from termwriter.services.document_search import (
+from termdraft.services.document_search import (
     DocumentSearchMatch,
     find_document_matches,
     location_to_offset,

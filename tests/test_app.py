@@ -11,10 +11,10 @@ from threading import Event
 import pytest
 from textual.widgets import Button, Input, Static
 
-from termwriter.app import TermWriterApp, _RecoveryCleanupWorkerResult
-from termwriter.models.document import FileSnapshot
-from termwriter.models.workspace import Workspace
-from termwriter.screens.dialogs import (
+from termdraft.app import TermDraftApp, _RecoveryCleanupWorkerResult
+from termdraft.models.document import FileSnapshot
+from termdraft.models.workspace import Workspace
+from termdraft.screens.dialogs import (
     ConflictDialog,
     FileSearchDialog,
     HelpDialog,
@@ -26,23 +26,23 @@ from termwriter.screens.dialogs import (
     SaveAsDialog,
     UnsavedChangesDialog,
 )
-from termwriter.services.external_changes import DiskProbe
-from termwriter.services.persistence import (
+from termdraft.services.external_changes import DiskProbe
+from termdraft.services.persistence import (
     PersistenceError,
     SaveResult,
     atomic_save,
     load_file,
 )
-from termwriter.services.recovery import (
+from termdraft.services.recovery import (
     RecoveryJournal,
     RecoveryRecord,
     RecoveryRetentionOutcome,
     RecoveryRetentionResult,
 )
-from termwriter.services.session import DocumentViewState, SessionState, SessionStore
-from termwriter.widgets.editor import WORKBENCH_MIN_PANE_WIDTH
-from termwriter.widgets.file_tree import EXPLORER_MAX_WIDTH, EXPLORER_MIN_WIDTH
-from termwriter.widgets.scrollbar import ThinScrollBarRender
+from termdraft.services.session import DocumentViewState, SessionState, SessionStore
+from termdraft.widgets.editor import WORKBENCH_MIN_PANE_WIDTH
+from termdraft.widgets.file_tree import EXPLORER_MAX_WIDTH, EXPLORER_MIN_WIDTH
+from termdraft.widgets.scrollbar import ThinScrollBarRender
 
 
 def app_for_file(
@@ -53,8 +53,8 @@ def app_for_file(
     recovery_debounce: float = 0.5,
     recovery_journal: RecoveryJournal | None = None,
     session_store: SessionStore | None = None,
-) -> TermWriterApp:
-    return TermWriterApp(
+) -> TermDraftApp:
+    return TermDraftApp(
         Workspace.from_target(path),
         preview_debounce=debounce,
         external_poll_interval=external_poll_interval,
@@ -97,7 +97,7 @@ async def test_directory_session_reopens_last_document_and_view(tmp_path: Path) 
             ),
         )
     )
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(workspace_root),
         preview_debounce=0.01,
         recovery_journal=RecoveryJournal(tmp_path / "recovery"),
@@ -137,7 +137,7 @@ async def test_directory_session_restore_still_offers_missing_recovery_drafts(
         encoding="utf-8",
         base_snapshot=FileSnapshot.missing(),
     )
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(workspace_root),
         preview_debounce=0.01,
         recovery_journal=journal,
@@ -173,7 +173,7 @@ async def test_missing_session_active_path_is_pruned_without_opening_another_fil
             (DocumentViewState(missing), DocumentViewState(other)),
         )
     )
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(workspace),
         preview_debounce=0.01,
         recovery_journal=RecoveryJournal(tmp_path / "recovery"),
@@ -476,7 +476,7 @@ async def test_save_as_rejects_path_owned_by_deleted_open_tab(
             del args, kwargs
             raise AssertionError("Save As must not publish onto an open buffer path")
 
-        monkeypatch.setattr("termwriter.app.atomic_save", forbidden_save)
+        monkeypatch.setattr("termdraft.app.atomic_save", forbidden_save)
         await pilot.press("enter")
         for _ in range(200):
             if dialog.error is not None:
@@ -567,7 +567,7 @@ async def test_ancestor_swap_during_save_as_cannot_escape_workspace(
         original.write_text("external", encoding="utf-8")
         await pilot.press("ctrl+s")
         await pilot.click("#conflict-save-as")
-        monkeypatch.setattr("termwriter.app.atomic_save", redirected_save)
+        monkeypatch.setattr("termdraft.app.atomic_save", redirected_save)
         await pilot.press("enter")
 
         assert isinstance(app.screen, SaveAsDialog)
@@ -600,7 +600,7 @@ async def test_dirty_persistence_error_keeps_source_and_disk(
 
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.press("i", "x")
-        monkeypatch.setattr("termwriter.app.atomic_save", inaccessible_save)
+        monkeypatch.setattr("termdraft.app.atomic_save", inaccessible_save)
         await pilot.press("ctrl+s")
         await pilot.pause(0.1)
 
@@ -634,8 +634,8 @@ async def test_dirty_inaccessible_file_offers_save_as(
 
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.press("i", "x")
-        monkeypatch.setattr("termwriter.app.atomic_save", inaccessible_save)
-        monkeypatch.setattr("termwriter.app.probe_file", inaccessible_probe)
+        monkeypatch.setattr("termdraft.app.atomic_save", inaccessible_save)
+        monkeypatch.setattr("termdraft.app.probe_file", inaccessible_probe)
         await pilot.press("ctrl+s")
         await pilot.pause(0.1)
 
@@ -723,7 +723,7 @@ async def test_ancestor_swap_during_save_cannot_redirect_publication(
 
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.press("i", "x")
-        monkeypatch.setattr("termwriter.app.atomic_save", redirected_save)
+        monkeypatch.setattr("termdraft.app.atomic_save", redirected_save)
         await pilot.press("ctrl+s")
 
         assert isinstance(app.screen, ConflictDialog)
@@ -872,7 +872,7 @@ async def test_explorer_single_click_selects_and_double_click_opens(tmp_path: Pa
     second = tmp_path / "second.md"
     first.write_text("first", encoding="utf-8")
     second.write_text("second", encoding="utf-8")
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(tmp_path),
         recovery_journal=RecoveryJournal(tmp_path / "recovery"),
         session_store=SessionStore(tmp_path / "sessions"),
@@ -1126,7 +1126,7 @@ async def test_workspace_watcher_refreshes_external_files_and_folders(
     root.mkdir()
     existing = root / "existing.md"
     existing.write_text("existing", encoding="utf-8")
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(root),
         external_poll_interval=0.01,
         recovery_journal=RecoveryJournal(tmp_path / "recovery"),
@@ -1664,7 +1664,7 @@ async def test_workspace_startup_recovers_a_deleted_source_via_save_as(
         base_snapshot=loaded.snapshot,
     )
     path.unlink()
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(workspace),
         preview_debounce=0.01,
         external_poll_interval=2.0,
@@ -1716,7 +1716,7 @@ async def test_workspace_startup_recovers_when_source_is_invalid_utf8(
         base_snapshot=loaded.snapshot,
     )
     path.write_bytes(b"\xff\xfe")
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(workspace),
         recovery_journal=journal,
     )
@@ -1755,7 +1755,7 @@ async def test_discarding_one_orphan_defers_the_next_recovery_dialog(
             base_snapshot=loaded.snapshot,
         )
         path.unlink()
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(workspace),
         recovery_journal=journal,
     )

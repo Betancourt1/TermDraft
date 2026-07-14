@@ -9,12 +9,12 @@ from threading import Event
 import pytest
 from textual.pilot import Pilot
 
-from termwriter.app import TermWriterApp
-from termwriter.models.workspace import Workspace
-from termwriter.screens.dialogs import HelpDialog
-from termwriter.screens.semantic_inspector import SemanticInspectorDialog
-from termwriter.services.recovery import RecoveryJournal
-from termwriter.services.semantic_blocks import SemanticBlockMap, map_semantic_blocks
+from termdraft.app import TermDraftApp
+from termdraft.models.workspace import Workspace
+from termdraft.screens.dialogs import HelpDialog
+from termdraft.screens.semantic_inspector import SemanticInspectorDialog
+from termdraft.services.recovery import RecoveryJournal
+from termdraft.services.semantic_blocks import SemanticBlockMap, map_semantic_blocks
 
 
 async def _wait_until(
@@ -30,8 +30,8 @@ async def _wait_until(
     raise AssertionError("semantic inspector did not reach the expected state")
 
 
-def _app(path: Path) -> TermWriterApp:
-    return TermWriterApp(
+def _app(path: Path) -> TermDraftApp:
+    return TermDraftApp(
         Workspace.from_target(path),
         preview_debounce=0.01,
         recovery_journal=RecoveryJournal(path.parent / "recovery"),
@@ -75,7 +75,7 @@ async def test_stale_semantic_result_is_discarded_after_edit(
         assert release.wait(2)
         return map_semantic_blocks(source)
 
-    monkeypatch.setattr("termwriter.app.map_semantic_blocks", blocked_map)
+    monkeypatch.setattr("termdraft.app.map_semantic_blocks", blocked_map)
 
     async with app.run_test(size=(100, 30)) as pilot:
         app.action_inspect_semantic_blocks()
@@ -105,7 +105,7 @@ async def test_semantic_result_does_not_stack_over_an_existing_modal(
         assert release.wait(2)
         return map_semantic_blocks(source)
 
-    monkeypatch.setattr("termwriter.app.map_semantic_blocks", blocked_map)
+    monkeypatch.setattr("termdraft.app.map_semantic_blocks", blocked_map)
 
     async with app.run_test(size=(100, 30)) as pilot:
         app.action_inspect_semantic_blocks()

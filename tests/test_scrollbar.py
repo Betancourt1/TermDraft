@@ -1,6 +1,6 @@
-"""Tests for TermWriter's compact scrollbar renderer."""
+"""Tests for TermDraft's compact scrollbar renderer."""
 
-from termwriter.widgets.scrollbar import THIN_SCROLLBAR_GLYPH, ThinScrollBarRender
+from termdraft.widgets.scrollbar import THIN_SCROLLBAR_GLYPH, ThinScrollBarRender
 
 
 def test_thin_scrollbar_uses_half_cell_thumb_and_preserves_mouse_actions() -> None:

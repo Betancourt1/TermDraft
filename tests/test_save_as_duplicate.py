@@ -8,14 +8,14 @@ from pathlib import Path
 from textual.pilot import Pilot
 from textual.widgets import Input
 
-from termwriter.app import TermWriterApp
-from termwriter.models.workspace import Workspace
-from termwriter.screens.dialogs import SaveAsDialog, SaveAsOperation
-from termwriter.services.recovery import RecoveryJournal
+from termdraft.app import TermDraftApp
+from termdraft.models.workspace import Workspace
+from termdraft.screens.dialogs import SaveAsDialog, SaveAsOperation
+from termdraft.services.recovery import RecoveryJournal
 
 
-def _app(path: Path, journal: RecoveryJournal | None = None) -> TermWriterApp:
-    return TermWriterApp(
+def _app(path: Path, journal: RecoveryJournal | None = None) -> TermDraftApp:
+    return TermDraftApp(
         Workspace.from_target(path),
         preview_debounce=0.01,
         recovery_debounce=0.01,
@@ -31,7 +31,7 @@ async def _wait_until(pilot: Pilot[None], condition: Callable[[], bool]) -> None
     raise AssertionError("condition did not become true")
 
 
-async def _submit_path(pilot: Pilot[None], app: TermWriterApp, value: str) -> SaveAsDialog:
+async def _submit_path(pilot: Pilot[None], app: TermDraftApp, value: str) -> SaveAsDialog:
     dialog = app.screen
     assert isinstance(dialog, SaveAsDialog)
     dialog.query_one("#save-as-input", Input).value = value

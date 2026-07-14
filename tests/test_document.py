@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from termwriter.models.document import (
+from termdraft.models.document import (
     Document,
     FileSnapshot,
     LineEndingStyle,

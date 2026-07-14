@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from termwriter.services.markdown_continuation import (
+from termdraft.services.markdown_continuation import (
     MarkdownContinuationEdit,
     continuation_edit,
 )

@@ -7,12 +7,12 @@ from pathlib import Path
 from textual.pilot import Pilot
 from textual.widgets import OptionList
 
-from termwriter.app import TermWriterApp
-from termwriter.config import load_config
-from termwriter.models.workspace import Workspace
-from termwriter.screens.recent_documents import RecentDocumentsDialog
-from termwriter.services.recovery import RecoveryJournal
-from termwriter.services.session import (
+from termdraft.app import TermDraftApp
+from termdraft.config import load_config
+from termdraft.models.workspace import Workspace
+from termdraft.screens.recent_documents import RecentDocumentsDialog
+from termdraft.services.recovery import RecoveryJournal
+from termdraft.services.session import (
     MAX_SESSION_DOCUMENTS,
     DocumentViewState,
     SessionState,
@@ -25,9 +25,9 @@ def _app(
     store: SessionStore,
     *,
     config_root: Path | None = None,
-) -> TermWriterApp:
+) -> TermDraftApp:
     config = None if config_root is None else load_config(config_root)
-    return TermWriterApp(
+    return TermDraftApp(
         Workspace.from_target(target),
         preview_debounce=0.01,
         recovery_journal=RecoveryJournal(target.parent / ".test-recovery"),
@@ -37,7 +37,7 @@ def _app(
 
 
 async def _wait_for_document(
-    app: TermWriterApp,
+    app: TermDraftApp,
     pilot: Pilot[None],
     expected: Path,
 ) -> None:

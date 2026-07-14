@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from termwriter.services.session import (
+from termdraft.services.session import (
     MAX_SESSION_BYTES,
     MAX_SESSION_DOCUMENTS,
     DocumentViewState,
@@ -464,8 +464,8 @@ def test_successful_save_replaces_from_same_directory_and_syncs(
         syncs.append(descriptor)
         real_fsync(descriptor)
 
-    monkeypatch.setattr("termwriter.services.session.os.replace", tracking_replace)
-    monkeypatch.setattr("termwriter.services.session.os.fsync", tracking_fsync)
+    monkeypatch.setattr("termdraft.services.session.os.replace", tracking_replace)
+    monkeypatch.setattr("termdraft.services.session.os.fsync", tracking_fsync)
 
     store.save(_state(workspace))
 
@@ -493,7 +493,7 @@ def test_failed_replace_preserves_previous_session_and_cleans_temporary(
         del source, destination
         raise OSError("injected replacement failure")
 
-    monkeypatch.setattr("termwriter.services.session.os.replace", broken_replace)
+    monkeypatch.setattr("termdraft.services.session.os.replace", broken_replace)
 
     with pytest.raises(SessionError, match="Cannot save session state"):
         store.save(updated)
@@ -508,4 +508,28 @@ def test_default_session_root_honors_xdg_state_home(
 ) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
 
-    assert default_session_root() == tmp_path / "termwriter" / "sessions"
+    assert default_session_root() == tmp_path / "termdraft" / "sessions"
+
+
+def test_default_session_root_uses_existing_legacy_leaf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    legacy = tmp_path / "termwriter" / "sessions"
+    legacy.mkdir(parents=True)
+
+    assert default_session_root() == legacy
+
+
+def test_default_session_root_prefers_existing_new_leaf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    legacy = tmp_path / "termwriter" / "sessions"
+    canonical = tmp_path / "termdraft" / "sessions"
+    legacy.mkdir(parents=True)
+    canonical.mkdir(parents=True)
+
+    assert default_session_root() == canonical

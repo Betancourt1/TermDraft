@@ -2,11 +2,11 @@
 
 from pathlib import Path
 
-from termwriter.app import TermWriterApp
-from termwriter.models.document import Document, FileSnapshot
-from termwriter.models.workspace import Workspace
-from termwriter.services.recovery import RecoveryJournal
-from termwriter.widgets.status_bar import TermWriterStatusBar
+from termdraft.app import TermDraftApp
+from termdraft.models.document import Document, FileSnapshot
+from termdraft.models.workspace import Workspace
+from termdraft.services.recovery import RecoveryJournal
+from termdraft.widgets.status_bar import TermDraftStatusBar
 
 
 async def test_persistent_safety_markers_precede_a_long_path(tmp_path: Path) -> None:
@@ -20,14 +20,14 @@ async def test_persistent_safety_markers_precede_a_long_path(tmp_path: Path) -> 
         conflict=True,
         recovery_saved=True,
     )
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(path),
         preview_debounce=0.01,
         recovery_journal=RecoveryJournal(tmp_path / "recovery"),
     )
 
     async with app.run_test(size=(100, 20)):
-        status = app.query_one(TermWriterStatusBar)
+        status = app.query_one(TermDraftStatusBar)
         status.show_document(document, root=tmp_path, mode="COMMAND")
 
         rendered = str(status.render())
@@ -46,7 +46,7 @@ async def test_persistent_safety_markers_precede_a_long_path(tmp_path: Path) -> 
 async def test_narrow_terminal_keeps_safety_markers_visible(tmp_path: Path) -> None:
     path = tmp_path / ("very-long-" * 12 + "draft.md")
     path.write_text("saved", encoding="utf-8")
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(path),
         preview_debounce=0.01,
         recovery_journal=RecoveryJournal(tmp_path / "recovery"),
@@ -61,7 +61,7 @@ async def test_narrow_terminal_keeps_safety_markers_visible(tmp_path: Path) -> N
         app._refresh_status()
         await pilot.pause()
 
-        visible_status = app.query_one(TermWriterStatusBar).render_line(0).text
+        visible_status = app.query_one(TermDraftStatusBar).render_line(0).text
         assert "CONFLICT" in visible_status
         assert "● modified" in visible_status
         assert "RECOVERY STORED" in visible_status

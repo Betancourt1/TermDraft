@@ -9,21 +9,21 @@ from textual.command import CommandList, SearchIcon
 from textual.filter import Monochrome
 from textual.widgets import Input, Static
 
-from termwriter.app import TermWriterApp
-from termwriter.config import EditorConfig, TermWriterConfig, load_config
-from termwriter.icons import SEARCH_ICON, SEARCH_ICON_COLOR
-from termwriter.models.workspace import Workspace
-from termwriter.screens.dialogs import HelpDialog
-from termwriter.services.recovery import RecoveryJournal
+from termdraft.app import TermDraftApp
+from termdraft.config import EditorConfig, TermDraftConfig, load_config
+from termdraft.icons import SEARCH_ICON, SEARCH_ICON_COLOR
+from termdraft.models.workspace import Workspace
+from termdraft.screens.dialogs import HelpDialog
+from termdraft.services.recovery import RecoveryJournal
 
 
 def _app(
     path: Path,
-    config: TermWriterConfig | None = None,
+    config: TermDraftConfig | None = None,
     *,
     use_user_theme: bool = True,
-) -> TermWriterApp:
-    return TermWriterApp(
+) -> TermDraftApp:
+    return TermDraftApp(
         Workspace.from_target(path),
         preview_debounce=0.01,
         recovery_journal=RecoveryJournal(path.parent / ".test-recovery"),
@@ -53,7 +53,7 @@ def test_default_theme_is_black_and_grayscale(tmp_path: Path) -> None:
     )
     parsed_colors = [Color.parse(color) for color in colors if color is not None]
 
-    assert theme.name == "termwriter-monochrome"
+    assert theme.name == "termdraft-monochrome"
     assert theme.background == "#000000"
     assert len(parsed_colors) == len(colors)
     assert all(color.r == color.g == color.b for color in parsed_colors)
@@ -145,7 +145,7 @@ async def test_enter_does_not_continue_indented_code_but_keeps_nested_lists(
 async def test_list_continuation_can_be_disabled(tmp_path: Path) -> None:
     path = tmp_path / "list.md"
     path.write_text("- item", encoding="utf-8")
-    config = TermWriterConfig(
+    config = TermDraftConfig(
         root=tmp_path / "config",
         editor=EditorConfig(auto_continue_lists=False),
     )
@@ -323,7 +323,7 @@ async def test_invalid_user_theme_is_ignored_with_warning(tmp_path: Path) -> Non
         assert len(notifications) == 1
         assert notifications[0].title == "Custom theme ignored"
         assert str(theme_path) in notifications[0].message
-        assert "restart TermWriter" in notifications[0].message
+        assert "restart TermDraft" in notifications[0].message
 
 
 async def test_safe_mode_ignores_theme_but_keeps_editor_config(tmp_path: Path) -> None:

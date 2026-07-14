@@ -8,8 +8,8 @@ from time import monotonic
 
 import pytest
 
-from termwriter.services.persistence import LoadedFile, load_file
-from termwriter.services.text_search import (
+from termdraft.services.persistence import LoadedFile, load_file
+from termdraft.services.text_search import (
     MAX_PREVIEW_LENGTH,
     MAX_REGEX_LENGTH,
     TextSearchMode,
@@ -367,7 +367,7 @@ def test_file_failures_become_warnings_without_hiding_other_matches(
             raise PermissionError("permission denied")
         return safe_load(path)
 
-    monkeypatch.setattr("termwriter.services.text_search.load_file", fail_one_file)
+    monkeypatch.setattr("termdraft.services.text_search.load_file", fail_one_file)
 
     result = search_text((missing, invalid, unreadable, valid), "needle")
 
@@ -480,7 +480,7 @@ def test_cancelled_search_stops_before_loading_more_files(
         loaded_paths.append(path)
         return safe_load(path)
 
-    monkeypatch.setattr("termwriter.services.text_search.load_file", tracked_load)
+    monkeypatch.setattr("termdraft.services.text_search.load_file", tracked_load)
 
     result = search_text(
         (first, second),
@@ -597,7 +597,7 @@ def test_fuzzy_text_search_checks_cancellation_within_a_source_line(
         checks_after_load += 1
         return checks_after_load >= 4
 
-    monkeypatch.setattr("termwriter.services.text_search.load_file", tracked_load)
+    monkeypatch.setattr("termdraft.services.text_search.load_file", tracked_load)
 
     result = search_text(
         (path,),

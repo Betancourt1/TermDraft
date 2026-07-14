@@ -4,7 +4,7 @@ from itertools import pairwise
 
 import pytest
 
-from termwriter.services.semantic_blocks import map_semantic_blocks
+from termdraft.services.semantic_blocks import map_semantic_blocks
 
 SEMANTIC_CORPUS = (
     pytest.param("", id="empty"),

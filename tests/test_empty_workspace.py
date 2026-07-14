@@ -2,13 +2,13 @@
 
 from pathlib import Path
 
-from termwriter.app import TermWriterApp
-from termwriter.models.workspace import Workspace
-from termwriter.services.recovery import RecoveryJournal
+from termdraft.app import TermDraftApp
+from termdraft.models.workspace import Workspace
+from termdraft.services.recovery import RecoveryJournal
 
 
 async def test_empty_workspace_explains_create_open_and_help_actions(tmp_path: Path) -> None:
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(tmp_path),
         preview_debounce=0.01,
         recovery_journal=RecoveryJournal(tmp_path / "recovery"),

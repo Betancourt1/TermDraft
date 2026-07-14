@@ -48,11 +48,11 @@ jobs:
           project_version = project["project"]["version"]
 
           sys.path.insert(0, str(Path("src").resolve()))
-          import termwriter
+          import termdraft
 
           versions = {
               "pyproject.toml project.version": project_version,
-              "termwriter.__version__": termwriter.__version__,
+              "termdraft.__version__": termdraft.__version__,
           }
           mismatches = {source: version for source, version in versions.items() if version != expected}
           if mismatches:
@@ -81,14 +81,14 @@ jobs:
 
       - name: Smoke-test wheel in a clean environment
         run: |
-          python -m venv "$RUNNER_TEMP/termwriter-release-smoke"
-          "$RUNNER_TEMP/termwriter-release-smoke/bin/python" -m pip install dist/*.whl
-          "$RUNNER_TEMP/termwriter-release-smoke/bin/termwriter" --version
-          "$RUNNER_TEMP/termwriter-release-smoke/bin/python" -m termwriter --version
-          "$RUNNER_TEMP/termwriter-release-smoke/bin/termwriter" --help
-          "$RUNNER_TEMP/termwriter-release-smoke/bin/termwriter" --commands
-          "$RUNNER_TEMP/termwriter-release-smoke/bin/termwriter-benchmark" --help
-          "$RUNNER_TEMP/termwriter-release-smoke/bin/python" -m pip check
+          python -m venv "$RUNNER_TEMP/termdraft-release-smoke"
+          "$RUNNER_TEMP/termdraft-release-smoke/bin/python" -m pip install dist/*.whl
+          "$RUNNER_TEMP/termdraft-release-smoke/bin/termdraft" --version
+          "$RUNNER_TEMP/termdraft-release-smoke/bin/python" -m termdraft --version
+          "$RUNNER_TEMP/termdraft-release-smoke/bin/termdraft" --help
+          "$RUNNER_TEMP/termdraft-release-smoke/bin/termdraft" --commands
+          "$RUNNER_TEMP/termdraft-release-smoke/bin/termdraft-benchmark" --help
+          "$RUNNER_TEMP/termdraft-release-smoke/bin/python" -m pip check
 
       - name: Generate checksums
         run: |
@@ -106,4 +106,4 @@ jobs:
             --draft \
             --verify-tag \
             --generate-notes \
-            --title "TermWriter $GITHUB_REF_NAME"
+            --title "TermDraft $GITHUB_REF_NAME"

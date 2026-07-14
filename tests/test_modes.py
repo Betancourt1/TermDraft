@@ -6,16 +6,16 @@ from pathlib import Path
 
 from textual.widgets import Input
 
-from termwriter.app import TermWriterApp
-from termwriter.bindings import format_shortcut_help
-from termwriter.config import load_config
-from termwriter.models.workspace import Workspace
-from termwriter.screens.dialogs import FileSearchDialog
-from termwriter.services.recovery import RecoveryJournal
+from termdraft.app import TermDraftApp
+from termdraft.bindings import format_shortcut_help
+from termdraft.config import load_config
+from termdraft.models.workspace import Workspace
+from termdraft.screens.dialogs import FileSearchDialog
+from termdraft.services.recovery import RecoveryJournal
 
 
-def _app(path: Path, *, config_root: Path | None = None) -> TermWriterApp:
-    return TermWriterApp(
+def _app(path: Path, *, config_root: Path | None = None) -> TermDraftApp:
+    return TermDraftApp(
         Workspace.from_target(path),
         preview_debounce=0.01,
         recovery_journal=RecoveryJournal(path.parent / ".test-recovery"),

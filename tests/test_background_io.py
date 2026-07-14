@@ -10,10 +10,10 @@ import pytest
 from textual.pilot import Pilot
 from textual.widgets import Button, Input, TextArea
 
-from termwriter.app import TermWriterApp
-from termwriter.models.document import FileSnapshot
-from termwriter.models.workspace import ScanResult, Workspace
-from termwriter.screens.dialogs import (
+from termdraft.app import TermDraftApp
+from termdraft.models.document import FileSnapshot
+from termdraft.models.workspace import ScanResult, Workspace
+from termdraft.screens.dialogs import (
     ConflictDialog,
     FileSearchDialog,
     MixedLineEndingsDialog,
@@ -21,10 +21,10 @@ from termwriter.screens.dialogs import (
     SaveAsDialog,
     UnsavedChangesDialog,
 )
-from termwriter.services.external_changes import DiskProbe, probe_file
-from termwriter.services.persistence import LoadedFile, SaveResult, atomic_save, load_file
-from termwriter.services.recovery import RecoveryJournal, RecoveryRecord
-from termwriter.services.session import (
+from termdraft.services.external_changes import DiskProbe, probe_file
+from termdraft.services.persistence import LoadedFile, SaveResult, atomic_save, load_file
+from termdraft.services.recovery import RecoveryJournal, RecoveryRecord
+from termdraft.services.session import (
     DocumentViewState,
     SessionLoadResult,
     SessionState,
@@ -37,8 +37,8 @@ def _app(
     *,
     journal: RecoveryJournal | None = None,
     session_store: SessionStore | None = None,
-) -> TermWriterApp:
-    return TermWriterApp(
+) -> TermDraftApp:
+    return TermDraftApp(
         Workspace.from_target(path),
         preview_debounce=0.01,
         recovery_journal=journal or RecoveryJournal(path.parent / ".test-recovery"),
@@ -72,7 +72,7 @@ async def test_initial_document_load_runs_off_the_ui_thread(
         load_threads.append(get_ident())
         return load_file(requested)
 
-    monkeypatch.setattr("termwriter.app.load_file", tracked_load)
+    monkeypatch.setattr("termdraft.app.load_file", tracked_load)
     app = _app(path)
 
     async with app.run_test(size=(100, 30)):
@@ -314,7 +314,7 @@ async def test_recovery_publication_runs_off_ui_and_keeps_latest_edit(
     path = tmp_path / "note.md"
     path.write_text("base", encoding="utf-8")
     journal = RecoveryJournal(tmp_path / "recovery")
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(path),
         preview_debounce=0.01,
         recovery_debounce=10,
@@ -387,7 +387,7 @@ async def test_discard_waits_for_recovery_save_then_delete_without_resurrection(
     first = tmp_path / "first.md"
     first.write_text("first", encoding="utf-8")
     journal = RecoveryJournal(tmp_path / "recovery")
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(first),
         preview_debounce=0.01,
         recovery_debounce=10,
@@ -618,7 +618,7 @@ async def test_watcher_probe_allows_edit_and_classifies_result_against_latest_di
         assert release.wait(2)
         return probe_file(requested)
 
-    monkeypatch.setattr("termwriter.app.probe_file_if_metadata_changed", blocked_probe)
+    monkeypatch.setattr("termdraft.app.probe_file_if_metadata_changed", blocked_probe)
 
     async with app.run_test(size=(100, 30)) as pilot:
         path.write_text("external", encoding="utf-8")
@@ -655,7 +655,7 @@ async def test_edit_during_transition_probe_reenters_unsaved_guard(
         assert release.wait(2)
         return probe_file(requested)
 
-    monkeypatch.setattr("termwriter.app.probe_file", blocked_probe)
+    monkeypatch.setattr("termdraft.app.probe_file", blocked_probe)
 
     async with app.run_test(size=(100, 30)) as pilot:
         app.action_close_tab()
@@ -701,7 +701,7 @@ async def test_blocked_save_is_read_only_and_cannot_be_quit_mid_publication(
         assert release.wait(2)
         return atomic_save(path, text, encoding=encoding, expected=expected)
 
-    monkeypatch.setattr("termwriter.app.atomic_save", blocked_save)
+    monkeypatch.setattr("termdraft.app.atomic_save", blocked_save)
 
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.press("i", "x", "ctrl+s")
@@ -747,7 +747,7 @@ async def test_external_write_during_background_save_opens_conflict(
         assert release.wait(2)
         return atomic_save(path, text, encoding=encoding, expected=expected)
 
-    monkeypatch.setattr("termwriter.app.atomic_save", blocked_save)
+    monkeypatch.setattr("termdraft.app.atomic_save", blocked_save)
 
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.press("i", "x", "ctrl+s")
@@ -781,7 +781,7 @@ async def test_unexpected_save_worker_error_restores_editor(
         del encoding, expected
         raise RuntimeError("worker exploded")
 
-    monkeypatch.setattr("termwriter.app.atomic_save", fail_save)
+    monkeypatch.setattr("termdraft.app.atomic_save", fail_save)
 
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.press("i", "x", "ctrl+s")
@@ -831,7 +831,7 @@ async def test_save_as_dialog_stays_locked_until_background_publication_finishes
             assert release.wait(2)
             return atomic_save(target, text, encoding=encoding, expected=expected)
 
-        monkeypatch.setattr("termwriter.app.atomic_save", blocked_save)
+        monkeypatch.setattr("termdraft.app.atomic_save", blocked_save)
         await pilot.press("enter")
         await _wait_until(pilot, started.is_set)
 
@@ -874,8 +874,8 @@ async def test_orphan_source_validation_loads_off_the_ui_thread(
         load_threads.append(get_ident())
         return load_file(requested)
 
-    monkeypatch.setattr("termwriter.app.load_file", tracked_load)
-    app = TermWriterApp(
+    monkeypatch.setattr("termdraft.app.load_file", tracked_load)
+    app = TermDraftApp(
         Workspace.from_target(workspace),
         recovery_journal=journal,
     )

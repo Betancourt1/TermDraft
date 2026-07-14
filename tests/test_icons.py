@@ -1,9 +1,9 @@
-"""Tests for TermWriter's monochrome terminal icon set."""
+"""Tests for TermDraft's monochrome terminal icon set."""
 
 import regex
 from textual.color import Color
 
-from termwriter.icons import (
+from termdraft.icons import (
     FOLDER_ICON,
     FOLDER_ICON_COLOR,
     IMAGE_ICON,
@@ -14,7 +14,7 @@ from termwriter.icons import (
     SEARCH_ICON,
     SEARCH_ICON_COLOR,
 )
-from termwriter.widgets.file_tree import MarkdownDirectoryTree
+from termdraft.widgets.file_tree import MarkdownDirectoryTree
 
 
 def test_interface_uses_yazi_compatible_icons_instead_of_emoji() -> None:

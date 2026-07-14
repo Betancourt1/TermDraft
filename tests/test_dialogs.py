@@ -7,8 +7,8 @@ from textual import on
 from textual.app import App
 from textual.widgets import Button, Input, OptionList, Static
 
-from termwriter.models.document import FileSnapshot
-from termwriter.screens.dialogs import (
+from termdraft.models.document import FileSnapshot
+from termdraft.screens.dialogs import (
     RecoveryDeleteDialog,
     RecoveryManagerAction,
     RecoveryManagerDialog,
@@ -17,7 +17,7 @@ from termwriter.screens.dialogs import (
     RecoveryRetentionRequest,
     SaveAsDialog,
 )
-from termwriter.services.recovery import RecoveryJournal
+from termdraft.services.recovery import RecoveryJournal
 
 
 class SaveAsHarness(App[None]):
@@ -42,7 +42,7 @@ class RecoveryManagerHarness(App[None]):
     def __init__(self, dialog: RecoveryManagerDialog) -> None:
         self.dialog = dialog
         self.result: RecoveryManagerRequest | None = None
-        super().__init__(css_path=Path(__file__).parents[1] / "src" / "termwriter" / "default.tcss")
+        super().__init__(css_path=Path(__file__).parents[1] / "src" / "termdraft" / "default.tcss")
 
     def on_mount(self) -> None:
         self.push_screen(self.dialog, self._store_result)
@@ -60,7 +60,7 @@ class RecoveryDeleteFlowHarness(App[None]):
     def __init__(self, dialog: RecoveryManagerDialog) -> None:
         self.dialog = dialog
         self.confirmed: bool | None = None
-        super().__init__(css_path=Path(__file__).parents[1] / "src" / "termwriter" / "default.tcss")
+        super().__init__(css_path=Path(__file__).parents[1] / "src" / "termdraft" / "default.tcss")
 
     def on_mount(self) -> None:
         self.push_screen(self.dialog, self._show_confirmation)
@@ -81,7 +81,7 @@ class RecoveryRetentionHarness(App[None]):
 
     def __init__(self, dialog: RecoveryRetentionDialog) -> None:
         self.dialog = dialog
-        super().__init__(css_path=Path(__file__).parents[1] / "src" / "termwriter" / "default.tcss")
+        super().__init__(css_path=Path(__file__).parents[1] / "src" / "termdraft" / "default.tcss")
 
     def on_mount(self) -> None:
         self.push_screen(self.dialog)

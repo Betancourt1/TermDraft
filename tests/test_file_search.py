@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from termwriter.services.file_search import search_files
-from termwriter.services.path_filter import parse_path_filter
+from termdraft.services.file_search import search_files
+from termdraft.services.path_filter import parse_path_filter
 
 
 def test_file_search_prefers_filename_prefixes(tmp_path: Path) -> None:

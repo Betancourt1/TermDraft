@@ -5,12 +5,12 @@ from pathlib import Path
 import pytest
 from textual.app import App, ComposeResult
 
-from termwriter.app import TermWriterApp
-from termwriter.models.workspace import Workspace
-from termwriter.screens.coordinate_inspector import CoordinateInspectorDialog
-from termwriter.services.coordinate_diagnostic import diagnose_coordinate
-from termwriter.services.recovery import RecoveryJournal
-from termwriter.widgets.editor import MarkdownEditor
+from termdraft.app import TermDraftApp
+from termdraft.models.workspace import Workspace
+from termdraft.screens.coordinate_inspector import CoordinateInspectorDialog
+from termdraft.services.coordinate_diagnostic import diagnose_coordinate
+from termdraft.services.recovery import RecoveryJournal
+from termdraft.widgets.editor import MarkdownEditor
 
 
 @pytest.mark.parametrize(
@@ -133,7 +133,7 @@ async def test_matches_live_textual_wrapped_document() -> None:
 async def test_command_opens_read_only_coordinate_snapshot(tmp_path: Path) -> None:
     path = tmp_path / "unicode.md"
     path.write_text("a🙂\n", encoding="utf-8")
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(path),
         recovery_journal=RecoveryJournal(tmp_path / "recovery"),
     )
@@ -157,7 +157,7 @@ async def test_command_uses_exact_mixed_ending_source_offsets(tmp_path: Path) ->
     path = tmp_path / "mixed.md"
     source = "a\r\nb\nc\rd"
     path.write_bytes(source.encode("utf-8"))
-    app = TermWriterApp(
+    app = TermDraftApp(
         Workspace.from_target(path),
         recovery_journal=RecoveryJournal(tmp_path / "recovery"),
     )

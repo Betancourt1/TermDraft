@@ -12,8 +12,8 @@ from unittest.mock import patch
 
 import pytest
 
-from termwriter.models.document import FileSnapshot
-from termwriter.services.recovery import (
+from termdraft.models.document import FileSnapshot
+from termdraft.services.recovery import (
     RecoveryError,
     RecoveryJournal,
     RecoveryRecord,
@@ -117,8 +117,8 @@ def test_recovery_write_replaces_from_same_directory_and_syncs(
         syncs.append(descriptor)
         real_fsync(descriptor)
 
-    monkeypatch.setattr("termwriter.services.recovery.os.replace", tracking_replace)
-    monkeypatch.setattr("termwriter.services.recovery.os.fsync", tracking_fsync)
+    monkeypatch.setattr("termdraft.services.recovery.os.replace", tracking_replace)
+    monkeypatch.setattr("termdraft.services.recovery.os.fsync", tracking_fsync)
 
     journal.save(
         document_path=document,
@@ -152,7 +152,7 @@ def test_failed_replace_keeps_previous_journal_and_cleans_temporary_file(
         del source, destination
         raise OSError("injected replacement failure")
 
-    monkeypatch.setattr("termwriter.services.recovery.os.replace", broken_replace)
+    monkeypatch.setattr("termdraft.services.recovery.os.replace", broken_replace)
 
     with pytest.raises(RecoveryError, match="Cannot save recovery journal"):
         journal.save(
@@ -181,7 +181,7 @@ def test_failed_file_sync_leaves_no_partial_journal(
         del descriptor
         raise OSError("injected sync failure")
 
-    monkeypatch.setattr("termwriter.services.recovery.os.fsync", broken_fsync)
+    monkeypatch.setattr("termdraft.services.recovery.os.fsync", broken_fsync)
 
     with pytest.raises(RecoveryError, match="Cannot save recovery journal"):
         journal.save(
@@ -349,7 +349,31 @@ def test_default_root_honors_xdg_state_home(
 ) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
 
-    assert default_recovery_root() == tmp_path / "termwriter" / "recovery"
+    assert default_recovery_root() == tmp_path / "termdraft" / "recovery"
+
+
+def test_default_recovery_root_uses_existing_legacy_leaf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    legacy = tmp_path / "termwriter" / "recovery"
+    legacy.mkdir(parents=True)
+
+    assert default_recovery_root() == legacy
+
+
+def test_default_recovery_root_prefers_existing_new_leaf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    legacy = tmp_path / "termwriter" / "recovery"
+    canonical = tmp_path / "termdraft" / "recovery"
+    legacy.mkdir(parents=True)
+    canonical.mkdir(parents=True)
+
+    assert default_recovery_root() == canonical
 
 
 def test_legacy_digest_only_journal_loads_with_unknown_origin(tmp_path: Path) -> None:
@@ -744,7 +768,7 @@ def test_restore_failure_keeps_quarantined_bytes(
         del args, kwargs
         raise OSError("injected restore failure")
 
-    monkeypatch.setattr("termwriter.services.recovery.os.link", broken_link)
+    monkeypatch.setattr("termdraft.services.recovery.os.link", broken_link)
 
     with pytest.raises(RecoveryError, match="injected restore failure"):
         journal.restore_quarantined(record)
@@ -777,7 +801,7 @@ def test_restore_sync_failure_leaves_two_exact_safe_copies(
         assert directory == journal.state_root
         raise OSError("injected directory sync failure")
 
-    monkeypatch.setattr("termwriter.services.recovery._sync_directory", broken_sync)
+    monkeypatch.setattr("termdraft.services.recovery._sync_directory", broken_sync)
 
     with pytest.raises(RecoveryError, match="injected directory sync failure"):
         journal.restore_quarantined(record)

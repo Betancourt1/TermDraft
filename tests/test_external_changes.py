@@ -8,15 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from termwriter.models.document import Document, FileSnapshot
-from termwriter.services.external_changes import (
+from termdraft.models.document import Document, FileSnapshot
+from termdraft.services.external_changes import (
     DiskProbe,
     ExternalChangeKind,
     classify_external_change,
     detect_external_change,
     probe_file,
 )
-from termwriter.services.persistence import load_file
+from termdraft.services.persistence import load_file
 
 
 def open_document(path: Path) -> Document:
@@ -77,7 +77,7 @@ def test_probe_file_captures_an_inaccessible_path(
     def fail(_path: Path) -> FileSnapshot:
         raise PermissionError("permission denied")
 
-    monkeypatch.setattr("termwriter.services.external_changes.snapshot_file", fail)
+    monkeypatch.setattr("termdraft.services.external_changes.snapshot_file", fail)
 
     probe = probe_file(path)
 
@@ -93,7 +93,7 @@ def test_classification_is_pure_and_does_not_probe_disk(
     def fail(_path: Path) -> FileSnapshot:
         raise AssertionError("classification must not access disk")
 
-    monkeypatch.setattr("termwriter.services.external_changes.snapshot_file", fail)
+    monkeypatch.setattr("termdraft.services.external_changes.snapshot_file", fail)
 
     change = classify_external_change(
         baseline,

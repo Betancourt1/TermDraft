@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from termwriter.models.document import FileSnapshot
-from termwriter.services import persistence
-from termwriter.services.persistence import (
+from termdraft.models.document import FileSnapshot
+from termdraft.services import persistence
+from termdraft.services.persistence import (
     ExternalModificationError,
     InvalidEncodingError,
     PersistenceError,
@@ -77,7 +77,7 @@ def test_atomic_save_uses_same_directory_replacement(
             dst_dir_fd=dst_dir_fd,
         )
 
-    monkeypatch.setattr("termwriter.services.persistence.os.replace", tracking_replace)
+    monkeypatch.setattr("termdraft.services.persistence.os.replace", tracking_replace)
 
     atomic_save(path, "after", encoding="utf-8", expected=loaded.snapshot)
 
@@ -103,7 +103,7 @@ def test_failed_atomic_replace_does_not_corrupt_original(
         del source, destination, src_dir_fd, dst_dir_fd
         raise OSError("injected replacement failure")
 
-    monkeypatch.setattr("termwriter.services.persistence.os.replace", broken_replace)
+    monkeypatch.setattr("termdraft.services.persistence.os.replace", broken_replace)
 
     with pytest.raises(PersistenceError, match="atomically publish"):
         atomic_save(path, "new text", encoding="utf-8", expected=loaded.snapshot)
@@ -257,7 +257,7 @@ def test_new_file_save_does_not_overwrite_a_racing_creator(
         path.write_text("racing version", encoding="utf-8")
         raise FileExistsError
 
-    monkeypatch.setattr("termwriter.services.persistence.os.link", racing_link)
+    monkeypatch.setattr("termdraft.services.persistence.os.link", racing_link)
 
     with pytest.raises(ExternalModificationError):
         atomic_save(path, "local", encoding="utf-8", expected=expected)

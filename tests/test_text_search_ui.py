@@ -9,15 +9,15 @@ from typing import Any
 import pytest
 from textual.widgets import Checkbox, Input, Select, Static
 
-from termwriter.app import TermWriterApp
-from termwriter.models.workspace import Workspace
-from termwriter.screens.dialogs import TextSearchDialog, UnsavedChangesDialog
-from termwriter.services.recovery import RecoveryJournal
-from termwriter.services.text_search import TextSearchMode
+from termdraft.app import TermDraftApp
+from termdraft.models.workspace import Workspace
+from termdraft.screens.dialogs import TextSearchDialog, UnsavedChangesDialog
+from termdraft.services.recovery import RecoveryJournal
+from termdraft.services.text_search import TextSearchMode
 
 
-def _app(path: Path) -> TermWriterApp:
-    return TermWriterApp(
+def _app(path: Path) -> TermDraftApp:
+    return TermDraftApp(
         Workspace.from_target(path),
         preview_debounce=0.01,
         recovery_journal=RecoveryJournal(path.parent / ".test-recovery"),

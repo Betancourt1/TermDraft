@@ -10,15 +10,15 @@ from textual.pilot import Pilot
 from textual.widgets import Input, OptionList
 from textual.widgets.markdown import MarkdownBlock
 
-from termwriter.app import TermWriterApp
-from termwriter.models.workspace import Workspace
-from termwriter.screens.document_outline import (
+from termdraft.app import TermDraftApp
+from termdraft.models.workspace import Workspace
+from termdraft.screens.document_outline import (
     DocumentOutlineDialog,
     OutlineDestination,
     OutlineSelection,
 )
-from termwriter.services.recovery import RecoveryJournal
-from termwriter.widgets.preview import PreviewHeading
+from termdraft.services.recovery import RecoveryJournal
+from termdraft.widgets.preview import PreviewHeading
 
 
 class OutlineHarness(App[None]):
@@ -27,7 +27,7 @@ class OutlineHarness(App[None]):
     def __init__(self, headings: tuple[PreviewHeading, ...]) -> None:
         self.dialog = DocumentOutlineDialog(headings)
         self.result: OutlineSelection | None = None
-        super().__init__(css_path=Path(__file__).parents[1] / "src" / "termwriter" / "default.tcss")
+        super().__init__(css_path=Path(__file__).parents[1] / "src" / "termdraft" / "default.tcss")
 
     def on_mount(self) -> None:
         self.push_screen(self.dialog, self._store_result)
@@ -36,8 +36,8 @@ class OutlineHarness(App[None]):
         self.result = result
 
 
-def _app(path: Path, *, debounce: float = 0.01) -> TermWriterApp:
-    return TermWriterApp(
+def _app(path: Path, *, debounce: float = 0.01) -> TermDraftApp:
+    return TermDraftApp(
         Workspace.from_target(path),
         preview_debounce=debounce,
         recovery_journal=RecoveryJournal(path.parent / ".test-recovery"),

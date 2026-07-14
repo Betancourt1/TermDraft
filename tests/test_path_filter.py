@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from termwriter.services.path_filter import PathFilterError, parse_path_filter
+from termdraft.services.path_filter import PathFilterError, parse_path_filter
 
 
 def test_empty_path_filter_is_disabled() -> None:
