@@ -455,7 +455,7 @@ async def test_tab_switch_is_ignored_during_critical_file_operation(tmp_path: Pa
         assert app.document_tabs.display
 
         app._critical_io = False
-        first_tab = next(opened for opened in app._open_documents if opened.document.path == first)
+        first_tab = next(opened for opened in app._open_documents if app._tab_path(opened) == first)
         await pilot.click(f"#{first_tab.tab_id}")
         assert app.document is not None
         assert app.document.path == first
@@ -595,7 +595,7 @@ async def test_explicit_file_launch_does_not_restore_other_session_tabs(
 
     async with app.run_test(size=(100, 30)):
         assert app.document is not None and app.document.path == first
-        assert [opened.document.path for opened in app._open_documents] == [first]
+        assert [app._tab_path(opened) for opened in app._open_documents] == [first]
 
 
 async def test_missing_restored_tab_is_pruned_and_survivor_opens(tmp_path: Path) -> None:

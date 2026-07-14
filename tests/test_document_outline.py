@@ -74,7 +74,7 @@ async def test_outline_filters_labels_and_preserves_heading_identity() -> None:
         app.screen.query_one("#document-outline-input", Input).value = "RÉSUMÉ"
         await pilot.pause()
 
-        assert app.screen.matches == (headings[1],)
+        assert app.dialog.matches == (headings[1],)
         await pilot.press("enter")
         await pilot.pause()
 

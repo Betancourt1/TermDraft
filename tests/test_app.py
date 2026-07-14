@@ -489,7 +489,7 @@ async def test_save_as_rejects_path_owned_by_deleted_open_tab(
         assert not (tmp_path / target_name).exists()
         assert app.document is not None and app.document.path == first
         assert app._open_document_for_path(second) is second_buffer
-        assert [opened.document.path for opened in app._open_documents] == [first, second]
+        assert [app._tab_path(opened) for opened in app._open_documents] == [first, second]
 
 
 async def test_save_as_replaces_pending_recovery_timer_for_future_edits(
@@ -2128,8 +2128,9 @@ async def test_recovery_manager_restores_quarantine_into_guarded_open_flow(
         assert app.document is not None
         assert app.document.text == "archived unsaved draft"
         assert app.document.dirty
-        assert len(app._open_documents) == 1
-        assert app._open_documents[0].document is app.document
+        materialized = app._materialized_open_documents()
+        assert len(materialized) == 1
+        assert materialized[0].document is app.document
         assert journal.list_quarantined(tmp_path) == ()
         assert journal.load(path) is not None
 
