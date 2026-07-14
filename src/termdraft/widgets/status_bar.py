@@ -22,10 +22,14 @@ class TermDraftStatusBar(Static):
         *,
         root: Path,
         mode: str,
+        activity: str | None = None,
         announcement: str | None = None,
     ) -> None:
         status = Text(mode, style="bold")
         if document is None:
+            if activity is not None:
+                status.append("  |  ", style="dim")
+                status.append(activity, style="bold cyan")
             status.append("  |  ", style="dim")
             status.append("No file open", style="dim")
             self.update(status)
@@ -39,6 +43,9 @@ class TermDraftStatusBar(Static):
             status.append("  |  RECOVERY STORED", style="bold cyan")
         if document.has_mixed_line_endings:
             status.append(f"  |  {document.line_ending_label}", style="bold magenta")
+        if activity is not None:
+            status.append("  |  ", style="dim")
+            status.append(activity, style="bold cyan")
         status.append("  |  ", style="dim")
         status.append(document.path.relative_to(root).as_posix())
         if announcement is not None:

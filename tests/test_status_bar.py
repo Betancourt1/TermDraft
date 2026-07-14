@@ -28,7 +28,12 @@ async def test_persistent_safety_markers_precede_a_long_path(tmp_path: Path) -> 
 
     async with app.run_test(size=(100, 20)):
         status = app.query_one(TermDraftStatusBar)
-        status.show_document(document, root=tmp_path, mode="COMMAND")
+        status.show_document(
+            document,
+            root=tmp_path,
+            mode="COMMAND",
+            activity="INDEXING",
+        )
 
         rendered = str(status.render())
         prioritized = (
@@ -36,6 +41,7 @@ async def test_persistent_safety_markers_precede_a_long_path(tmp_path: Path) -> 
             "● modified",
             "RECOVERY STORED",
             "MIXED→CRLF",
+            "INDEXING",
             path.name,
         )
         assert [rendered.index(label) for label in prioritized] == sorted(

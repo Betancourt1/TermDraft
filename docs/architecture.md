@@ -245,8 +245,10 @@ Startup gives the active document priority over the recursive workspace index. A
 is loaded, TermDraft restores or opens the active document and only then launches indexing without
 awaiting it. The explorer continues loading directories lazily. File search attaches to the active
 startup scan when one exists, or requests a fresh scan otherwise, and opens only after the complete
-revisioned index is available. This keeps large workspace trees from delaying the first edit without
-introducing a persistent cache or a second indexing model.
+revisioned index is available. The status bar shows `INDEXING` while the worker is active and adds a
+queued-file-finder label after a search request; it never estimates progress the scanner cannot
+measure. This keeps large workspace trees from delaying the first edit without introducing a
+persistent cache or a second indexing model.
 
 A document ticket contains the active `Document` identity, canonical path, saved snapshot, and a
 monotonic generation. The generation advances when a document is installed, retargeted, reloaded,

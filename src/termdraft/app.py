@@ -752,6 +752,7 @@ class TermDraftApp(App[None]):
             self._file_search_requested = True
         worker = self._workspace_index_worker(self._workspace_index_revision)
         self._workspace_index_task = worker
+        self._refresh_status()
         return worker
 
     def _check_workspace_in_background(self) -> None:
@@ -774,6 +775,7 @@ class TermDraftApp(App[None]):
     def _apply_workspace_index(self, result: _WorkspaceIndexResult) -> None:
         if result.revision != self._workspace_index_revision:
             return
+        self._workspace_index_task = None
         if result.error is not None or result.scan is None:
             self.notify(
                 escape(result.error or "Workspace indexing failed"),
@@ -781,6 +783,7 @@ class TermDraftApp(App[None]):
                 title="Workspace index unavailable",
             )
             self._file_search_requested = False
+            self._refresh_status()
             return
         structure_changed = self._workspace_scan_applied and (
             result.scan.files != self.workspace_files
@@ -797,8 +800,10 @@ class TermDraftApp(App[None]):
                 severity="warning",
             )
         self._workspace_warnings = result.scan.warnings
-        if self._file_search_requested:
-            self._file_search_requested = False
+        open_search = self._file_search_requested
+        self._file_search_requested = False
+        self._refresh_status()
+        if open_search:
             if not self._has_modal and not self._exit_requested:
                 self.push_screen(
                     FileSearchDialog(self.workspace_files, self.workspace.root),
@@ -3977,6 +3982,7 @@ class TermDraftApp(App[None]):
         worker = self._workspace_index_task
         if worker is not None and worker.is_running:
             self._file_search_requested = True
+            self._refresh_status()
             return
         self._refresh_workspace_index(open_search=True)
 
@@ -4463,9 +4469,17 @@ class TermDraftApp(App[None]):
         status_bars = self.query(TermDraftStatusBar)
         if not status_bars:
             return
+        activity = None
+        if self._workspace_index_task is not None:
+            activity = (
+                "INDEXING · File finder opens when ready"
+                if self._file_search_requested
+                else "INDEXING"
+            )
         status_bars.first(TermDraftStatusBar).show_document(
             self.document,
             root=self.workspace.root,
             mode=self._focus_mode(),
+            activity=activity,
             announcement=self._preview_heading_announcement,
         )

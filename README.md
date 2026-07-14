@@ -450,7 +450,8 @@ Stable document reads, disk probes, all content hashing, atomic publication, Sav
 indexing, session I/O, recovery reads/mutations, orphan-source validation, and semantic mapping run
 in Textual thread workers. Startup restores the active document before launching the recursive
 workspace index, so a large workspace cannot delay editing. File search reuses that scan if it is
-still running and opens when the complete index is ready. A completed probe is
+still running and opens when the complete index is ready; the status bar distinguishes ordinary
+indexing from a queued file finder without estimating incomplete progress. A completed probe is
 classified on the UI thread
 against the latest dirty state, so an edit made during a watcher or transition check cannot be
 silently reloaded or left behind. During actual publication the editor is temporarily read-only;

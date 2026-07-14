@@ -5,6 +5,10 @@ Notable changes to TermDraft are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Show workspace indexing and queued file-finder activity in the status bar during long scans.
+
 ## [1.0.0] - 2026-07-14
 
 ### Added

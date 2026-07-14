@@ -30,6 +30,7 @@ from termdraft.services.session import (
     SessionState,
     SessionStore,
 )
+from termdraft.widgets.status_bar import TermDraftStatusBar
 
 
 def _app(
@@ -136,19 +137,59 @@ async def test_blocked_startup_index_does_not_delay_initial_document(
 
     async with app.run_test(size=(100, 30)) as pilot:
         await _wait_until(pilot, started.is_set)
+        status = app.query_one(TermDraftStatusBar)
         try:
             assert app.document is not None
             assert app.document.text == "base"
+            assert "INDEXING" in str(status.render())
             await pilot.press("i", "x")
             assert app.document.text == "xbase"
             assert app.workspace_files == ()
             app.action_find_file()
             assert calls == 1
             assert not isinstance(app.screen, FileSearchDialog)
+            assert "INDEXING · File finder opens when ready" in str(status.render())
         finally:
             release.set()
         await _wait_until(pilot, lambda: app.workspace_files == (path,))
         await _wait_until(pilot, lambda: isinstance(app.screen, FileSearchDialog))
+        assert "INDEXING" not in str(status.render())
+
+
+async def test_failed_startup_index_clears_activity_and_queued_search(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    started = Event()
+    release = Event()
+
+    def failed_scan(
+        self: Workspace,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> ScanResult:
+        del self, should_cancel
+        started.set()
+        assert release.wait(2)
+        raise OSError("scan unavailable")
+
+    monkeypatch.setattr(Workspace, "scan", failed_scan)
+    app = _app(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _wait_until(pilot, started.is_set)
+        status = app.query_one(TermDraftStatusBar)
+        try:
+            app.action_find_file()
+            assert "INDEXING · File finder opens when ready" in str(status.render())
+        finally:
+            release.set()
+        await _wait_until(pilot, lambda: app._workspace_index_task is None)
+        assert not app._file_search_requested
+        assert "INDEXING" not in str(status.render())
+        assert not isinstance(app.screen, FileSearchDialog)
 
 
 async def test_open_recovery_record_read_runs_off_the_ui_thread(
