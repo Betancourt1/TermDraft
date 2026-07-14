@@ -1,6 +1,6 @@
-# TermWriter
+# TermDraft
 
-TermWriter is a local-first Markdown editor with a stable, dependable terminal-first writing loop.
+TermDraft is a local-first Markdown editor with a stable, dependable terminal-first writing loop.
 It edits ordinary `.md` and `.markdown` files directly: there is no database, project format, or
 import step.
 
@@ -39,13 +39,13 @@ rendering experiment.
 ## Interface
 
 ```text
-┌ TermWriter · ~/notes ────────────────────────────────────────────────────────┐
-│ journal/2026-07-11.md │ ● projects/termwriter.md                            │
+┌ TermDraft · ~/notes ─────────────────────────────────────────────────────────┐
+│ journal/2026-07-11.md │ ● projects/termdraft.md                             │
 │ Files                    │ Markdown source            │ Rendered preview     │
 │  journal/                │ # Friday                   │ Friday               │
 │   2026-07-11.md          │                            │                      │
 │  projects/               │ Today I learned…           │ Today I learned…     │
-│   termwriter.md          │                            │                      │
+│   termdraft.md           │                            │                      │
 ├──────────────────────────┴────────────────────────────┴──────────────────────┤
 │ COMMAND | journal/2026-07-11.md ● modified | RECOVERY STORED | 36 words |…│
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -66,7 +66,7 @@ modes.
 - a filesystem where workspace files are readable and their parent directories are writable and
   searchable when saving.
 
-TermWriter currently targets Textual 8.x, installs its Markdown syntax-highlighting extra, uses
+TermDraft currently targets Textual 8.x, installs its Markdown syntax-highlighting extra, uses
 `markdown-it-py` plus `mdit-py-plugins` for the preview parser, and uses the small `regex` package for
 Unicode-aware whole-word matching and time-limited regular expressions.
 
@@ -91,21 +91,21 @@ pip install -e ".[dev]"
 Repository installation is the supported path while public distribution is prepared. After a
 public tagged release, the intended first-party package channel is a dedicated Homebrew tap. See
 [`docs/releasing.md`](docs/releasing.md) for the maintainer checklist, including the public package
-name decision and tap validation. No public Homebrew formula is available yet.
+and tap validation. No public Homebrew formula is available yet.
 
 ## Running
 
 Open the current directory:
 
 ```bash
-termwriter .
+termdraft .
 ```
 
 Open a different workspace or one `.md`, `.markdown`, or `.txt` file:
 
 ```bash
-termwriter ~/Documents/notes
-termwriter essay.md
+termdraft ~/Documents/notes
+termdraft essay.md
 ```
 
 When a file is passed, it opens initially and its parent directory becomes the workspace, so sibling
@@ -119,8 +119,8 @@ Nerd Font or a Symbols Nerd Font fallback is required to display them.
 Show every CLI option or the effective in-app commands without starting the TUI:
 
 ```bash
-termwriter --help
-termwriter --commands
+termdraft --help
+termdraft --commands
 ```
 
 ### File and folder management
@@ -129,13 +129,14 @@ Open the command palette with `:` in COMMAND mode or Ctrl+\ and choose **Create 
 **Rename selected file or folder**, **Move selected file or folder**, or
 **Move selected file or folder to Trash**. Actions use the selected explorer entry; when the tree has no
 selection, the active document is used. New files are created beside the selected file or inside the
-selected folder. End the path with `/` to create a folder; `.md`, `.markdown`, and `.txt` files open
-in TermWriter. Unusual names and unsupported file extensions show a warning without blocking creation.
+selected folder. End the path with `/` to create a folder; `.md`, `.markdown`, and `.txt` files
+open in TermDraft. Unusual names and unsupported file extensions show a warning without blocking
+creation.
 
 Move destinations are workspace-relative paths such as `archive/essay.md`. Clean open documents
 follow a rename or move without losing their tab, cursor, or contents. Save or close dirty documents
 first. Rename and move publication never replaces a destination that appears concurrently. Open
-documents cannot be trashed; close them through TermWriter's save guard before trying again. Moving a
+documents cannot be trashed; close them through TermDraft's save guard before trying again. Moving a
 folder to the operating system Trash includes every nested entry, including files hidden by the
 Markdown-only explorer. A Trash failure leaves the original entry in place.
 
@@ -175,7 +176,7 @@ bold; portable Markdown has no underline syntax. `?` in COMMAND mode or F1 opens
 shortcut list, and the `:` command palette includes a compact Markdown syntax reference.
 
 The repository also includes a complete [Markdown syntax gallery](docs/markdown-gallery.md). Open it
-with `termwriter docs/markdown-gallery.md` to compare its editable syntax and preview side by side.
+with `termdraft docs/markdown-gallery.md` to compare its editable syntax and preview side by side.
 
 Clicking a footnote label scrolls to its definition; `↩` returns to the most recently followed
 reference for that note. Esc enters COMMAND mode without moving the cursor; `i` returns to WRITE
@@ -197,14 +198,21 @@ to the source editor.
 Create editable, no-clobber templates:
 
 ```bash
-termwriter --init-config
-termwriter --config-path
+termdraft --init-config
+termdraft --config-path
 ```
 
-The default files are `~/.termwriter/config.toml` and `~/.termwriter/theme.tcss`. Override the
-directory with `TERMWRITER_CONFIG_HOME` or `--config-dir PATH`. The TOML file accepts only the
+The default files are `~/.termdraft/config.toml` and `~/.termdraft/theme.tcss`. Override the
+directory with `TERMDRAFT_CONFIG_HOME` or `--config-dir PATH`. The TOML file accepts only the
 documented editor options, positive manual-retention age, and known binding IDs; it cannot define
 actions, commands, or executable hooks.
+
+For compatibility, `TERMWRITER_CONFIG_HOME` is still honored when `TERMDRAFT_CONFIG_HOME` is unset,
+and an existing `~/.termwriter` is used only when `~/.termdraft` does not exist. Recovery and
+session state likewise use the corresponding legacy leaf only when the new leaf is absent. New
+locations win over their legacy counterpart; nothing is moved or merged automatically.
+This compatibility applies only to local configuration and state: the old `termwriter` executable
+and Python module are not retained. Launch `termdraft` and import `termdraft` instead.
 
 ```toml
 [editor]
@@ -256,7 +264,7 @@ from the effective map, so it reflects remapped keys. Duplicate keys, unknown ID
 TOML, and invalid editor option values are rejected with a clear error.
 
 `theme.tcss` is [Textual CSS](https://textual.textualize.io/guide/CSS/), not browser CSS. It loads
-after TermWriter's bundled stylesheet, so matching selectors override the defaults:
+after TermDraft's bundled stylesheet, so matching selectors override the defaults:
 
 ```css
 #title-bar {
@@ -269,14 +277,14 @@ after TermWriter's bundled stylesheet, so matching selectors override the defaul
 ```
 
 An existing valid `theme.tcss` is watched and reapplied when saved. A malformed or unreadable theme
-is ignored at startup with a warning, while the bundled theme keeps TermWriter usable. Fix the file
-and restart to re-enable it, or launch with `termwriter --safe-mode` to ignore only `theme.tcss` for
-that run. If the theme file is created while TermWriter is already running, restart once so it can be
+is ignored at startup with a warning, while the bundled theme keeps TermDraft usable. Fix the file
+and restart to re-enable it, or launch with `termdraft --safe-mode` to ignore only `theme.tcss` for
+that run. If the theme file is created while TermDraft is already running, restart once so it can be
 added to the watched stylesheet list.
 
 ## Modes and shortcuts
 
-TermWriter starts in COMMAND mode by default, like Vim; set `editor.startup_mode = "write"` to begin
+TermDraft starts in COMMAND mode by default, like Vim; set `editor.startup_mode = "write"` to begin
 ready for insertion instead. Source text is protected in COMMAND mode, so plain keys run commands
 instead of being inserted. The arrow keys and `h`/`j`/`k`/`l` move without changing the document.
 Press `i` to enter WRITE mode and Esc to return to COMMAND mode.
@@ -382,9 +390,9 @@ startup, and version-one state migrates by restoring only its prior active path.
 The first dirty edit schedules a recovery write for 500 ms later; continued typing updates the
 pending payload without postponing that deadline. Publications and deletions run through one ordered
 background queue. Pending saves coalesce to the newest exact source, while deletion is an ordering
-barrier and removes only the journal fingerprint that TermWriter observed. Each JSON entry is mode
+barrier and removes only the journal fingerprint that TermDraft observed. Each JSON entry is mode
 0600, written through a same-directory temporary file, flushed, replaced, and followed by a
-directory `fsync`. On the next open, TermWriter offers Restore draft / Use disk version / Cancel
+directory `fsync`. On the next open, TermDraft offers Restore draft / Use disk version / Cancel
 opening. A recovered draft whose
 saved baseline no longer matches disk is marked as a conflict and cannot be written over the Markdown
 path with Ctrl+S; it must be saved under another name or the disk version must be reloaded. Successful
@@ -394,8 +402,9 @@ no longer be read safely; restoring one opens its draft in conflict state so it 
 through Save As.
 
 The journal is recovery state, not a document format or database. Markdown remains the source of
-truth. The default recovery location is `~/Library/Application Support/TermWriter/recovery` on
-macOS and `$XDG_STATE_HOME/termwriter/recovery` or `~/.local/state/termwriter/recovery` on Linux.
+truth. The default recovery location is `~/Library/Application Support/TermDraft/recovery` on
+macOS and `$XDG_STATE_HOME/termdraft/recovery` or `~/.local/state/termdraft/recovery` on Linux.
+Session state uses the same platform roots with a `sessions` leaf instead of `recovery`.
 
 Use **Manage recovery drafts** from the command palette to inspect the current workspace's trusted
 entries and any corrupt journals. Trusted drafts can be reopened or retargeted after a Markdown file
@@ -432,7 +441,7 @@ finished. Stale worker results are rejected with document identity, path, and ba
 
 Save As and Duplicate first reject exact or normalized spelling variants owned by any open buffer,
 including a buffer whose disk file disappeared, then publish a fully written temporary file with a
-no-clobber hard-link step. If the target appears concurrently, TermWriter reports a conflict instead
+no-clobber hard-link step. If the target appears concurrently, TermDraft reports a conflict instead
 of replacing it. Save As retargets the active tab and marks the new path clean while leaving the old
 disk file untouched. Duplicate writes the same live source but leaves the original tab, dirty state,
 disk baseline, and recovery draft unchanged.
@@ -462,11 +471,11 @@ while another modal workflow is active.
 
 The same interval scans visible Markdown paths and folders in the background. External creates,
 deletes, and renames refresh the explorer and file-search index within about two seconds, or when
-TermWriter regains focus. Renaming an open file is handled conservatively: the original tab is marked
+TermDraft regains focus. Renaming an open file is handled conservatively: the original tab is marked
 as deleted externally while the renamed path appears in the explorer, rather than guessing that the
 two paths represent the same document.
 
-Mixed line endings are detected before the editor becomes active. TermWriter states the separator
+Mixed line endings are detected before the editor becomes active. TermDraft states the separator
 Textual will use and requires an explicit Edit and normalize decision. Cancel leaves the current
 document untouched. For a mixed file reloaded by the watcher, choosing Keep read-only requires
 reopening the file to opt in to editing later. Merely opening or saving without an edit preserves its
@@ -497,15 +506,15 @@ writer locking.
 
 ## Development benchmarks
 
-The installed `termwriter-benchmark` command measures the real semantic mapper, real mounted editor
+The installed `termdraft-benchmark` command measures the real semantic mapper, real mounted editor
 tabs under Textual's headless application driver, and one real watcher pass over the active plus one
 inactive document. It emits JSON so results can be retained and compared without adding a benchmark
 framework:
 
 ```bash
-termwriter-benchmark
+termdraft-benchmark
 
-termwriter-benchmark \
+termdraft-benchmark \
   --semantic-kib 1024 \
   --tab-kib 64 \
   --tabs 20 \
@@ -555,11 +564,11 @@ mode, Python environment, dependency versions, and workload, then compare the me
   a supervisor's too-short TERM-to-KILL grace period can still lose newer in-memory keystrokes. The
   journal is not version history, a backup, or an autosave of the Markdown path. Recovery entries
   contain the draft's plaintext source in a private per-user state directory.
-- Recovery mutations use advisory per-journal locks between cooperating TermWriter processes. An
+- Recovery mutations use advisory per-journal locks between cooperating TermDraft processes. An
   unrelated program can ignore them, and lock behavior on unusual or network filesystems remains
   filesystem-dependent.
 - An orphan draft is revalidated immediately before its prompt, but not continuously while the
-  prompt remains open. Another TermWriter instance can publish a newer journal during that decision;
+  prompt remains open. Another TermDraft instance can publish a newer journal during that decision;
   restoring and then editing the captured draft may supersede the newer recovery journal. The
   Markdown-file conflict guard still applies, but recovery metadata is not a multi-writer history.
 - The watcher polls the active file plus one rotating inactive tab and scans visible workspace
@@ -591,14 +600,14 @@ mode, Python environment, dependency versions, and workload, then compare the me
   hostile process swapping intermediate path components during the initial open or a new Save As.
   Existing-file saves additionally compare file and parent identities and keep all temporary,
   cleanup, and replacement operations attached to the opened parent directory.
-- Session metadata is last-writer-wins between concurrent TermWriter instances. Ctrl+O prunes only
+- Session metadata is last-writer-wins between concurrent TermDraft instances. Ctrl+O prunes only
   paths confirmed missing; entries that are temporarily inaccessible remain until they can be
   classified safely.
-- Heading navigation emits prioritized status text. TermWriter
+- Heading navigation emits prioritized status text. TermDraft
   does not currently integrate a native screen-reader announcement API, so it does not claim
   assistive-technology support beyond those terminal-visible cues.
 - Preview links are deliberately non-opening. Raw document HTML, JavaScript, and shell text are not
-  executed. Inline Markdown links are not native focusable Textual widgets, so TermWriter indexes
+  executed. Inline Markdown links are not native focusable Textual widgets, so TermDraft indexes
   their rendered action metadata within the pinned Textual 8.x compatibility range.
 - Alerts use titled blockquotes without GitHub's colors or icons. Preview intentionally omits math,
   underline, subscript, and superscript. A repeated footnote's back arrow returns to the most recently
@@ -614,7 +623,7 @@ mode, Python environment, dependency versions, and workload, then compare the me
   cancellation during long lines. Compound filters do not provide escaping for filenames containing
   commas. Regexes are limited to 500 characters and 50 ms per source line; a timed-out expression
   returns an error instead of results.
-- Thread workers cannot stop an in-progress operating-system read or write. TermWriter ignores stale
+- Thread workers cannot stop an in-progress operating-system read or write. TermDraft ignores stale
   read/probe results; an atomic writer is deliberately allowed to finish while the UI stays locked.
 - Thread cancellation cannot interrupt an individual operating-system directory or journal read,
   but workspace-index and recovery-read results are revisioned or ticketed and applied only from

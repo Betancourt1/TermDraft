@@ -1,9 +1,9 @@
-# TermWriter architecture
+# TermDraft architecture
 
 ## Product boundary
 
 The MVP is a local Markdown editor, not a document database and not a terminal browser. Markdown
-files remain independently useful before, during, and after TermWriter runs. The application never
+files remain independently useful before, during, and after TermDraft runs. The application never
 executes document text, raw HTML, JavaScript, or workspace-defined commands.
 
 The implementation deliberately uses concrete modules instead of service interfaces that have only
@@ -18,7 +18,7 @@ Workspace ───── validated paths / scan index ───── File expl
    │                     config.toml / theme.tcss
    │
    ▼
-TermWriterApp coordinator
+TermDraftApp coordinator
    │ owns ordered live buffers + one editor per buffer
    ▼
 Document tabs ──► active Document/editor ── source text ──► Markdown preview
@@ -80,15 +80,15 @@ without dropping their recent view. Writes use one in-flight worker and one
 replaceable pending immutable snapshot, so an older thread cannot finish after newer metadata;
 clean quit waits for the queue to drain. Ctrl+O opens the bounded MRU order. Each activation caches
 the outgoing view, and Save As moves the cached view to the new path. Corrupt session JSON is
-preserved and reported. Concurrent TermWriter instances use
+preserved and reported. Concurrent TermDraft instances use
 last-writer-wins metadata because coordinates are non-authoritative and cannot change Markdown.
 Quit traversal does not promote the inspected tabs in MRU order and restores the pre-quit active
 buffer before queuing the final snapshot. Once that snapshot is queued, tab activation and document
 opening remain sealed until the session and recovery queues drain.
 
-Textual reconstructs multiline text by preferring CRLF when present, then LF, then CR. TermWriter retains
-both Textual's normalized editor baseline and the exact source represented by that baseline. Merely
-loading, recovering, focusing, or saving a deliberately mixed-ending source therefore does not dirty
+Textual reconstructs multiline text by preferring CRLF when present, then LF, then CR. TermDraft
+retains both Textual's normalized editor baseline and the exact source represented by that baseline.
+Merely loading, recovering, focusing, or saving a deliberately mixed-ending source does not dirty
 or rewrite it. Before the editor becomes active, a modal identifies the normalization target and
 requires consent. Once the user makes a real edit, Textual's normalized source becomes the local
 source. Uniform LF and CRLF are preserved.
@@ -261,7 +261,11 @@ verification retain their existing ordering.
 ## User configuration
 
 The CLI resolves the configuration root in this order: explicit `--config-dir`,
-`TERMWRITER_CONFIG_HOME`, then `~/.termwriter`. Configuration is intentionally user-level rather
+`TERMDRAFT_CONFIG_HOME`, legacy `TERMWRITER_CONFIG_HOME`, an existing `~/.termdraft`, then an
+existing `~/.termwriter`; otherwise it uses the new `~/.termdraft` default. Recovery and session
+resolution chooses the new platform leaf when it exists, otherwise the corresponding legacy leaf
+when that exists, and otherwise the new leaf. A new location therefore wins over its legacy
+counterpart, and nothing is moved or merged automatically. Configuration remains user-level rather
 than workspace-level, so merely opening a repository cannot install key behavior or visual rules.
 
 `config.toml` is parsed with the standard-library `tomllib`. Only three editor booleans, the
@@ -273,7 +277,7 @@ Recovery Manager; it cannot schedule deletion. The initializer uses exclusive cr
 replace existing files, and creates new directories and files with mode 0700/0600 where POSIX
 permissions apply.
 
-TermWriter starts in the configured COMMAND or WRITE mode, defaulting to COMMAND. In COMMAND mode
+TermDraft starts in the configured COMMAND or WRITE mode, defaulting to COMMAND. In COMMAND mode
 the Markdown editor stops consuming printable input and priority application bindings own the
 mnemonic keymap. Arrow navigation still passes through the editor; configurable `h`/`j`/`k`/`l`,
 line-boundary, and document-boundary actions call TextArea cursor methods without editing source.
@@ -381,12 +385,12 @@ identity, and a timezone-aware update time. It never replaces or changes a Markd
 Each journal update creates a mode-0600 temporary file in the recovery directory, writes exact UTF-8
 JSON, flushes and `fsync`s it, publishes it with same-directory `os.replace`, and attempts to `fsync`
 the directory. Failed pre-publication writes clean the temporary entry and retain the prior complete
-journal. Persistent per-journal lock files serialize mutations by cooperating TermWriter processes;
+journal. Persistent per-journal lock files serialize mutations by cooperating TermDraft processes;
 retarget acquires its source and destination locks in deterministic order. The locks are advisory and
 their guarantees still depend on the filesystem. The state root is injectable so tests never use
 personal files.
 
-`TermWriterApp` schedules a nominal 500 ms deadline after the first dirty edit. Later edits update
+`TermDraftApp` schedules a nominal 500 ms deadline after the first dirty edit. Later edits update
 the in-memory payload without moving that deadline, so sustained typing does not reset the timer.
 Tab deactivation queues its exact dirty source immediately. One non-exclusive thread-worker pipeline
 serializes SAVE and DELETE tickets: pending saves for a path coalesce to the newest source, while a
@@ -488,7 +492,7 @@ symlinks, unsupported files, and configured ignored directories. External rename
 one removed path and one added path. Open documents are not retargeted by inference, so the existing
 deletion/conflict flow continues to protect their in-memory source.
 
-The `TermWriterApp` coordinator owns pending transition and save continuations. Typed modal callbacks
+The `TermDraftApp` coordinator owns pending transition and save continuations. Typed modal callbacks
 implement these paths:
 
 ```text
@@ -508,7 +512,7 @@ the original active buffer, and then seals editing while final state writes drai
 ## Widget/domain limits
 
 - Widgets render state and emit Textual messages.
-- `TermWriterApp` owns ordered live `Document`/editor entries, coordinates one active view, and
+- `TermDraftApp` owns ordered live `Document`/editor entries, coordinates one active view, and
   resolves user decisions.
 - `Document` and `Workspace` contain state/invariants without Textual imports.
 - Persistence and external-change modules perform filesystem work without UI calls.
@@ -523,7 +527,7 @@ Cooperative cancellation, revisions, document tickets, immutable mutation payloa
 critical-operation locks preserve callback ordering and conflict checks. An individual
 operating-system read cannot be interrupted, so stale-result rejection remains authoritative.
 
-`termwriter-benchmark` is intentionally repository-specific instrumentation rather than runtime
+`termdraft-benchmark` is intentionally repository-specific instrumentation rather than runtime
 abstraction. It calls the real semantic mapper, mounts the real application and tab editors through
 `App.run_test`, and invokes the real bounded active-plus-inactive watcher worker. Its JSON timings,
 `tracemalloc` heap values, and process peak-RSS high-water values are comparative observations,

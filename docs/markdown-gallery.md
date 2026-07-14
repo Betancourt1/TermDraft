@@ -1,9 +1,9 @@
-# TermWriter Markdown gallery
+# TermDraft Markdown gallery
 
-Open this file in TermWriter to compare its source and rendered preview side by side:
+Open this file in TermDraft to compare its source and rendered preview side by side:
 
 ```bash
-termwriter docs/markdown-gallery.md
+termdraft docs/markdown-gallery.md
 ```
 
 The Markdown source is always the document. The preview only presents it; it never rewrites this
@@ -11,7 +11,7 @@ file.
 
 ## Headings
 
-With the preview focused, use Alt+Down and Alt+Up to move through these headings. TermWriter shows
+With the preview focused, use Alt+Down and Alt+Up to move through these headings. TermDraft shows
 the selected level and position in the status bar and a normal terminal notification.
 
 ### Third-level heading
@@ -102,7 +102,7 @@ An inline footnote is supported too.^[This definition lives beside its reference
 
 ## Definition list
 
-TermWriter
+TermDraft
 : A local-first Markdown editor for the terminal.
 
 : Its definition body is visually separated from the bold term.
@@ -118,7 +118,7 @@ Text after the rule.
 
 ## Safe raw HTML fallback
 
-Raw HTML is not interpreted by TermWriter. For example, this remains literal preview text:
+Raw HTML is not interpreted by TermDraft. For example, this remains literal preview text:
 
 <kbd>Ctrl+S</kbd>
 

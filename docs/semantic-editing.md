@@ -1,6 +1,6 @@
 # Future semantic block editing
 
-This document describes a possible WYSIWYM mode for TermWriter. It is a design direction, not a
+This document describes a possible WYSIWYM mode for TermDraft. It is a design direction, not a
 promise that the hard interaction problems are solved. The MVP now includes only Stage 1's read-only
 top-level range inspector; rendered-block and hybrid editing remain unimplemented.
 
@@ -126,7 +126,7 @@ reconcile ranges, fall back immediately to the full-source editor with the edite
 Add lists, quotes, code fences, tables, and extension syntax one verified family at a time. Introduce
 incremental parsing only after correctness is established with full reparsing.
 
-Status: `termwriter-benchmark` now provides a repeatable full-map throughput workload plus real
+Status: `termdraft-benchmark` now provides a repeatable full-map throughput workload plus real
 mounted-tab heap and active/inactive watcher measurements. The first large-workload baseline makes
 mounted editor cost the clearest constraint; it does not justify incremental parsing or hybrid
 editing by itself.

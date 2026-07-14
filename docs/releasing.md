@@ -1,4 +1,4 @@
-# Releasing TermWriter
+# Releasing TermDraft
 
 This is the maintainer checklist for a public release. Complete it from a clean `main` checkout and
 keep release preparation separate from feature work.
@@ -6,12 +6,11 @@ keep release preparation separate from feature work.
 ## 1. Prepare the release
 
 1. Confirm `main` is clean, up to date, and passing required CI.
-2. Choose the version and finalize the public distribution name. Confirm the name is available on
-   every intended package channel before changing `[project].name`; the installed executable may
-   remain `termwriter` even if the distribution name changes.
+2. Choose the version and confirm the `termdraft` distribution remains available on every intended
+   package channel.
 3. Update the same version in both locations:
    - `pyproject.toml` under `[project].version`;
-   - `src/termwriter/__init__.py` as `__version__`.
+   - `src/termdraft/__init__.py` as `__version__`.
 4. Move the relevant entries from `[Unreleased]` in `CHANGELOG.md` under the new version heading.
 5. Run the local gates:
 
@@ -26,8 +25,8 @@ keep release preparation separate from feature work.
 
    Install `build` and `twine` in the release environment if needed. Build from a clean checkout so
    `dist/` contains only artifacts for the intended version.
-6. Install the wheel into a fresh virtual environment and smoke-test `termwriter --version`,
-   `termwriter --help`, `termwriter --commands`, and `python -m termwriter --version`.
+6. Install the wheel into a fresh virtual environment and smoke-test `termdraft --version`,
+   `termdraft --help`, `termdraft --commands`, and `python -m termdraft --version`.
 
 ## 2. Tag and publish
 
@@ -35,7 +34,7 @@ keep release preparation separate from feature work.
 2. Create an annotated tag:
 
    ```bash
-   git tag -a vX.Y.Z -m "TermWriter X.Y.Z"
+   git tag -a vX.Y.Z -m "TermDraft X.Y.Z"
    ```
 
 3. Push `main`, then push the tag.
@@ -55,18 +54,18 @@ changes, audits, and rollbacks their own small history.
 4. Test a clean install, the command, and removal:
 
    ```bash
-   brew install OWNER/tap/FORMULA
-   termwriter --version
-   brew uninstall FORMULA
+   brew install OWNER/tap/termdraft
+   termdraft --version
+   brew uninstall termdraft
    ```
 
 5. When a prior formula exists, install that version first, publish the update, then verify:
 
    ```bash
    brew update
-   brew upgrade OWNER/tap/FORMULA
-   termwriter --version
-   brew uninstall FORMULA
+   brew upgrade OWNER/tap/termdraft
+   termdraft --version
+   brew uninstall termdraft
    ```
 
 For 1.0, update the tap manually. Do not add automatic cross-repository updates until the public

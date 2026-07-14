@@ -1,6 +1,6 @@
 # Changelog
 
-Notable changes to TermWriter are recorded here. The format follows
+Notable changes to TermDraft are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use semantic versioning.
 
 ## [Unreleased]
@@ -12,6 +12,8 @@ Notable changes to TermWriter are recorded here. The format follows
 
 ### Changed
 
+- Renamed TermWriter to TermDraft across the product, Python package, commands, configuration, and
+  state locations while retaining compatibility discovery for existing local data.
 - Unified file and folder creation behind one command.
 - Prioritized conflict, modified, recovery, and mixed-ending state in narrow status bars.
 - Improved empty-workspace guidance, explorer selection, preview heading contrast, and scrollbars.
