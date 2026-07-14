@@ -241,6 +241,13 @@ paths, source strings, encodings, snapshots, and document tickets; they never mu
 widget. Expected and unexpected failures are converted into result values, and
 `App.call_from_thread` is the only route back to coordinator callbacks.
 
+Startup gives the active document priority over the recursive workspace index. After session state
+is loaded, TermDraft restores or opens the active document and only then launches indexing without
+awaiting it. The explorer continues loading directories lazily. File search attaches to the active
+startup scan when one exists, or requests a fresh scan otherwise, and opens only after the complete
+revisioned index is available. This keeps large workspace trees from delaying the first edit without
+introducing a persistent cache or a second indexing model.
+
 A document ticket contains the active `Document` identity, canonical path, saved snapshot, and a
 monotonic generation. The generation advances when a document is installed, retargeted, reloaded,
 saved, or accepts a changed metadata snapshot. Every callback verifies the whole ticket before it

@@ -540,16 +540,10 @@ class TermDraftApp(App[None]):
 
     async def on_mount(self) -> None:
         await self._load_session_worker().wait()
-        await self._refresh_workspace_index().wait()
         self._external_watch_timer = self.set_interval(
             self.external_poll_interval,
             self._check_external_in_background,
             name="external-file-watch",
-        )
-        self.set_interval(
-            self.external_poll_interval,
-            self._check_workspace_in_background,
-            name="external-workspace-watch",
         )
         self.set_interval(
             0.05,
@@ -575,6 +569,7 @@ class TermDraftApp(App[None]):
             worker = self._open_file_now(initial_file)
             if worker is not None:
                 await worker.wait()
+            self._start_workspace_indexing()
             return
 
         if self._session_open_paths:
@@ -585,11 +580,21 @@ class TermDraftApp(App[None]):
             worker = self._restore_next_session_tab()
             if worker is not None:
                 await worker.wait()
+            self._start_workspace_indexing()
             return
 
         self.explorer.directory_tree.focus()
         self._refresh_status()
         await self._scan_orphan_recoveries().wait()
+        self._start_workspace_indexing()
+
+    def _start_workspace_indexing(self) -> None:
+        self._refresh_workspace_index()
+        self.set_interval(
+            self.external_poll_interval,
+            self._check_workspace_in_background,
+            name="external-workspace-watch",
+        )
 
     @work(group="session-load", thread=True, exit_on_error=False)
     def _load_session_worker(self) -> None:
@@ -3968,6 +3973,10 @@ class TermDraftApp(App[None]):
 
     def action_find_file(self) -> None:
         if self._has_modal:
+            return
+        worker = self._workspace_index_task
+        if worker is not None and worker.is_running:
+            self._file_search_requested = True
             return
         self._refresh_workspace_index(open_search=True)
 

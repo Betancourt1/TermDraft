@@ -103,10 +103,52 @@ async def test_workspace_index_runs_off_the_ui_thread(
     monkeypatch.setattr(Workspace, "scan", tracked_scan)
     app = _app(path)
 
-    async with app.run_test(size=(100, 30)):
-        assert app.workspace_files == (path,)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _wait_until(pilot, lambda: app.workspace_files == (path,))
         assert scan_threads
         assert all(thread != ui_thread for thread in scan_threads)
+
+
+async def test_blocked_startup_index_does_not_delay_initial_document(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    started = Event()
+    release = Event()
+    real_scan = Workspace.scan
+    calls = 0
+
+    def blocked_scan(
+        self: Workspace,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> ScanResult:
+        nonlocal calls
+        calls += 1
+        started.set()
+        assert release.wait(2)
+        return real_scan(self, should_cancel=should_cancel)
+
+    monkeypatch.setattr(Workspace, "scan", blocked_scan)
+    app = _app(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await _wait_until(pilot, started.is_set)
+        try:
+            assert app.document is not None
+            assert app.document.text == "base"
+            await pilot.press("i", "x")
+            assert app.document.text == "xbase"
+            assert app.workspace_files == ()
+            app.action_find_file()
+            assert calls == 1
+            assert not isinstance(app.screen, FileSearchDialog)
+        finally:
+            release.set()
+        await _wait_until(pilot, lambda: app.workspace_files == (path,))
+        await _wait_until(pilot, lambda: isinstance(app.screen, FileSearchDialog))
 
 
 async def test_open_recovery_record_read_runs_off_the_ui_thread(
@@ -220,6 +262,7 @@ async def test_blocked_file_index_keeps_editor_responsive(
     app = _app(path)
 
     async with app.run_test(size=(100, 30)) as pilot:
+        await _wait_until(pilot, lambda: app.workspace_files == (path,))
         app.action_find_file()
         await _wait_until(pilot, started.is_set)
         try:
