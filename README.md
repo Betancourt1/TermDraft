@@ -1,9 +1,10 @@
 # TermWriter
 
-TermWriter is a local-first Markdown editor for the terminal. It edits ordinary `.md` and
-`.markdown` files directly: there is no database, project format, or import step.
+TermWriter is a local-first Markdown editor with a stable, dependable terminal-first writing loop.
+It edits ordinary `.md` and `.markdown` files directly: there is no database, project format, or
+import step.
 
-The current release is a functional MVP focused on a dependable writing loop:
+The writing loop includes:
 
 - browse a Markdown workspace;
 - edit source with soft wrapping, Unicode, syntax highlighting, undo, redo, and list continuation;
@@ -84,6 +85,13 @@ For development tools:
 ```bash
 pip install -e ".[dev]"
 ```
+
+## Releases and distribution
+
+Repository installation is the supported path while public distribution is prepared. After a
+public tagged release, the intended first-party package channel is a dedicated Homebrew tap. See
+[`docs/releasing.md`](docs/releasing.md) for the maintainer checklist, including the public package
+name decision and tap validation. No public Homebrew formula is available yet.
 
 ## Running
 
