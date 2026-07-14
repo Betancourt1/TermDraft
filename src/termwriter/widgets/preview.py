@@ -133,7 +133,7 @@ class MarkdownPreview(Markdown):
             return self.preview
 
     def __init__(self) -> None:
-        self.source_text = "Select a Markdown file to begin."
+        self.source_text = "Select a text file to begin."
         self._footnote_origins: dict[str, float] = {}
         self._footnote_link_origins: dict[str, int] = {}
         self._links: list[_PreviewLink] = []

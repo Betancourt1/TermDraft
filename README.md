@@ -8,7 +8,7 @@ The current release is a functional MVP focused on a dependable writing loop:
 - browse a Markdown workspace;
 - edit source with soft wrapping, Unicode, syntax highlighting, undo, redo, and list continuation;
 - read a safe GFM-style rendered preview without leaving the terminal;
-- create, rename, move, and trash Markdown files and workspace folders;
+- create, rename, move, and trash Markdown or plain-text files and workspace folders;
 - save the active buffer under a new path or duplicate it without leaving the original tab;
 - find files quickly;
 - find and replace literal text in the active document;
@@ -93,7 +93,7 @@ Open the current directory:
 termwriter .
 ```
 
-Open a different workspace or one Markdown file:
+Open a different workspace or one `.md`, `.markdown`, or `.txt` file:
 
 ```bash
 termwriter ~/Documents/notes
@@ -101,9 +101,9 @@ termwriter essay.md
 ```
 
 When a file is passed, it opens initially and its parent directory becomes the workspace, so sibling
-Markdown files remain available in the explorer and search.
+Supported text files remain available in the explorer and search.
 
-The CLI rejects missing paths, non-Markdown file targets, and Markdown file symlinks before the TUI
+The CLI rejects missing paths, unsupported file targets, and file symlinks before the TUI
 starts. The explorer omits `.git`, `.venv`, `node_modules`, `__pycache__`, and all symlinks.
 Files, folders, search, and image placeholders use Yazi's Nerd Font icon language in grayscale. A
 Nerd Font or a Symbols Nerd Font fallback is required to display them.
@@ -117,11 +117,12 @@ termwriter --commands
 
 ### File and folder management
 
-Open the command palette with `:` in COMMAND mode or Ctrl+\ and choose **Create Markdown file**,
-**Create folder**, **Rename selected file or folder**, **Move selected file or folder**, or
+Open the command palette with `:` in COMMAND mode or Ctrl+\ and choose **Create file or folder**,
+**Rename selected file or folder**, **Move selected file or folder**, or
 **Move selected file or folder to Trash**. Actions use the selected explorer entry; when the tree has no
 selection, the active document is used. New files are created beside the selected file or inside the
-selected folder, and a missing Markdown extension is added as `.md`.
+selected folder. End the path with `/` to create a folder; `.md`, `.markdown`, and `.txt` files open
+in TermWriter. Unusual names and unsupported file extensions show a warning without blocking creation.
 
 Move destinations are workspace-relative paths such as `archive/essay.md`. Clean open documents
 follow a rename or move without losing their tab, cursor, or contents. Save or close dirty documents
@@ -278,7 +279,7 @@ Press `i` to enter WRITE mode and Esc to return to COMMAND mode.
 | `w` | Save |
 | `q` | Quit through the unsaved-change guard |
 | `e` | Show or hide the file explorer |
-| `f` | Find and open a workspace Markdown file |
+| `f` | Find and open a workspace text file |
 | `o` | Open the recent-document switcher |
 | `n` / `p` | Activate the next / previous open document tab |
 | `c` | Close the active tab through the safety guard |
@@ -299,7 +300,7 @@ Configured shortcuts remain available in both modes:
 | Ctrl+Shift+S | Save under a new path and retarget the active tab |
 | Ctrl+Q | Quit through the unsaved-change guard |
 | Ctrl+B | Show or hide the file explorer |
-| Ctrl+P | Find and open a workspace Markdown file |
+| Ctrl+P | Find and open a workspace text file |
 | Ctrl+O | Open the recent-document switcher |
 | Ctrl+PageDown / Ctrl+PageUp | Activate next / previous open document tab |
 | Ctrl+F4 | Close the active tab through the safety guard |

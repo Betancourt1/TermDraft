@@ -1003,7 +1003,7 @@ def test_export_quarantined_refuses_entry_changed_after_listing(tmp_path: Path) 
     "destination_name, message",
     [
         ("../outside.md", "outside its workspace"),
-        ("recovered.txt", "not Markdown"),
+        ("recovered.rtf", "not an editable text file"),
     ],
 )
 def test_export_quarantined_rejects_invalid_destination(

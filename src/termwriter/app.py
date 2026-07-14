@@ -34,6 +34,7 @@ from termwriter.config import ConfigError, TermWriterConfig, load_config
 from termwriter.icons import SEARCH_ICON, SEARCH_ICON_COLOR
 from termwriter.models.document import Document, FileSnapshot
 from termwriter.models.workspace import (
+    EDITABLE_SUFFIXES,
     ScanResult,
     UnsafePathError,
     UnsupportedFileError,
@@ -123,8 +124,8 @@ from termwriter.services.session import (
 from termwriter.services.text_search import TextSearchMatch, TextSearchOverride
 from termwriter.services.workspace_entries import (
     WorkspaceEntryError,
+    create_file,
     create_folder,
-    create_markdown_file,
     move_entry,
     move_to_trash,
     rename_entry,
@@ -2496,7 +2497,7 @@ class TermWriterApp(App[None]):
 
     def action_enter_write_mode(self) -> None:
         if self.document is None:
-            self.notify("Open a Markdown file before entering WRITE mode", severity="warning")
+            self.notify("Open a text file before entering WRITE mode", severity="warning")
             return
         if self._critical_io or self.editor.read_only:
             self.notify("The current document is temporarily read-only", severity="warning")
@@ -2547,7 +2548,7 @@ class TermWriterApp(App[None]):
         self._sync_editor_state()
         document = self.document
         if document is None:
-            self.notify("No Markdown file is open", severity="warning")
+            self.notify("No text file is open", severity="warning")
             return
 
         try:
@@ -3488,7 +3489,7 @@ class TermWriterApp(App[None]):
         self.editor_switcher.current = "empty-editor-buffer"
         self.explorer.set_active(None)
         self.run_worker(
-            self.preview.render_source("Select a Markdown file to begin."),
+            self.preview.render_source("Select a text file to begin."),
             group="empty-preview",
             exclusive=True,
             exit_on_error=False,
@@ -3549,6 +3550,7 @@ class TermWriterApp(App[None]):
             return
 
         if operation in {
+            WorkspaceEntryOperation.CREATE_ENTRY,
             WorkspaceEntryOperation.CREATE_FILE,
             WorkspaceEntryOperation.CREATE_FOLDER,
         }:
@@ -3567,11 +3569,8 @@ class TermWriterApp(App[None]):
             return
         self.push_screen(WorkspaceEntryDialog(operation, self.workspace.root, source=selected))
 
-    def action_create_file(self) -> None:
-        self._open_workspace_entry_dialog(WorkspaceEntryOperation.CREATE_FILE)
-
-    def action_create_folder(self) -> None:
-        self._open_workspace_entry_dialog(WorkspaceEntryOperation.CREATE_FOLDER)
+    def action_create_entry(self) -> None:
+        self._open_workspace_entry_dialog(WorkspaceEntryOperation.CREATE_ENTRY)
 
     def action_rename_entry(self) -> None:
         self._open_workspace_entry_dialog(WorkspaceEntryOperation.RENAME)
@@ -3612,6 +3611,17 @@ class TermWriterApp(App[None]):
             return
 
         operation = dialog.operation
+        value = event.value
+        if operation is WorkspaceEntryOperation.CREATE_ENTRY:
+            operation = (
+                WorkspaceEntryOperation.CREATE_FOLDER
+                if value.endswith("/")
+                else WorkspaceEntryOperation.CREATE_FILE
+            )
+            value = value.rstrip("/")
+            if not value:
+                dialog.show_error("Enter a file or folder path.")
+                return
         source = (
             dialog.destination_parent
             if operation
@@ -3636,12 +3646,12 @@ class TermWriterApp(App[None]):
         requested_target: Path | None = None
         if operation is WorkspaceEntryOperation.RENAME:
             try:
-                requested_target = source.with_name(event.value)
+                requested_target = source.with_name(value)
             except ValueError:
                 dialog.show_error("Enter one file or folder name, without a path.")
                 return
         elif operation is WorkspaceEntryOperation.MOVE:
-            requested_target = Path(event.value)
+            requested_target = Path(value)
             if not requested_target.is_absolute():
                 requested_target = self.workspace.root / requested_target
 
@@ -3682,7 +3692,7 @@ class TermWriterApp(App[None]):
         self._workspace_entry_worker(
             operation,
             source,
-            event.value,
+            value,
             dialog,
             affected_tab_paths,
             tuple((document.path, document.snapshot) for document in affected),
@@ -3733,7 +3743,7 @@ class TermWriterApp(App[None]):
                             "before changing its path."
                         )
             if operation is WorkspaceEntryOperation.CREATE_FILE:
-                target = create_markdown_file(self.workspace, source, value)
+                target = create_file(self.workspace, source, value)
             elif operation is WorkspaceEntryOperation.CREATE_FOLDER:
                 target = create_folder(self.workspace, source, value)
             elif operation is WorkspaceEntryOperation.RENAME:
@@ -3920,9 +3930,13 @@ class TermWriterApp(App[None]):
             WorkspaceEntryOperation.TRASH: f"Moved {relative} to Trash",
         }
         self.notify(escape(messages[operation]))
-        if operation is WorkspaceEntryOperation.CREATE_FILE:
+        if (
+            operation is WorkspaceEntryOperation.CREATE_FILE
+            and target.suffix.casefold() in EDITABLE_SUFFIXES
+        ):
             self.call_after_refresh(self._request_open, target)
         elif operation in {
+            WorkspaceEntryOperation.CREATE_FILE,
             WorkspaceEntryOperation.CREATE_FOLDER,
             WorkspaceEntryOperation.TRASH,
         }:
@@ -4285,16 +4299,10 @@ class TermWriterApp(App[None]):
                 self.action_duplicate_document,
             ),
             (
-                "Create Markdown file",
-                "create_file",
-                "Create and open a Markdown file beside the selected entry",
-                self.action_create_file,
-            ),
-            (
-                "Create folder",
-                "create_folder",
-                "Create a folder beside or inside the selected entry",
-                self.action_create_folder,
+                "Create file or folder",
+                "create_entry",
+                "Use .md or .txt for a file, or end the path with / for a folder",
+                self.action_create_entry,
             ),
             (
                 "Rename selected file or folder",
@@ -4317,7 +4325,7 @@ class TermWriterApp(App[None]):
             (
                 "Find file",
                 "find_file",
-                "Search Markdown paths in the workspace",
+                "Search editable text files in the workspace",
                 self.action_find_file,
             ),
             (

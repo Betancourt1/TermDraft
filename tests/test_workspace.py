@@ -17,7 +17,7 @@ def test_workspace_filters_supported_files_and_ignored_directories(tmp_path: Pat
     (tmp_path / "notes").mkdir()
     (tmp_path / "notes" / "one.md").write_text("one", encoding="utf-8")
     (tmp_path / "notes" / "DOS.MARKDOWN").write_text("two", encoding="utf-8")
-    (tmp_path / "notes" / "ignore.txt").write_text("no", encoding="utf-8")
+    (tmp_path / "notes" / "plain.txt").write_text("plain", encoding="utf-8")
     for ignored in (".git", ".venv", "node_modules", "__pycache__"):
         directory = tmp_path / ignored
         directory.mkdir()
@@ -25,7 +25,7 @@ def test_workspace_filters_supported_files_and_ignored_directories(tmp_path: Pat
 
     result = Workspace.from_target(tmp_path).scan()
 
-    assert [path.name for path in result.files] == ["DOS.MARKDOWN", "one.md"]
+    assert [path.name for path in result.files] == ["DOS.MARKDOWN", "one.md", "plain.txt"]
     assert result.directories == (tmp_path / "notes",)
     assert result.warnings == ()
 

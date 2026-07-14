@@ -21,7 +21,7 @@ from termwriter.icons import (
     MARKDOWN_ICON_COLOR,
     OPEN_FOLDER_ICON,
 )
-from termwriter.models.workspace import IGNORED_DIRECTORIES, MARKDOWN_SUFFIXES, Workspace
+from termwriter.models.workspace import EDITABLE_SUFFIXES, IGNORED_DIRECTORIES, Workspace
 
 EXPLORER_DEFAULT_WIDTH = 34
 EXPLORER_MIN_WIDTH = 20
@@ -29,7 +29,7 @@ EXPLORER_MAX_WIDTH = 48
 
 
 class MarkdownDirectoryTree(DirectoryTree):
-    """Directory tree that omits unsafe paths and non-Markdown files."""
+    """Directory tree that omits unsafe paths and unsupported files."""
 
     ICON_FILE = MARKDOWN_ICON
     ICON_NODE = FOLDER_ICON
@@ -62,7 +62,7 @@ class MarkdownDirectoryTree(DirectoryTree):
                 if path.is_dir():
                     if path.name not in IGNORED_DIRECTORIES:
                         filtered.append(path)
-                elif path.suffix.casefold() in MARKDOWN_SUFFIXES:
+                elif path.suffix.casefold() in EDITABLE_SUFFIXES:
                     filtered.append(path)
             except OSError:
                 continue

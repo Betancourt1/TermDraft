@@ -174,7 +174,7 @@ COMMAND_MODE_SHORTCUTS = (
     (BINDING_ID_COMMAND_SAVE, "save", "Save the current document"),
     (BINDING_ID_COMMAND_QUIT, "request_quit", "Quit safely"),
     (BINDING_ID_COMMAND_TOGGLE_EXPLORER, "toggle_explorer", "Show or hide files"),
-    (BINDING_ID_COMMAND_FIND_FILE, "find_file", "Find a Markdown file"),
+    (BINDING_ID_COMMAND_FIND_FILE, "find_file", "Find a text file"),
     (BINDING_ID_COMMAND_RECENT_DOCUMENTS, "open_recent", "Open a recent document"),
     (BINDING_ID_COMMAND_NEXT_TAB, "next_tab", "Activate the next open document tab"),
     (
@@ -256,7 +256,7 @@ _SHORTCUTS = (
     (BINDING_ID_SAVE_AS, "Save the active document under a new path"),
     (BINDING_ID_QUIT, "Quit safely"),
     (BINDING_ID_TOGGLE_EXPLORER, "Show or hide files"),
-    (BINDING_ID_FIND_FILE, "Find a Markdown file"),
+    (BINDING_ID_FIND_FILE, "Find a text file"),
     (BINDING_ID_RECENT_DOCUMENTS, "Open a recent document"),
     (BINDING_ID_NEXT_TAB, "Activate the next open document tab"),
     (BINDING_ID_PREVIOUS_TAB, "Activate the previous open document tab"),

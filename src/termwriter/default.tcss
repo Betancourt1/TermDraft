@@ -350,6 +350,19 @@ ModalScreen {
     min-height: 1;
 }
 
+#workspace-entry-feedback {
+    height: auto;
+    min-height: 1;
+}
+
+.workspace-entry-feedback--warning {
+    color: $warning;
+}
+
+.workspace-entry-feedback--error {
+    color: $error;
+}
+
 #help-shortcuts {
     height: auto;
 }

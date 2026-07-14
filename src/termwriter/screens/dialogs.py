@@ -18,7 +18,7 @@ from textual.widgets import Button, Checkbox, Input, OptionList, Select, Static
 from textual.widgets.option_list import Option
 from textual.worker import get_current_worker
 
-from termwriter.models.workspace import Workspace
+from termwriter.models.workspace import EDITABLE_SUFFIXES, Workspace
 from termwriter.services.file_search import search_files
 from termwriter.services.path_filter import PathFilterError, parse_path_filter
 from termwriter.services.recovery import RecoveryRecord
@@ -52,6 +52,7 @@ class RecoveryDecision(Enum):
 
 
 class WorkspaceEntryOperation(Enum):
+    CREATE_ENTRY = auto()
     CREATE_FILE = auto()
     CREATE_FOLDER = auto()
     RENAME = auto()
@@ -751,6 +752,8 @@ class WorkspaceEntryDialog(ModalScreen[bool]):
         super().__init__(id="workspace-entry-screen")
 
     def _content(self) -> tuple[str, str, str, str]:
+        if self.operation is WorkspaceEntryOperation.CREATE_ENTRY:
+            return "Create file or folder", self._location_message(), "note.md or folder/", "Create"
         if self.operation is WorkspaceEntryOperation.CREATE_FILE:
             return "Create Markdown file", self._location_message(), "note.md", "Create"
         if self.operation is WorkspaceEntryOperation.CREATE_FOLDER:
@@ -792,7 +795,7 @@ class WorkspaceEntryDialog(ModalScreen[bool]):
             yield Static(title, classes="dialog-title", markup=False)
             yield Static(message, classes="dialog-message", markup=False)
             yield Input(value, placeholder=initial, id="workspace-entry-input")
-            yield Static("", id="workspace-entry-error", markup=False)
+            yield Static("", id="workspace-entry-feedback", markup=False)
             with Horizontal(classes="dialog-buttons"):
                 yield Button(confirm_label, id="workspace-entry-confirm", variant="primary")
                 yield Button("Cancel", id="workspace-entry-cancel")
@@ -804,6 +807,36 @@ class WorkspaceEntryDialog(ModalScreen[bool]):
     def submit_input(self, event: Input.Submitted) -> None:
         if not self._busy:
             self.post_message(self.Submitted(self, event.value.strip()))
+
+    @on(Input.Changed, "#workspace-entry-input")
+    def update_creation_warning(self, event: Input.Changed) -> None:
+        if self.operation is not WorkspaceEntryOperation.CREATE_ENTRY or self.error is not None:
+            return
+        value = event.value.strip()
+        path_value = value.rstrip("/")
+        parts = Path(path_value).parts if path_value else ()
+        is_folder = value.endswith("/")
+        has_hidden_part = any(part.startswith(".") for part in parts)
+        has_file_like_folder = is_folder and any(
+            Path(part).suffix.casefold() in EDITABLE_SUFFIXES for part in parts
+        )
+        suffixes = sum(part.casefold().endswith(tuple(EDITABLE_SUFFIXES)) for part in parts)
+        unusual_file = (
+            not is_folder
+            and bool(path_value)
+            and Path(path_value).suffix.casefold() not in EDITABLE_SUFFIXES
+        )
+        warning = ""
+        if has_hidden_part or has_file_like_folder or suffixes > 1:
+            warning = (
+                "Unusual path: it contains hidden or file-like folder names. "
+                "It will still be created."
+            )
+        elif unusual_file:
+            warning = (
+                "Unusual file extension: the file will be created but will not open in TermWriter."
+            )
+        self._show_feedback(warning, warning=bool(warning))
 
     @on(Button.Pressed, "#workspace-entry-confirm")
     def submit_button(self) -> None:
@@ -829,8 +862,14 @@ class WorkspaceEntryDialog(ModalScreen[bool]):
     def show_error(self, error: str) -> None:
         self.set_busy(False)
         self.error = error
-        self.query_one("#workspace-entry-error", Static).update(error)
+        self._show_feedback(error, warning=False)
         self.query_one("#workspace-entry-input", Input).focus()
+
+    def _show_feedback(self, message: str, *, warning: bool) -> None:
+        feedback = self.query_one("#workspace-entry-feedback", Static)
+        feedback.set_class(warning, "workspace-entry-feedback--warning")
+        feedback.set_class(not warning and bool(message), "workspace-entry-feedback--error")
+        feedback.update(message)
 
 
 class TrashWorkspaceEntryDialog(ModalScreen[bool]):
@@ -875,7 +914,7 @@ class TrashWorkspaceEntryDialog(ModalScreen[bool]):
 
 
 class FileSearchDialog(ModalScreen[Path | None]):
-    """Search and select Markdown files from the validated workspace index."""
+    """Search and select text files from the validated workspace index."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
@@ -890,7 +929,7 @@ class FileSearchDialog(ModalScreen[Path | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog", id="search-dialog"):
-            yield Static("Find Markdown file", classes="dialog-title", markup=False)
+            yield Static("Find text file", classes="dialog-title", markup=False)
             yield Input(placeholder="Type part of a path…", id="search-input")
             yield Input(
                 placeholder="Includes/excludes, e.g. notes/**, !notes/archive/**",
@@ -925,7 +964,7 @@ class FileSearchDialog(ModalScreen[Path | None]):
             for index, path in enumerate(self.matches)
         ]
         if not options:
-            options = [Option("No matching Markdown files", disabled=True)]
+            options = [Option("No matching text files", disabled=True)]
         results = self.query_one("#search-results", OptionList)
         results.set_options(options)
         results.highlighted = 0 if self.matches else None

@@ -335,9 +335,9 @@ def test_resolved_path_escape_is_rejected_on_save(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "document",
-    [Path("../outside.md"), Path("inside.txt")],
+    [Path("../outside.md"), Path("inside.rtf")],
 )
-def test_save_rejects_lexical_escape_and_non_markdown_suffix(
+def test_save_rejects_lexical_escape_and_unsupported_suffix(
     tmp_path: Path,
     document: Path,
 ) -> None:
@@ -348,7 +348,7 @@ def test_save_rejects_lexical_escape_and_non_markdown_suffix(
 
     with pytest.raises(
         SessionError,
-        match=r"absolute and normalized|outside its workspace|not Markdown",
+        match=r"absolute and normalized|outside its workspace|not an editable text file",
     ):
         SessionStore(tmp_path / "state").save(state)
 

@@ -42,7 +42,7 @@ class MarkdownEditor(TextArea):
             max_checkpoints=100,
             id=id,
             classes=classes,
-            placeholder="Select a Markdown file from the explorer or press Ctrl+P.",
+            placeholder="Select a text file from the explorer or press Ctrl+P.",
         )
         self.read_only = read_only
 

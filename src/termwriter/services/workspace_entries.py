@@ -14,7 +14,6 @@ from send2trash import send2trash
 
 from termwriter.models.workspace import (
     IGNORED_DIRECTORIES,
-    MARKDOWN_SUFFIXES,
     Workspace,
     WorkspaceError,
 )
@@ -72,10 +71,11 @@ def _rename_no_replace(source: Path, target: Path) -> None:
     raise OSError(error_number, os.strerror(error_number), target)
 
 
-def _validate_name(name: str) -> str:
-    if not name or name in {".", ".."} or Path(name).name != name:
-        raise WorkspaceEntryError("Enter one file or folder name, without a path.")
-    return name
+def _validate_relative_path(path: str) -> Path:
+    candidate = Path(path)
+    if not path or candidate.is_absolute() or any(part in {".", ".."} for part in candidate.parts):
+        raise WorkspaceEntryError("Enter a path inside the workspace.")
+    return candidate
 
 
 def _validate_visible_path(workspace: Workspace, path: Path, *, must_exist: bool) -> Path:
@@ -102,14 +102,17 @@ def _validate_parent(workspace: Workspace, path: Path) -> Path:
     return parent
 
 
-def create_markdown_file(workspace: Workspace, parent: Path, name: str) -> Path:
-    """Create one empty Markdown file without replacing an existing entry."""
+def create_file(workspace: Workspace, parent: Path, path: str) -> Path:
+    """Create one empty file at an explicit path without replacing an entry."""
     safe_parent = _validate_parent(workspace, parent)
-    filename = _validate_name(name)
-    if Path(filename).suffix.casefold() not in MARKDOWN_SUFFIXES:
-        filename += ".md"
+    relative_path = _validate_relative_path(path)
     try:
-        target = workspace.validate_document_path(safe_parent / filename, must_exist=False)
+        target = _validate_visible_path(
+            workspace,
+            safe_parent / relative_path,
+            must_exist=False,
+        )
+        _validate_parent(workspace, target.parent)
         expected = snapshot_file(target)
         if expected.exists or target.is_symlink():
             raise WorkspaceEntryError(f"An entry already exists at {target.name}.")
@@ -121,14 +124,15 @@ def create_markdown_file(workspace: Workspace, parent: Path, name: str) -> Path:
     return target
 
 
-def create_folder(workspace: Workspace, parent: Path, name: str) -> Path:
+def create_folder(workspace: Workspace, parent: Path, path: str) -> Path:
     """Create one folder without creating implicit ancestor folders."""
     safe_parent = _validate_parent(workspace, parent)
     target = _validate_visible_path(
         workspace,
-        safe_parent / _validate_name(name),
+        safe_parent / _validate_relative_path(path),
         must_exist=False,
     )
+    _validate_parent(workspace, target.parent)
     if target.exists() or target.is_symlink():
         raise WorkspaceEntryError(f"An entry already exists at {target.name}.")
     try:
@@ -141,7 +145,10 @@ def create_folder(workspace: Workspace, parent: Path, name: str) -> Path:
 def rename_entry(workspace: Workspace, source: Path, name: str) -> Path:
     """Rename one existing file or folder in place."""
     safe_source = _validate_visible_path(workspace, source, must_exist=True)
-    return move_entry(workspace, safe_source, safe_source.with_name(_validate_name(name)))
+    relative_name = _validate_relative_path(name)
+    if len(relative_name.parts) != 1:
+        raise WorkspaceEntryError("Enter one file or folder name, without a path.")
+    return move_entry(workspace, safe_source, safe_source.with_name(relative_name.name))
 
 
 def move_entry(workspace: Workspace, source: Path, target: Path) -> Path:

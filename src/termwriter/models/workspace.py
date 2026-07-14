@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
+EDITABLE_SUFFIXES = frozenset({".md", ".markdown", ".txt"})
 IGNORED_DIRECTORIES = frozenset({".git", ".venv", "node_modules", "__pycache__"})
 
 
@@ -53,7 +53,7 @@ class UnsafePathError(WorkspaceError):
 
 
 class UnsupportedFileError(WorkspaceError):
-    """Raised when a path is not a supported Markdown file."""
+    """Raised when a path is not a supported editable text file."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +74,7 @@ class Workspace:
 
     @classmethod
     def from_target(cls, target: Path) -> Workspace:
-        """Build a workspace from an existing directory or Markdown file."""
+        """Build a workspace from an existing directory or editable text file."""
         requested = target.expanduser()
         if not requested.is_absolute():
             requested = Path.cwd() / requested
@@ -102,8 +102,8 @@ class Workspace:
 
         if not stat.S_ISREG(requested_stat.st_mode):
             raise UnsupportedFileError(f"Not a regular file or directory: {requested}")
-        if requested.suffix.casefold() not in MARKDOWN_SUFFIXES:
-            raise UnsupportedFileError(f"Not a Markdown file: {requested}")
+        if requested.suffix.casefold() not in EDITABLE_SUFFIXES:
+            raise UnsupportedFileError(f"Not an editable text file: {requested}")
 
         try:
             root = requested.parent.resolve(strict=True)
@@ -189,7 +189,7 @@ class Workspace:
         return candidate
 
     def validate_document_path(self, path: Path, *, must_exist: bool = True) -> Path:
-        """Validate a Markdown file path without allowing symlink traversal."""
+        """Validate an editable text-file path without allowing symlink traversal."""
         candidate = path.expanduser()
         if not candidate.is_absolute():
             candidate = self.root / candidate
@@ -213,8 +213,8 @@ class Workspace:
         except ValueError as error:
             raise UnsafePathError(f"Path is outside the workspace: {candidate}") from error
 
-        if candidate.suffix.casefold() not in MARKDOWN_SUFFIXES:
-            raise UnsupportedFileError(f"Not a Markdown file: {candidate}")
+        if candidate.suffix.casefold() not in EDITABLE_SUFFIXES:
+            raise UnsupportedFileError(f"Not an editable text file: {candidate}")
 
         current = self.root
         for part in relative.parts:
@@ -248,7 +248,7 @@ class Workspace:
             except OSError as error:
                 raise WorkspaceAccessError(f"Cannot inspect file {candidate}: {error}") from error
             if not stat.S_ISREG(file_stat.st_mode):
-                raise UnsupportedFileError(f"Not a regular Markdown file: {candidate}")
+                raise UnsupportedFileError(f"Not a regular editable text file: {candidate}")
         return candidate
 
     def scan(
@@ -256,7 +256,7 @@ class Workspace:
         *,
         should_cancel: Callable[[], bool] | None = None,
     ) -> ScanResult:
-        """Find Markdown files while treating unreadable directories as warnings."""
+        """Find editable text files while treating unreadable directories as warnings."""
         pending = [self.root]
         files: list[Path] = []
         directories: list[Path] = []
@@ -286,7 +286,7 @@ class Workspace:
                             pending.append(path)
                     elif (
                         entry.is_file(follow_symlinks=False)
-                        and path.suffix.casefold() in MARKDOWN_SUFFIXES
+                        and path.suffix.casefold() in EDITABLE_SUFFIXES
                     ):
                         files.append(path)
                 except OSError as error:

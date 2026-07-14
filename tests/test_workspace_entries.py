@@ -21,8 +21,8 @@ from termwriter.services.recovery import RecoveryJournal
 from termwriter.services.session import DocumentViewState, SessionState, SessionStore
 from termwriter.services.workspace_entries import (
     WorkspaceEntryError,
+    create_file,
     create_folder,
-    create_markdown_file,
     move_entry,
     move_to_trash,
     rename_entry,
@@ -42,10 +42,10 @@ def test_create_file_and_folder_use_explicit_workspace_locations(tmp_path: Path)
     workspace = Workspace.from_target(tmp_path)
 
     folder = create_folder(workspace, tmp_path, "notes")
-    document = create_markdown_file(workspace, folder, "idea")
+    document = create_file(workspace, folder, "idea.txt")
 
     assert folder == tmp_path / "notes"
-    assert document == folder / "idea.md"
+    assert document == folder / "idea.txt"
     assert document.read_bytes() == b""
 
 
@@ -172,28 +172,59 @@ def test_move_never_replaces_a_destination_created_after_validation(
         assert target.read_text(encoding="utf-8") == "racer"
 
 
-async def test_create_file_dialog_opens_the_new_document(tmp_path: Path) -> None:
+async def test_create_entry_dialog_opens_a_new_text_document(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     app = _app(workspace_root, tmp_path / "state")
 
     async with app.run_test(size=(100, 30)) as pilot:
-        app.action_create_file()
+        app.action_create_entry()
         await pilot.pause()
         dialog = app.screen
         assert isinstance(dialog, WorkspaceEntryDialog)
-        dialog.query_one("#workspace-entry-input", Input).value = "new-note"
+        assert "file or folder" in str(dialog.query_one(".dialog-title", Static).render())
+        dialog.query_one("#workspace-entry-input", Input).value = "new-note.txt"
         await pilot.press("enter")
         for _ in range(200):
-            if app.document is not None and app.document.path.name == "new-note.md":
+            if app.document is not None and app.document.path.name == "new-note.txt":
                 break
             await pilot.pause(0.01)
 
-        path = workspace_root / "new-note.md"
+        path = workspace_root / "new-note.txt"
         assert path.is_file()
         assert app.document is not None
         assert app.document.path == path
         assert app.editor.text == ""
+
+
+async def test_create_entry_uses_trailing_slash_for_folder_and_only_warns_about_weird_name(
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "some.txt.md").mkdir()
+    app = _app(workspace_root, tmp_path / "state")
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        app.action_create_entry()
+        await pilot.pause()
+        dialog = app.screen
+        assert isinstance(dialog, WorkspaceEntryDialog)
+        dialog.query_one("#workspace-entry-input", Input).value = "some.txt.md/.md/"
+        await pilot.pause()
+
+        feedback = dialog.query_one("#workspace-entry-feedback", Static)
+        assert "It will still be created" in str(feedback.render())
+
+        await pilot.press("enter")
+        target = workspace_root / "some.txt.md" / ".md"
+        for _ in range(200):
+            if target.is_dir():
+                break
+            await pilot.pause(0.01)
+
+        assert target.is_dir()
+        assert app.screen is not dialog
 
 
 async def test_rename_keeps_a_clean_open_document_attached(tmp_path: Path) -> None:

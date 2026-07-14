@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from termwriter.models.workspace import MARKDOWN_SUFFIXES
+from termwriter.models.workspace import EDITABLE_SUFFIXES
 
 _SCHEMA_VERSION = 2
 MAX_SESSION_BYTES = 512 * 1024
@@ -323,8 +323,8 @@ def _validate_state(state: SessionState) -> None:
 def _validate_document_path(path: Path, root: Path) -> None:
     if not path.is_absolute() or path != Path(os.path.abspath(path)):
         raise SessionError("document paths must be absolute and normalized")
-    if path.suffix.casefold() not in MARKDOWN_SUFFIXES:
-        raise SessionError(f"session document is not Markdown: {path}")
+    if path.suffix.casefold() not in EDITABLE_SUFFIXES:
+        raise SessionError(f"session document is not an editable text file: {path}")
     try:
         path.relative_to(root)
         path.resolve(strict=False).relative_to(root.resolve(strict=False))

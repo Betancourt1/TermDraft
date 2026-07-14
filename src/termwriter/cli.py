@@ -55,10 +55,10 @@ def build_parser() -> argparse.ArgumentParser:
     """Create the small, stable command-line interface."""
     parser = argparse.ArgumentParser(
         prog="termwriter",
-        description="Edit Markdown files in a local terminal workspace.",
+        description="Edit Markdown and plain-text files in a local terminal workspace.",
     )
     parser.add_argument(
-        "target", nargs="?", default=".", help="workspace directory or Markdown file"
+        "target", nargs="?", default=".", help="workspace directory or editable text file"
     )
     parser.add_argument(
         "--config-dir",

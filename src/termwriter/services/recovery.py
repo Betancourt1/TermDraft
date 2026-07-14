@@ -21,6 +21,7 @@ else:  # pragma: no cover - the branch is platform-specific
     import fcntl
 
 from termwriter.models.document import FileSnapshot
+from termwriter.models.workspace import EDITABLE_SUFFIXES
 from termwriter.services.persistence import (
     PersistenceError,
     SaveResult,
@@ -916,8 +917,8 @@ def _validate_snapshot(snapshot: FileSnapshot) -> None:
 
 
 def _validate_workspace_path(document_path: Path, workspace_root: Path) -> None:
-    if document_path.suffix.casefold() not in {".md", ".markdown"}:
-        raise RecoveryError("Recovery document is not Markdown")
+    if document_path.suffix.casefold() not in EDITABLE_SUFFIXES:
+        raise RecoveryError("Recovery document is not an editable text file")
     try:
         document_path.relative_to(workspace_root)
     except ValueError as error:
