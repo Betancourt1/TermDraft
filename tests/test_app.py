@@ -1679,7 +1679,13 @@ async def test_workspace_startup_recovers_a_deleted_source_via_save_as(
             await pilot.pause(0.01)
         assert isinstance(app.screen, RecoveryDialog)
         assert app.screen.source_missing
+        await pilot.pause()
         await pilot.click("#recovery-restore")
+
+        for _ in range(200):
+            if app.document is not None:
+                break
+            await pilot.pause(0.01)
 
         assert app.document is not None
         assert app.document.path == path
@@ -1728,7 +1734,14 @@ async def test_workspace_startup_recovers_when_source_is_invalid_utf8(
             await pilot.pause(0.01)
         assert isinstance(app.screen, RecoveryDialog)
         assert app.screen.source_missing
+        await pilot.pause()
         await pilot.click("#recovery-restore")
+
+        for _ in range(200):
+            if app.document is not None:
+                break
+            await pilot.pause(0.01)
+
         assert app.document is not None
         assert app.document.text == "draft"
 

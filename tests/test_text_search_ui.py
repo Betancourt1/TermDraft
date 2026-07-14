@@ -423,7 +423,7 @@ async def test_case_distinct_hardlink_result_opens_an_independent_tab_when_suppo
     app = _app(first)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.press("x", "ctrl+shift+f")
+        await pilot.press("i", "x", "ctrl+shift+f")
         await pilot.press("n", "e", "e", "d", "l", "e", "enter")
         await pilot.pause(0.15)
 
