@@ -4,12 +4,15 @@ from typing import ClassVar
 
 from textual import events
 from textual.binding import BindingType
-from textual.widgets import TextArea
+from textual.widget import Widget
+from textual.widgets import Static, TextArea
 
 from termwriter.bindings import EDITOR_BINDINGS
 from termwriter.services.markdown_continuation import continuation_edit
+from termwriter.widgets.scrollbar import use_thin_vertical_scrollbar
 
 _COMMAND_NAVIGATION_KEYS = frozenset({"up", "down", "left", "right"})
+WORKBENCH_MIN_PANE_WIDTH = 20
 
 
 class MarkdownEditor(TextArea):
@@ -42,6 +45,9 @@ class MarkdownEditor(TextArea):
             placeholder="Select a Markdown file from the explorer or press Ctrl+P.",
         )
         self.read_only = read_only
+
+    def on_mount(self) -> None:
+        use_thin_vertical_scrollbar(self)
 
     def undo(self) -> None:
         """Keep history immutable while a background writer owns the source."""
@@ -85,3 +91,56 @@ class MarkdownEditor(TextArea):
                 self.move_cursor((edit.cursor_line, edit.cursor_column))
                 return
         await super()._on_key(event)
+
+
+class WorkbenchResizeHandle(Static):
+    """Drag handle for resizing the raw editor and rendered preview."""
+
+    def __init__(self) -> None:
+        self._drag_start_x: int | None = None
+        self._drag_start_editor_width = 0
+        self._drag_start_preview_width = 0
+        super().__init__(
+            id="workbench-resize-handle",
+            classes="horizontal-resize-handle",
+        )
+        self.tooltip = "Drag to resize raw and preview panes"
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button != 1:
+            return
+        editor, preview = self._panes()
+        self._drag_start_x = int(event.screen_x)
+        self._drag_start_editor_width = editor.region.width
+        self._drag_start_preview_width = preview.region.width
+        self.capture_mouse()
+        event.stop()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if self._drag_start_x is None:
+            return
+        editor, preview = self._panes()
+        total_width = self._drag_start_editor_width + self._drag_start_preview_width
+        editor_width = min(
+            max(
+                self._drag_start_editor_width + int(event.screen_x) - self._drag_start_x,
+                WORKBENCH_MIN_PANE_WIDTH,
+            ),
+            total_width - WORKBENCH_MIN_PANE_WIDTH,
+        )
+        editor.styles.width = f"{editor_width}fr"
+        preview.styles.width = f"{total_width - editor_width}fr"
+        event.stop()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if self._drag_start_x is None:
+            return
+        self._drag_start_x = None
+        self.release_mouse()
+        event.stop()
+
+    def _panes(self) -> tuple[Widget, Widget]:
+        return (
+            self.screen.query_one("#markdown-editor", Widget),
+            self.screen.query_one("#markdown-preview", Widget),
+        )

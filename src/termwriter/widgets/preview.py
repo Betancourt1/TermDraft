@@ -25,6 +25,7 @@ from termwriter.services.markdown_preview import (
     FOOTNOTE_LABEL_TOKEN,
     preview_parser,
 )
+from termwriter.widgets.scrollbar import use_thin_vertical_scrollbar
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +146,9 @@ class MarkdownPreview(Markdown):
             open_links=False,
             parser_factory=preview_parser,
         )
+
+    def on_mount(self) -> None:
+        use_thin_vertical_scrollbar(self)
 
     async def render_source(self, source: str) -> None:
         """Replace the rendered document and wait for its blocks to mount."""

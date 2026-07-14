@@ -129,7 +129,7 @@ from termwriter.services.workspace_entries import (
     move_to_trash,
     rename_entry,
 )
-from termwriter.widgets.editor import MarkdownEditor
+from termwriter.widgets.editor import MarkdownEditor, WorkbenchResizeHandle
 from termwriter.widgets.file_tree import ExplorerResizeHandle, FileExplorer
 from termwriter.widgets.preview import MarkdownPreview
 from termwriter.widgets.status_bar import TermWriterStatusBar
@@ -533,6 +533,7 @@ class TermWriterApp(App[None]):
                     initial="empty-editor-buffer",
                     id="markdown-editor",
                 )
+                yield WorkbenchResizeHandle()
                 yield MarkdownPreview()
         yield TermWriterStatusBar()
 
@@ -658,6 +659,10 @@ class TermWriterApp(App[None]):
     @property
     def explorer_resize_handle(self) -> ExplorerResizeHandle:
         return self.query_one(ExplorerResizeHandle)
+
+    @property
+    def workbench_resize_handle(self) -> WorkbenchResizeHandle:
+        return self.query_one(WorkbenchResizeHandle)
 
     def _document_ticket(self, document: Document) -> _DocumentTicket:
         return _DocumentTicket(
@@ -797,6 +802,7 @@ class TermWriterApp(App[None]):
     def _apply_panel_visibility(self) -> None:
         self.explorer.display = self._explorer_visible
         self.explorer_resize_handle.display = self._explorer_visible
+        self.workbench_resize_handle.display = not self._narrow and self._preview_visible
         if self._narrow:
             show_preview = self._preview_visible and self._narrow_pane == "preview"
             self.editor_switcher.display = not show_preview

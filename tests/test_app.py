@@ -40,7 +40,9 @@ from termwriter.services.recovery import (
     RecoveryRetentionResult,
 )
 from termwriter.services.session import DocumentViewState, SessionState, SessionStore
+from termwriter.widgets.editor import WORKBENCH_MIN_PANE_WIDTH
 from termwriter.widgets.file_tree import EXPLORER_MAX_WIDTH, EXPLORER_MIN_WIDTH
+from termwriter.widgets.scrollbar import ThinScrollBarRender
 
 
 def app_for_file(
@@ -830,10 +832,12 @@ async def test_narrow_layout_switches_between_editor_and_preview(tmp_path: Path)
         await pilot.press("ctrl+b")
         assert not app.explorer.display
         assert not app.explorer_resize_handle.display
+        assert not app.workbench_resize_handle.display
 
         await pilot.press("ctrl+b")
         assert app.explorer.display
         assert app.explorer_resize_handle.display
+        assert not app.workbench_resize_handle.display
 
 
 async def test_explorer_is_wider_resizable_and_has_no_horizontal_scrollbar(
@@ -904,6 +908,35 @@ async def test_editor_and_preview_use_compact_scrollbars(tmp_path: Path) -> None
             assert widget.styles.scrollbar_size_horizontal == 0
             assert widget.scrollbar_size_vertical == 1
             assert widget.scrollbar_size_horizontal == 0
+            assert widget.vertical_scrollbar.renderer is ThinScrollBarRender
+
+
+async def test_raw_and_preview_panes_can_be_resized_and_keep_minimum_widths(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("content", encoding="utf-8")
+    app = app_for_file(path)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        initial_editor_width = app.editor_switcher.region.width
+
+        await pilot.mouse_down(app.workbench_resize_handle)
+        await pilot.hover(offset=(118, 2))
+        await pilot.mouse_up(offset=(118, 2))
+        assert app.editor_switcher.region.width > initial_editor_width
+        assert app.preview.region.width == WORKBENCH_MIN_PANE_WIDTH
+
+        await pilot.mouse_down(app.workbench_resize_handle)
+        await pilot.hover(offset=(2, 2))
+        await pilot.mouse_up(offset=(2, 2))
+        assert app.editor_switcher.region.width == WORKBENCH_MIN_PANE_WIDTH
+
+        await pilot.press("ctrl+e")
+        assert not app.workbench_resize_handle.display
+
+        await pilot.press("ctrl+e")
+        assert app.workbench_resize_handle.display
 
 
 async def test_showing_wide_preview_focuses_keyboard_link_navigation(tmp_path: Path) -> None:

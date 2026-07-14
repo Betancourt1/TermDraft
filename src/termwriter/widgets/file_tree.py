@@ -120,7 +120,10 @@ class ExplorerResizeHandle(Static):
     def __init__(self) -> None:
         self._drag_start_x: int | None = None
         self._drag_start_width = EXPLORER_DEFAULT_WIDTH
-        super().__init__(id="explorer-resize-handle")
+        super().__init__(
+            id="explorer-resize-handle",
+            classes="horizontal-resize-handle",
+        )
         self.tooltip = "Drag to resize files"
 
     def on_mouse_down(self, event: events.MouseDown) -> None:

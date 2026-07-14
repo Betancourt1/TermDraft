@@ -30,14 +30,14 @@ Screen {
     background: $surface;
 }
 
-#explorer-resize-handle {
+.horizontal-resize-handle {
     width: 1;
     height: 1fr;
     background: $panel-lighten-2;
     pointer: ew-resize;
 }
 
-#explorer-resize-handle:hover {
+.horizontal-resize-handle:hover {
     background: $accent;
 }
 
@@ -61,6 +61,7 @@ Screen {
 
 #markdown-editor {
     width: 1fr;
+    min-width: 20;
     height: 1fr;
 }
 
@@ -73,13 +74,16 @@ Screen {
 .markdown-editor-buffer, #markdown-preview {
     scrollbar-size-vertical: 1;
     scrollbar-size-horizontal: 0;
+    scrollbar-background: transparent;
+    scrollbar-background-hover: transparent;
+    scrollbar-background-active: transparent;
 }
 
 #markdown-preview {
     width: 1fr;
+    min-width: 20;
     height: 1fr;
     padding: 0 2;
-    border-left: solid $panel-lighten-2;
     overflow-y: auto;
 }
 
