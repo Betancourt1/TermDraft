@@ -132,7 +132,7 @@ from termwriter.services.workspace_entries import (
 )
 from termwriter.widgets.editor import MarkdownEditor, WorkbenchResizeHandle
 from termwriter.widgets.file_tree import ExplorerResizeHandle, FileExplorer
-from termwriter.widgets.preview import MarkdownPreview
+from termwriter.widgets.preview import EMPTY_WORKSPACE_GUIDANCE, MarkdownPreview
 from termwriter.widgets.status_bar import TermWriterStatusBar
 
 _MONOCHROME_THEME = Theme(
@@ -3489,7 +3489,7 @@ class TermWriterApp(App[None]):
         self.editor_switcher.current = "empty-editor-buffer"
         self.explorer.set_active(None)
         self.run_worker(
-            self.preview.render_source("Select a text file to begin."),
+            self.preview.render_source(EMPTY_WORKSPACE_GUIDANCE),
             group="empty-preview",
             exclusive=True,
             exit_on_error=False,

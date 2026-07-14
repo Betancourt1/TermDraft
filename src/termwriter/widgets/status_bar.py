@@ -11,7 +11,7 @@ from termwriter.models.document import Document
 
 
 class TermWriterStatusBar(Static):
-    """Render mode, path, dirty state, words, cursor, save, and conflict."""
+    """Render mode, safety state, path, and ordinary document metadata."""
 
     def __init__(self) -> None:
         super().__init__("WRITE · FILES | No file open", id="status-bar", markup=False)
@@ -25,29 +25,28 @@ class TermWriterStatusBar(Static):
         announcement: str | None = None,
     ) -> None:
         status = Text(mode, style="bold")
-        status.append("  |  ", style="dim")
         if document is None:
+            status.append("  |  ", style="dim")
             status.append("No file open", style="dim")
             self.update(status)
             return
 
-        status.append(document.path.relative_to(root).as_posix())
+        if document.conflict:
+            status.append("  |  CONFLICT", style="bold red")
         if document.dirty:
-            status.append("  ● modified", style="bold yellow")
+            status.append("  |  ● modified", style="bold yellow")
         if document.recovery_saved:
             status.append("  |  RECOVERY STORED", style="bold cyan")
         if document.has_mixed_line_endings:
             status.append(f"  |  {document.line_ending_label}", style="bold magenta")
+        status.append("  |  ", style="dim")
+        status.append(document.path.relative_to(root).as_posix())
         if announcement is not None:
             status.append("  |  ", style="dim")
             status.append(announcement, style="bold cyan")
-            if document.conflict:
-                status.append("  |  CONFLICT", style="bold red")
             self.update(status)
             return
         status.append(f"  |  {document.word_count} words")
         status.append(f"  |  Ln {document.cursor.line + 1}, Col {document.cursor.column + 1}")
         status.append(f"  |  {document.last_save_status}")
-        if document.conflict:
-            status.append("  |  CONFLICT", style="bold red")
         self.update(status)

@@ -27,6 +27,11 @@ from termwriter.services.markdown_preview import (
 )
 from termwriter.widgets.scrollbar import use_thin_vertical_scrollbar
 
+EMPTY_WORKSPACE_GUIDANCE = (
+    "COMMAND mode: press : and choose Create file or folder. "
+    "Ctrl+P opens existing files; ? shows help."
+)
+
 
 @dataclass(frozen=True, slots=True)
 class _PreviewLink:
@@ -133,7 +138,7 @@ class MarkdownPreview(Markdown):
             return self.preview
 
     def __init__(self) -> None:
-        self.source_text = "Select a text file to begin."
+        self.source_text = EMPTY_WORKSPACE_GUIDANCE
         self._footnote_origins: dict[str, float] = {}
         self._footnote_link_origins: dict[str, int] = {}
         self._links: list[_PreviewLink] = []
