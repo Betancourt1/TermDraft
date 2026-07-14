@@ -72,7 +72,20 @@ Unicode-aware whole-word matching and time-limited regular expressions.
 
 ## Installation
 
-From the repository:
+With Homebrew:
+
+```bash
+brew install Betancourt1/tap/termdraft
+```
+
+Upgrade or remove it with:
+
+```bash
+brew upgrade Betancourt1/tap/termdraft
+brew uninstall termdraft
+```
+
+Alternatively, install from the repository:
 
 ```bash
 git clone https://github.com/Betancourt1/TermDraft.git
@@ -91,9 +104,10 @@ python -m pip install -e ".[dev]"
 ## Releases and distribution
 
 [GitHub Releases](https://github.com/Betancourt1/TermDraft/releases) is the canonical source for
-tagged artifacts and checksums. The intended first-party package channel is a dedicated Homebrew
-tap. See [`docs/releasing.md`](docs/releasing.md) for the maintainer checklist, including public
-artifact and tap validation. No public Homebrew formula is available yet.
+tagged artifacts and checksums. The
+[Homebrew tap](https://github.com/Betancourt1/homebrew-tap) is the first-party package channel.
+See [`docs/releasing.md`](docs/releasing.md) for the maintainer checklist, including public artifact
+and tap validation.
 
 ## Running
 
