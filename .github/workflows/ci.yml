@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - name: Install project and development tools
+        run: python -m pip install ".[dev]"
+      - name: Check formatting
+        run: ruff format --check .
+      - name: Lint
+        run: ruff check .
+      - name: Type check
+        run: mypy src tests
+
+  tests:
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install project and development tools
+        run: python -m pip install ".[dev]"
+      - name: Run tests
+        run: pytest -q
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up Python 3.14
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.14"
+      - name: Install build tools
+        run: python -m pip install build twine
+      - name: Build distributions
+        run: python -m build
+      - name: Check distribution metadata
+        run: python -m twine check --strict dist/*
+      - name: Verify installed wheel
+        run: |
+          python -m venv .wheel-venv
+          .wheel-venv/bin/python -m pip install dist/*.whl
+          .wheel-venv/bin/termwriter --version
+          .wheel-venv/bin/python -m termwriter --version
+          .wheel-venv/bin/termwriter --help
+          .wheel-venv/bin/termwriter --commands
+          .wheel-venv/bin/termwriter-benchmark --help
+          .wheel-venv/bin/python -m pip check
