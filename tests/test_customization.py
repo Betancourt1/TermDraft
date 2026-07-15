@@ -313,8 +313,13 @@ async def test_user_theme_overrides_bundled_css(tmp_path: Path) -> None:
             "#title-bar { background: #040506; }\n",
             encoding="utf-8",
         )
-        await pilot.pause(0.35)
-        assert title.styles.background == Color(4, 5, 6)
+        expected_background = Color(4, 5, 6)
+        for _ in range(200):
+            if title.styles.background == expected_background:
+                break
+            await pilot.pause(0.01)
+        else:
+            raise AssertionError("user theme did not reload")
 
 
 async def test_invalid_user_theme_is_ignored_with_warning(tmp_path: Path) -> None:
