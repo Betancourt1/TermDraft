@@ -351,8 +351,12 @@ async def test_footnote_links_scroll_within_preview_and_never_open_urls() -> Non
         assert preview.scroll_y > 0
 
         await definition.action_link(f"{FOOTNOTE_BACKREF_PREFIX}1")
-        await pilot.pause()
-        assert preview.scroll_y == 0
+        for _ in range(200):
+            if preview.scroll_y == 0:
+                break
+            await pilot.pause(0.01)
+        else:
+            raise AssertionError("footnote back-reference did not restore the scroll position")
 
         await origin.action_link("https://example.com")
         await pilot.pause()

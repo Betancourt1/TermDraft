@@ -9,8 +9,8 @@ Notable changes to TermDraft are recorded here. The format follows
 
 ### Fixed
 
-- Wait for the complete active-save result in the multi-tab release test instead of racing the disk
-  write against the document-state callback.
+- Wait for complete UI results in the multi-tab save and footnote navigation tests instead of racing
+  disk-write and scroll callbacks.
 
 ## [1.1.0] - 2026-07-15
 
