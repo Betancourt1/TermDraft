@@ -799,7 +799,16 @@ async def test_blocked_save_is_read_only_and_cannot_be_quit_mid_publication(
         assert app.editor.text == before
 
         release.set()
-        await _wait_until(pilot, lambda: bool(app.document and not app.document.dirty))
+        await _wait_until(
+            pilot,
+            lambda: bool(
+                app.document
+                and not app.document.dirty
+                and not app.editor.read_only
+                and not app._critical_io
+            ),
+            attempts=500,
+        )
 
         assert path.read_text(encoding="utf-8") == "xbase"
         assert app.document is not None

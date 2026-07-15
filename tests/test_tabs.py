@@ -224,10 +224,19 @@ async def test_quit_guards_each_dirty_tab_and_cancel_stops_exit(tmp_path: Path) 
         assert app.document is not None and app.document.path == second
 
         await pilot.press("y")
-        for _ in range(200):
-            if isinstance(app.screen, UnsavedChangesDialog) and app.document.path == first:
+        for _ in range(500):
+            second_buffer = app._open_document_for_path(second)
+            if (
+                isinstance(app.screen, UnsavedChangesDialog)
+                and app.document is not None
+                and app.document.path == first
+                and second_buffer is not None
+                and not second_buffer.dirty
+            ):
                 break
             await pilot.pause(0.01)
+        else:
+            raise AssertionError("quit flow did not advance to the next dirty tab")
 
         assert second.read_text(encoding="utf-8") == "ysecond"
         assert isinstance(app.screen, UnsavedChangesDialog)

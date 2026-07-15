@@ -317,6 +317,15 @@ async def test_edit_marks_dirty_updates_preview_and_save_updates_file(tmp_path: 
         assert app.preview.source_text == "xHello"
 
         await pilot.press("ctrl+s")
+        await _wait_until(
+            pilot,
+            lambda: bool(
+                app.document
+                and not app.document.dirty
+                and app.document.last_save_status.startswith("Saved ")
+            ),
+            attempts=500,
+        )
 
         assert path.read_text(encoding="utf-8") == "xHello"
         assert not app.document.dirty
@@ -2235,6 +2244,15 @@ async def test_recovery_manager_restores_quarantine_into_guarded_open_flow(
             await pilot.pause(0.01)
         assert isinstance(app.screen, RecoveryDialog)
         await pilot.click("#recovery-restore")
+        await _wait_until(
+            pilot,
+            lambda: bool(
+                app.document
+                and app.document.text == "archived unsaved draft"
+                and app.document.dirty
+            ),
+            attempts=500,
+        )
 
         assert app.document is not None
         assert app.document.text == "archived unsaved draft"

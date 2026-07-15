@@ -9,8 +9,8 @@ Notable changes to TermDraft are recorded here. The format follows
 
 ### Fixed
 
-- Wait for complete UI results in asynchronous save, footnote navigation, workspace watcher, and
-  theme reload tests instead of racing their disk-write, scroll, explorer, and CSS callbacks.
+- Wait for complete UI results in asynchronous save, recovery, footnote navigation, workspace
+  watcher, and theme reload tests instead of racing their worker and interface callbacks.
 
 ## [1.1.0] - 2026-07-15
 
