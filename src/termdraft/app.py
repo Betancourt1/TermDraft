@@ -13,7 +13,7 @@ from textual import events, on, work
 from textual.app import App, ComposeResult, SystemCommand
 from textual.color import Color
 from textual.command import CommandPalette, SearchIcon
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.css.stylesheet import Stylesheet
 from textual.filter import LineFilter, Monochrome
 from textual.screen import ModalScreen, Screen
@@ -518,7 +518,8 @@ class TermDraftApp(App[None]):
                     id="markdown-editor",
                 )
                 yield WorkbenchResizeHandle()
-                yield MarkdownPreview()
+                with Vertical(id="markdown-preview-pane"):
+                    yield MarkdownPreview()
         yield TermDraftStatusBar()
 
     async def on_mount(self) -> None:
@@ -636,6 +637,10 @@ class TermDraftApp(App[None]):
     @property
     def preview(self) -> MarkdownPreview:
         return self.query_one(MarkdownPreview)
+
+    @property
+    def preview_pane(self) -> Vertical:
+        return self.query_one("#markdown-preview-pane", Vertical)
 
     @property
     def document_tabs(self) -> Tabs:
@@ -801,10 +806,12 @@ class TermDraftApp(App[None]):
             show_preview = self._preview_visible and self._narrow_pane == "preview"
             self.editor_switcher.display = not show_preview
             self.editor.display = not show_preview
+            self.preview_pane.display = show_preview
             self.preview.display = show_preview
         else:
             self.editor_switcher.display = True
             self.editor.display = True
+            self.preview_pane.display = self._preview_visible
             self.preview.display = self._preview_visible
         self._refresh_status()
 

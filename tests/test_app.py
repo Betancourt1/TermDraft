@@ -947,6 +947,37 @@ async def test_editor_and_preview_use_compact_scrollbars(tmp_path: Path) -> None
             assert widget.vertical_scrollbar.renderer is ThinScrollBarRender
 
 
+async def test_raw_and_preview_measures_center_and_shrink_with_their_panes(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("x" * 120, encoding="utf-8")
+    app = app_for_file(path)
+
+    async with app.run_test(size=(280, 30)) as pilot:
+        await pilot.pause(0.03)
+
+        assert app.editor.region.width == 108
+        assert app.preview.region.width == 104
+        assert app.editor.wrap_width == 100
+        assert app.preview.content_region.width == 100
+        assert (
+            app.editor.region.x - app.editor_switcher.region.x
+            == (app.editor_switcher.region.width - app.editor.region.width) // 2
+        )
+        assert (
+            app.preview.region.x - app.preview_pane.region.x
+            == (app.preview_pane.region.width - app.preview.region.width) // 2
+        )
+
+        app.editor_switcher.styles.width = 60
+        app.preview_pane.styles.width = 60
+        await pilot.pause()
+
+        assert app.editor.region.width == app.editor_switcher.region.width == 60
+        assert app.preview.region.width == app.preview_pane.region.width == 60
+
+
 async def test_raw_and_preview_panes_can_be_resized_and_keep_minimum_widths(
     tmp_path: Path,
 ) -> None:

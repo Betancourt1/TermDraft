@@ -156,5 +156,5 @@ class WorkbenchResizeHandle(Static):
     def _panes(self) -> tuple[Widget, Widget]:
         return (
             self.screen.query_one("#markdown-editor", Widget),
-            self.screen.query_one("#markdown-preview", Widget),
+            self.screen.query_one("#markdown-preview-pane", Widget),
         )
