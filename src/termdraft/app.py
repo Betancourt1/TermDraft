@@ -1071,7 +1071,7 @@ class TermDraftApp(App[None]):
             id=editor_id,
             classes="markdown-editor-buffer",
         )
-        editor.write_mode = self._interaction_mode is _InteractionMode.WRITE
+        editor.set_write_mode(self._interaction_mode is _InteractionMode.WRITE)
         return editor
 
     def _set_editor_baseline(self, document: Document) -> None:
@@ -2547,7 +2547,7 @@ class TermDraftApp(App[None]):
         self._interaction_mode = mode
         write_mode = mode is _InteractionMode.WRITE
         for editor in self.query(MarkdownEditor):
-            editor.write_mode = write_mode
+            editor.set_write_mode(write_mode)
         self.refresh_bindings()
         self._refresh_status()
 

@@ -71,6 +71,12 @@ Screen {
     border: none;
 }
 
+.markdown-editor-buffer.write-mode .text-area--cursor {
+    color: $foreground;
+    background: transparent;
+    text-style: underline;
+}
+
 .markdown-editor-buffer, #markdown-preview {
     scrollbar-size-vertical: 1;
     scrollbar-size-horizontal: 0;

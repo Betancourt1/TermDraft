@@ -59,6 +59,29 @@ async def test_write_mode_inserts_navigation_letters_normally(tmp_path: Path) ->
         assert app.editor.text == "hjklsource"
 
 
+async def test_cursor_changes_shape_with_the_interaction_mode(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    app = _app(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        command_cursor = app.editor.get_component_rich_style("text-area--cursor")
+        assert not app.editor.has_class("write-mode")
+        assert command_cursor.bgcolor is not None
+        assert not command_cursor.underline
+
+        await pilot.press("i")
+
+        write_cursor = app.editor.get_component_rich_style("text-area--cursor")
+        assert app.editor.has_class("write-mode")
+        assert write_cursor.bgcolor != command_cursor.bgcolor
+        assert write_cursor.underline
+
+        await pilot.press("escape")
+
+        assert not app.editor.has_class("write-mode")
+
+
 async def test_command_navigation_remap_replaces_default_key(tmp_path: Path) -> None:
     path = tmp_path / "note.md"
     path.write_text("source", encoding="utf-8")

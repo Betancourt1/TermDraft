@@ -32,7 +32,6 @@ class MarkdownEditor(TextArea):
         classes: str | None = None,
     ) -> None:
         self.auto_continue_lists = auto_continue_lists
-        self.write_mode = True
         super().__init__(
             text,
             language="markdown",
@@ -47,6 +46,7 @@ class MarkdownEditor(TextArea):
                 "Ctrl+P opens existing files; ? shows help."
             ),
         )
+        self.set_write_mode(True)
         self.read_only = read_only
 
     def on_mount(self) -> None:
@@ -61,6 +61,11 @@ class MarkdownEditor(TextArea):
         """Keep history immutable while a background writer owns the source."""
         if not self.read_only:
             super().redo()
+
+    def set_write_mode(self, enabled: bool) -> None:
+        """Switch input ownership and the matching Vim-style cursor."""
+        self.write_mode = enabled
+        self.set_class(enabled, "write-mode")
 
     def check_consume_key(self, key: str, character: str | None = None) -> bool:
         """Let application command bindings own printable keys outside WRITE mode."""
