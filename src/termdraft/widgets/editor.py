@@ -12,6 +12,7 @@ from termdraft.services.markdown_continuation import continuation_edit
 from termdraft.widgets.scrollbar import use_thin_vertical_scrollbar
 
 _COMMAND_NAVIGATION_KEYS = frozenset({"up", "down", "left", "right"})
+MAX_VISUAL_LINE_WIDTH = 100
 WORKBENCH_MIN_PANE_WIDTH = 20
 
 
@@ -51,6 +52,11 @@ class MarkdownEditor(TextArea):
 
     def on_mount(self) -> None:
         use_thin_vertical_scrollbar(self)
+
+    @property
+    def wrap_width(self) -> int:
+        """Soft-wrap wide views without changing the document source."""
+        return min(super().wrap_width, MAX_VISUAL_LINE_WIDTH)
 
     def undo(self) -> None:
         """Keep history immutable while a background writer owns the source."""

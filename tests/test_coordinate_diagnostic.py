@@ -130,6 +130,24 @@ async def test_matches_live_textual_wrapped_document() -> None:
         assert (diagnostic.visual_cell, diagnostic.visual_row) == live
 
 
+async def test_wide_editor_wraps_at_100_without_changing_source() -> None:
+    source = "x" * 120
+
+    class WideEditorApp(App[None]):
+        def compose(self) -> ComposeResult:
+            yield MarkdownEditor(source, read_only=False, show_line_numbers=False)
+
+    app = WideEditorApp()
+
+    async with app.run_test(size=(140, 8)) as pilot:
+        await pilot.pause()
+        editor = app.query_one(MarkdownEditor)
+
+        assert editor.wrap_width == 100
+        assert editor.wrapped_document.get_offsets(0) == [100]
+        assert editor.text == source
+
+
 async def test_command_opens_read_only_coordinate_snapshot(tmp_path: Path) -> None:
     path = tmp_path / "unicode.md"
     path.write_text("a🙂\n", encoding="utf-8")
