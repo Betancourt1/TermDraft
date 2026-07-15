@@ -5,16 +5,27 @@ Notable changes to TermDraft are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-15
+
 ### Added
 
-- Added focused Files keys for create, copy, cut, paste, rename, and Trash operations.
+- Added focused Files keys for creating, copying, cutting, pasting, renaming, and moving entries to
+  Trash.
+- Added direct COMMAND keys for Save As, duplicate, find and replace, document outline,
+  configuration reload, recovery management, Markdown help, and semantic diagnostics.
 
 ### Changed
 
-- Grouped the command palette into a compact two-column cheatsheet with one-line actions.
-- Show workspace indexing and queued file-finder activity in the status bar during long scans.
-- Turned the command palette into a keybinding cheatsheet and moved workspace mutations to Files.
-- Aligned COMMAND keys with common Vim, Helix, Yazi, and Lazygit conventions.
+- Open the initial document before indexing large workspaces, show indexing progress in the status
+  bar, and open a requested file finder when the scan finishes.
+- Changed the editor cursor shape between COMMAND and WRITE modes.
+- Reworked the command palette into a searchable two-column keybinding cheatsheet that stacks on
+  narrow terminals.
+- Centered wide editor and preview reading areas and capped visual source wrapping at 100 columns
+  without changing the document.
+- Aligned default COMMAND keys with common Vim, Helix, Yazi, and Lazygit conventions. Next tab moved
+  from `n` to `]`, previous tab from `p` to `[`, close tab from `c` to `C`, and redo from `r` to `U`.
+  Explicit keybinding overrides remain supported.
 
 ## [1.0.0] - 2026-07-14
 
@@ -53,5 +64,6 @@ Notable changes to TermDraft are recorded here. The format follows
 - Established the local-first terminal writing loop with a file explorer, Markdown source editor,
   rendered preview, protected saves, and crash-recovery journals.
 
-[Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/Betancourt1/TermDraft/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v1.0.0
