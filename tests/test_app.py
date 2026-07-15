@@ -1230,6 +1230,11 @@ async def test_workspace_watcher_refreshes_external_files_and_folders(
     )
 
     async with app.run_test(size=(100, 30)) as pilot:
+        await _wait_until(
+            pilot,
+            lambda: app._workspace_scan_applied and existing in app.workspace_files,
+            attempts=500,
+        )
         tree = app.explorer.directory_tree
         real_reload = tree.reload
         reloads = 0
