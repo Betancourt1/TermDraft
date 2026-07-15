@@ -383,7 +383,7 @@ async def test_explorer_cut_keeps_a_dirty_document_at_its_original_path(tmp_path
         assert app._workspace_clipboard is not None
 
 
-async def test_explorer_keys_rename_and_trash_the_selected_entry(tmp_path: Path) -> None:
+async def test_explorer_keys_rename_move_and_trash_the_selected_entry(tmp_path: Path) -> None:
     source = tmp_path / "draft.md"
     source.write_text("draft", encoding="utf-8")
     app = _app(tmp_path, tmp_path / "state")
@@ -397,8 +397,16 @@ async def test_explorer_keys_rename_and_trash_the_selected_entry(tmp_path: Path)
 
         _select_root_entry(app, source)
         await pilot.press("r")
-        assert isinstance(app.screen, WorkspaceEntryDialog)
-        assert app.screen.operation is WorkspaceEntryOperation.RENAME
+        rename_dialog = app.screen
+        assert isinstance(rename_dialog, WorkspaceEntryDialog)
+        assert rename_dialog.operation is WorkspaceEntryOperation.RENAME
+        await pilot.press("escape")
+
+        _select_root_entry(app, source)
+        await pilot.press("m")
+        move_dialog = app.screen
+        assert isinstance(move_dialog, WorkspaceEntryDialog)
+        assert move_dialog.operation is WorkspaceEntryOperation.MOVE
         await pilot.press("escape")
 
         _select_root_entry(app, source)

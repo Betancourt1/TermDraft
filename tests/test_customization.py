@@ -372,6 +372,8 @@ async def test_command_palette_and_help_expose_product_actions(tmp_path: Path) -
     async with app.run_test(size=(100, 30)) as pilot:
         commands = {command.title: command for command in app.get_system_commands(app.screen)}
         expected_keys = {
+            "Enter WRITE mode": "i",
+            "Enter COMMAND mode": "Esc",
             "Save document": "w",
             "Save document as…": "W",
             "Duplicate document…": "D",
@@ -384,6 +386,13 @@ async def test_command_palette_and_help_expose_product_actions(tmp_path: Path) -
             "Find and replace in document": "s",
             "Open document outline": "S",
             "Toggle file explorer": "e",
+            "Create file or folder": "a",
+            "Copy file or folder": "c",
+            "Cut file or folder": "x",
+            "Paste file or folder": "p",
+            "Rename file or folder": "r",
+            "Move file or folder": "m",
+            "Move file or folder to Trash": "d",
             "Toggle preview": "v",
             "Undo": "u",
             "Redo": "U",
@@ -413,6 +422,8 @@ async def test_command_palette_and_help_expose_product_actions(tmp_path: Path) -
             for group, selector in {
                 "document": "#--command-document",
                 "navigate": "#--command-navigate",
+                "files": "#--command-files",
+                "mode": "#--command-mode",
                 "edit": "#--command-edit",
                 "view": "#--command-view",
             }.items()
@@ -433,6 +444,19 @@ async def test_command_palette_and_help_expose_product_actions(tmp_path: Path) -
                 "s  Find and replace",
                 "S  Outline",
                 "e  Explorer",
+            ],
+            "files": [
+                "a  Create",
+                "c  Copy",
+                "x  Cut",
+                "p  Paste",
+                "r  Rename",
+                "m  Move",
+                "d  Trash",
+            ],
+            "mode": [
+                "i  Write mode",
+                "Esc  Command mode",
             ],
             "edit": [
                 "u  Undo",
@@ -460,6 +484,8 @@ async def test_command_palette_and_help_expose_product_actions(tmp_path: Path) -
             app.screen.query_one(selector, OptionList).highlighted is None
             for selector in (
                 "#--command-navigate",
+                "#--command-files",
+                "#--command-mode",
                 "#--command-edit",
                 "#--command-view",
             )
@@ -493,7 +519,7 @@ async def test_palette_filters_navigates_and_executes_commands(tmp_path: Path) -
         command_input.value = "toggle preview"
         lists = list(app.screen.query(".command-group-list").results(OptionList))
         await _wait_until(pilot, lambda: sum(widget.option_count for widget in lists) == 1)
-        assert [widget.option_count for widget in lists] == [0, 0, 0, 1]
+        assert [widget.option_count for widget in lists] == [0, 0, 0, 0, 0, 1]
         assert str(lists[-1].options[0].prompt) == "v  Preview"
 
         preview_was_visible = app.preview.display

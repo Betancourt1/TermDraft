@@ -39,6 +39,7 @@ class MarkdownDirectoryTree(DirectoryTree):
         Binding("x", "app.cut_entry", "Cut", show=False),
         Binding("p", "app.paste_entry", "Paste", show=False),
         Binding("r", "app.rename_entry", "Rename", show=False),
+        Binding("m", "app.move_entry", "Move", show=False),
         Binding("d", "app.trash_entry", "Trash", show=False),
     ]
 

@@ -464,21 +464,21 @@ CommandPalette #--input Input:focus {
 CommandPalette #--results {
     overlay: none;
     height: auto;
-    max-height: 70vh;
+    max-height: 78vh;
 }
 
 CommandPalette #--command-source {
     visibility: hidden;
     overlay: screen;
     width: 1;
-    height: 70vh;
+    height: 78vh;
 }
 
 CommandPalette #--command-groups {
     height: auto;
-    grid-size: 2 2;
+    grid-size: 2 3;
     grid-columns: 1fr 1fr;
-    grid-rows: auto auto;
+    grid-rows: auto auto auto;
     grid-gutter: 1 2;
 }
 
@@ -531,7 +531,7 @@ CommandPalette.-compact > #--container {
 }
 
 CommandPalette.-compact #--command-groups {
-    grid-size: 1 4;
+    grid-size: 1 6;
     grid-columns: 1fr;
-    grid-rows: auto auto auto auto;
+    grid-rows: auto auto auto auto auto auto;
 }

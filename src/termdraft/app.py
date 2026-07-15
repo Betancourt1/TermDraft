@@ -4417,6 +4417,18 @@ class TermDraftApp(App[None]):
         """Expose only TermDraft actions in the searchable command palette."""
         del screen
         commands = (
+            (
+                "Enter WRITE mode",
+                "enter_write_mode",
+                "Edit the active Markdown source",
+                self.action_enter_write_mode,
+            ),
+            (
+                "Enter COMMAND mode",
+                "enter_command_mode",
+                "Use single-key application commands",
+                self.action_enter_command_mode,
+            ),
             ("Save document", "save", "Save the open Markdown source", self.action_save),
             (
                 "Save document as…",
@@ -4483,6 +4495,48 @@ class TermDraftApp(App[None]):
                 "toggle_explorer",
                 "Show or hide the workspace tree",
                 self.action_toggle_explorer,
+            ),
+            (
+                "Create file or folder",
+                "create_entry",
+                "Create an entry beside the selected file or inside the selected folder",
+                self.action_create_entry,
+            ),
+            (
+                "Copy file or folder",
+                "copy_entry",
+                "Copy the selected workspace entry",
+                self.action_copy_entry,
+            ),
+            (
+                "Cut file or folder",
+                "cut_entry",
+                "Cut the selected workspace entry for moving",
+                self.action_cut_entry,
+            ),
+            (
+                "Paste file or folder",
+                "paste_entry",
+                "Paste into the selected folder or beside the selected file",
+                self.action_paste_entry,
+            ),
+            (
+                "Rename file or folder",
+                "rename_entry",
+                "Rename the selected workspace entry",
+                self.action_rename_entry,
+            ),
+            (
+                "Move file or folder",
+                "move_entry",
+                "Move the selected workspace entry to a new path",
+                self.action_move_entry,
+            ),
+            (
+                "Move file or folder to Trash",
+                "trash_entry",
+                "Move the selected workspace entry to Trash",
+                self.action_trash_entry,
             ),
             (
                 "Toggle preview",

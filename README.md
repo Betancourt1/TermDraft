@@ -84,8 +84,9 @@ press `Esc` to return to COMMAND mode.
 | `?` | Show the current shortcuts |
 | `q` | Quit safely |
 
-The file explorer uses familiar Yazi-style keys: `a` creates, `r` renames, `c` copies, `x` cuts,
-`p` pastes, and `d` moves an entry to Trash. Standard shortcuts such as `Ctrl+S`, `Ctrl+P`,
+The file explorer uses familiar Yazi-style keys: `a` creates, `r` renames, `m` moves, `c` copies,
+`x` cuts, `p` pastes, and `d` moves an entry to Trash. These actions are also searchable from the
+command palette. Standard shortcuts such as `Ctrl+S`, `Ctrl+P`,
 `Ctrl+F`, and `Ctrl+Q` also work in both modes.
 
 Run this at any time for the complete, always-current key reference:

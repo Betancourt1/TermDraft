@@ -253,16 +253,21 @@ COMMAND_NAVIGATION_ACTIONS = frozenset(
 )
 
 FILES_SHORTCUTS = (
-    ("a", "Create a file or folder"),
-    ("c", "Copy the selected file or folder"),
-    ("x", "Cut the selected file or folder"),
-    ("p", "Paste into the selected folder or beside the selected file"),
-    ("r", "Rename the selected file or folder"),
-    ("d", "Move the selected file or folder to Trash"),
+    ("a", "create_entry", "Create a file or folder"),
+    ("c", "copy_entry", "Copy the selected file or folder"),
+    ("x", "cut_entry", "Cut the selected file or folder"),
+    ("p", "paste_entry", "Paste into the selected folder or beside the selected file"),
+    ("r", "rename_entry", "Rename the selected file or folder"),
+    ("m", "move_entry", "Move the selected file or folder"),
+    ("d", "trash_entry", "Move the selected file or folder to Trash"),
 )
 
 _COMMAND_MODE_BINDING_IDS = {
     action: binding_id for binding_id, action, _description in COMMAND_MODE_SHORTCUTS
+}
+_CONTEXTUAL_ACTION_SHORTCUTS = {
+    "enter_command_mode": "Esc",
+    **{action: key for key, action, _description in FILES_SHORTCUTS},
 }
 
 APP_BINDINGS.extend(
@@ -367,7 +372,7 @@ def format_shortcut_help(
         (_display_keys(keybindings[binding_id]), description)
         for binding_id, description in _SHORTCUTS
     ]
-    files_rows = list(FILES_SHORTCUTS)
+    files_rows = [(keys, description) for keys, _action, description in FILES_SHORTCUTS]
     extra_rows = [
         ("Tab / Shift+Tab in preview", "Select links or leave the preview"),
         ("Enter in preview", "Activate the selected preview link"),
@@ -423,11 +428,14 @@ def format_command_help(
 
 
 def format_action_shortcuts(action: str, keybindings: Mapping[str, str]) -> str:
-    """Display the required COMMAND shortcut for a palette action."""
+    """Display the primary shortcut for a palette action."""
     binding_id = _COMMAND_MODE_BINDING_IDS.get(action)
-    if binding_id is None:
-        raise ValueError(f"Palette action has no COMMAND binding: {action}")
-    return _display_command_keys(keybindings[binding_id])
+    if binding_id is not None:
+        return _display_command_keys(keybindings[binding_id])
+    try:
+        return _CONTEXTUAL_ACTION_SHORTCUTS[action]
+    except KeyError as error:
+        raise ValueError(f"Palette action has no shortcut: {action}") from error
 
 
 def _display_keys(keys: str) -> str:

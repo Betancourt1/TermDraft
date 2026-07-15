@@ -42,6 +42,27 @@ _COMMAND_GROUPS = (
         ),
     ),
     (
+        "files",
+        "FILES",
+        (
+            ("create_entry", "Create"),
+            ("copy_entry", "Copy"),
+            ("cut_entry", "Cut"),
+            ("paste_entry", "Paste"),
+            ("rename_entry", "Rename"),
+            ("move_entry", "Move"),
+            ("trash_entry", "Trash"),
+        ),
+    ),
+    (
+        "mode",
+        "MODE",
+        (
+            ("enter_write_mode", "Write mode"),
+            ("enter_command_mode", "Command mode"),
+        ),
+    ),
+    (
         "edit",
         "EDIT",
         (
@@ -137,7 +158,7 @@ class GroupedCommandPalette(CommandPalette):
         commands: list[Command],
         clear_current: bool,
     ) -> None:
-        """Project Textual's matched commands into the four visual groups."""
+        """Project Textual's matched commands into the six visual groups."""
         del clear_current
         by_action = {
             action: command for command in commands if (action := self._action_name(command))
@@ -157,7 +178,7 @@ class GroupedCommandPalette(CommandPalette):
                     continue
                 shortcut, description = self._shortcut_and_description(command)
                 prompt = Text()
-                prompt.append(shortcut.ljust(3), style="bold")
+                prompt.append(f"{shortcut}  ", style="bold")
                 prompt.append(label)
                 group_options.append(Command(prompt, command.hit, id=action))
                 self._locations[action] = (group_id, len(group_options) - 1)
