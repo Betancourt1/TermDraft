@@ -112,6 +112,11 @@ def test_missing_config_returns_effective_defaults(tmp_path: Path) -> None:
     assert config.recovery == RecoveryConfig()
     assert config.keybindings == DEFAULT_KEYBINDINGS
     assert set(config.keybindings) == KNOWN_BINDING_IDS
+    assert config.keybindings["command_save_as"] == "W"
+    assert config.keybindings["command_next_tab"] == "]"
+    assert config.keybindings["command_previous_tab"] == "["
+    assert config.keybindings["command_redo"] == "U"
+    assert config.keybindings["command_markdown_help"] == "K"
     assert config.config_path == tmp_path / "missing" / CONFIG_FILE_NAME
     assert config.theme_path == tmp_path / "missing" / THEME_FILE_NAME
 

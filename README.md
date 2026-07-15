@@ -267,6 +267,31 @@ undo = "ctrl+z,super+z"
 redo = "ctrl+y,super+y,ctrl+shift+z"
 show_help = "f1"
 command_palette = "ctrl+backslash"
+command_write_mode = "i"
+command_save = "w"
+command_save_as = "W"
+command_duplicate_document = "D"
+command_quit = "q"
+command_toggle_explorer = "e"
+command_find_file = "f"
+command_recent_documents = "o"
+command_next_tab = "]"
+command_previous_tab = "["
+command_close_tab = "C"
+command_search_text = "slash"
+command_find_replace = "s"
+command_document_outline = "S"
+command_toggle_preview = "v"
+command_undo = "u"
+command_redo = "U"
+command_reload_config = "R"
+command_manage_recovery = "M"
+command_markdown_help = "K"
+command_inspect_semantic_blocks = "b"
+command_read_semantic_blocks = "B"
+command_inspect_cursor_coordinates = "I"
+command_open_palette = "colon"
+command_show_help = "question_mark"
 command_cursor_left = "h"
 command_cursor_down = "j"
 command_cursor_up = "k"
@@ -281,8 +306,9 @@ Tab, Shift+Tab, and Enter are reserved for preview link navigation and cannot be
 Every single-key COMMAND action has a `command_*` binding ID in the generated template. Configured
 Ctrl/Alt shortcuts remain available in both modes and can also be remapped.
 
-Use **Reload configuration** from the command palette after editing `config.toml`. Help is generated
-from the effective map, so it reflects remapped keys. Duplicate keys, unknown IDs/options, invalid
+Press `R` in COMMAND mode after editing `config.toml`, or choose **Reload configuration** from the
+palette. Help is generated from the effective map, so it reflects remapped keys. Duplicate keys,
+unknown IDs/options, invalid
 TOML, and invalid editor option values are rejected with a clear error.
 
 `theme.tcss` is [Textual CSS](https://textual.textualize.io/guide/CSS/), not browser CSS. It loads
@@ -314,16 +340,23 @@ Press `i` to enter WRITE mode and Esc to return to COMMAND mode.
 | COMMAND key | Action |
 | --- | --- |
 | `i` | Enter WRITE mode and focus the source editor |
-| `w` | Save |
+| `w` / `W` | Save / Save As |
+| `D` | Duplicate the active document |
 | `q` | Quit through the unsaved-change guard |
 | `e` | Show or hide the file explorer |
 | `f` | Find and open a workspace text file |
 | `o` | Open the recent-document switcher |
-| `n` / `p` | Activate the next / previous open document tab |
-| `c` | Close the active tab through the safety guard |
-| `/` | Search workspace Markdown source |
+| `]` / `[` | Activate the next / previous open document tab |
+| `C` | Close the active tab through the safety guard |
+| `/` | Search workspace text |
+| `s` / `S` | Find and replace / open the document outline |
 | `v` | Show/hide preview, or switch editor/preview when narrow |
-| `u` / `r` | Undo / redo |
+| `u` / `U` | Undo / redo |
+| `R` | Reload configuration |
+| `M` | Manage recovery drafts |
+| `K` | Markdown syntax help |
+| `b` / `B` | Inspect / read semantic blocks |
+| `I` | Inspect cursor coordinates |
 | `:` | Open the searchable command palette |
 | `?` | Shortcut help |
 | `h` / `j` / `k` / `l` | Move left / down / up / right in the focused source editor |
@@ -352,9 +385,9 @@ Configured shortcuts remain available in both modes:
 | Ctrl+\ | Open the searchable command palette |
 | F1 | Shortcut help |
 
-The command palette shows each command's effective single-key COMMAND-mode shortcut. Commands
-without one are labeled `Palette only`; configured Ctrl/Alt shortcuts remain available but stay out
-of the palette for a cleaner scan.
+The command palette is a searchable menu and cheatsheet: every row shows its effective COMMAND key.
+Contextual workspace mutations stay in the focused Files section instead of adding palette noise.
+Configured Ctrl/Alt shortcuts remain available in both modes.
 
 The editor keeps Tab and Shift+Tab for Markdown indentation. Inside the focused preview, Tab and
 Shift+Tab select links, and Enter activates the selection; reaching either end returns to the normal
@@ -377,7 +410,7 @@ source from every open tab. Selecting a result activates an existing tab or open
 discarding the current buffer. Ctrl+P uses the same compound filter syntax and fuzzy-ranks
 abbreviated path queries.
 
-**Inspect semantic blocks** in the command palette parses the active source in a worker and lists
+Press `b` for **Inspect semantic blocks**. It parses the active source in a worker and lists
 top-level block ranges plus uncovered separators or reference-definition source. Selecting a range
 jumps to its first line. **Read semantic blocks (experimental)** uses the same immutable worker
 snapshot, independently renders only top-level headings and paragraphs, and shows every unsupported
@@ -428,7 +461,7 @@ truth. The default recovery location is `~/Library/Application Support/TermDraft
 macOS and `$XDG_STATE_HOME/termdraft/recovery` or `~/.local/state/termdraft/recovery` on Linux.
 Session state uses the same platform roots with a `sessions` leaf instead of `recovery`.
 
-Use **Manage recovery drafts** from the command palette to inspect the current workspace's trusted
+Press `M` for **Manage recovery drafts** to inspect the current workspace's trusted
 entries and any corrupt journals. Trusted drafts can be reopened or retargeted after a Markdown file
 is renamed. Retarget never replaces an existing recovery entry. **Archive** removes a stale or
 corrupt entry from the active inventory while preserving its exact journal bytes under the recovery

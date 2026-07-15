@@ -36,7 +36,7 @@ Source offsets must be defined explicitly. Python string indexes count Unicode c
 uses bytes, Textual cursor columns are logical positions, and terminal cells vary by grapheme width.
 Mixing these units is a direct route to corrupt splices or misplaced cursors.
 
-The command-palette-only **Inspect cursor coordinates** diagnostic now reports one immutable cursor
+The `I` **Inspect cursor coordinates** command reports one immutable cursor
 snapshot as an exact Python source offset, UTF-8 byte offset, Textual logical location, wrapped row
 and cell, and live terminal-screen offset. It recognizes extended grapheme boundaries and warns
 when Textual's current narrow wrapping divides one. Tests cover LF, CRLF, CR, mixed endings, tabs,
@@ -92,7 +92,7 @@ Parse a document and display block boundaries/ranges in a developer-only view. V
 all untouched source slices reproduces the original bytes after encoding. Test Unicode, LF, CRLF,
 missing final newlines, nested lists, block quotes, fences, tables, references, and malformed input.
 
-Status: implemented as **Inspect semantic blocks** in the command palette. The worker-backed mapper
+Status: implemented as the `b` **Inspect semantic blocks** command. The worker-backed mapper
 lists non-overlapping top-level ranges and explicit separator/unmapped gaps, rejects stale results,
 and can move the full-source editor cursor. Nested containers deliberately remain one outer block;
 valid top-level link-reference definitions are mapped from parser metadata, while malformed source
@@ -105,7 +105,7 @@ malformed input. The inspector never splices, saves, or renders source.
 Render independent top-level blocks while keeping the existing full-source editor available as a
 fallback. Measure scroll stability and parser performance. Do not hide source syntax yet.
 
-Status: a command-palette-only experiment renders top-level headings and paragraphs in a modal
+Status: the experimental `B` reader renders top-level headings and paragraphs in a modal
 snapshot. Lists, quotes, code, tables, definitions, gaps, and other unsupported constructs remain
 exact source fallbacks; links are inert and Escape returns to the untouched full editor. This proves
 safe independent mounting, not scroll stability, nonlocal reference resolution, or editing.

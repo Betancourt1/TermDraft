@@ -299,7 +299,9 @@ Configured bindings keep stable IDs and are remapped through Textual's public `A
 They remain available in both interaction modes. Undo and redo are defined on the Markdown editor
 subclass with IDs so remapping removes their original TextArea keys rather than leaving hidden
 aliases. F1 and CLI help are generated from the effective keymap, including remapped COMMAND keys.
-The command palette exposes fixed application callbacks; configuration cannot add callbacks.
+The command palette exposes fixed application callbacks as a searchable cheatsheet, and every row
+has a COMMAND key. Focused Files mutations use their own contextual keys and stay out of the palette;
+configuration cannot add callbacks.
 
 Bundled layout rules live in `default.tcss`. When an existing user `theme.tcss` is present, the App
 parses it with the bundled stylesheet before startup. A read or parse failure excludes only the user
@@ -445,7 +447,7 @@ per-journal lock and deletes only that observed version; a newer or newly appear
 preserved and reported instead. This avoids a canceled or delayed worker deleting another instance's
 newer draft.
 
-The command-palette recovery manager inventories journals in a worker and returns structured
+The `M` recovery manager inventories journals in a worker and returns structured
 `RecoveryRecord` values. Valid records are filtered to the current workspace; corrupt records stay
 visible because their metadata cannot be trusted enough to associate them. A fingerprint binds every
 mutation to the exact listed bytes. Retarget validates workspace containment, publishes the new

@@ -41,6 +41,8 @@ BINDING_ID_SHOW_HELP = "show_help"
 BINDING_ID_COMMAND_PALETTE = "command_palette"
 BINDING_ID_COMMAND_WRITE_MODE = "command_write_mode"
 BINDING_ID_COMMAND_SAVE = "command_save"
+BINDING_ID_COMMAND_SAVE_AS = "command_save_as"
+BINDING_ID_COMMAND_DUPLICATE_DOCUMENT = "command_duplicate_document"
 BINDING_ID_COMMAND_QUIT = "command_quit"
 BINDING_ID_COMMAND_TOGGLE_EXPLORER = "command_toggle_explorer"
 BINDING_ID_COMMAND_FIND_FILE = "command_find_file"
@@ -49,9 +51,17 @@ BINDING_ID_COMMAND_NEXT_TAB = "command_next_tab"
 BINDING_ID_COMMAND_PREVIOUS_TAB = "command_previous_tab"
 BINDING_ID_COMMAND_CLOSE_TAB = "command_close_tab"
 BINDING_ID_COMMAND_SEARCH_TEXT = "command_search_text"
+BINDING_ID_COMMAND_FIND_REPLACE = "command_find_replace"
+BINDING_ID_COMMAND_DOCUMENT_OUTLINE = "command_document_outline"
 BINDING_ID_COMMAND_TOGGLE_PREVIEW = "command_toggle_preview"
 BINDING_ID_COMMAND_UNDO = "command_undo"
 BINDING_ID_COMMAND_REDO = "command_redo"
+BINDING_ID_COMMAND_RELOAD_CONFIG = "command_reload_config"
+BINDING_ID_COMMAND_MANAGE_RECOVERY = "command_manage_recovery"
+BINDING_ID_COMMAND_MARKDOWN_HELP = "command_markdown_help"
+BINDING_ID_COMMAND_INSPECT_SEMANTIC_BLOCKS = "command_inspect_semantic_blocks"
+BINDING_ID_COMMAND_READ_SEMANTIC_BLOCKS = "command_read_semantic_blocks"
+BINDING_ID_COMMAND_INSPECT_CURSOR_COORDINATES = "command_inspect_cursor_coordinates"
 BINDING_ID_COMMAND_OPEN_PALETTE = "command_open_palette"
 BINDING_ID_COMMAND_SHOW_HELP = "command_show_help"
 BINDING_ID_COMMAND_CURSOR_LEFT = "command_cursor_left"
@@ -86,17 +96,27 @@ DEFAULT_KEYBINDINGS: Mapping[str, str] = MappingProxyType(
         BINDING_ID_COMMAND_PALETTE: "ctrl+backslash",
         BINDING_ID_COMMAND_WRITE_MODE: "i",
         BINDING_ID_COMMAND_SAVE: "w",
+        BINDING_ID_COMMAND_SAVE_AS: "W",
+        BINDING_ID_COMMAND_DUPLICATE_DOCUMENT: "D",
         BINDING_ID_COMMAND_QUIT: "q",
         BINDING_ID_COMMAND_TOGGLE_EXPLORER: "e",
         BINDING_ID_COMMAND_FIND_FILE: "f",
         BINDING_ID_COMMAND_RECENT_DOCUMENTS: "o",
-        BINDING_ID_COMMAND_NEXT_TAB: "n",
-        BINDING_ID_COMMAND_PREVIOUS_TAB: "p",
-        BINDING_ID_COMMAND_CLOSE_TAB: "c",
+        BINDING_ID_COMMAND_NEXT_TAB: "]",
+        BINDING_ID_COMMAND_PREVIOUS_TAB: "[",
+        BINDING_ID_COMMAND_CLOSE_TAB: "C",
         BINDING_ID_COMMAND_SEARCH_TEXT: "slash",
+        BINDING_ID_COMMAND_FIND_REPLACE: "s",
+        BINDING_ID_COMMAND_DOCUMENT_OUTLINE: "S",
         BINDING_ID_COMMAND_TOGGLE_PREVIEW: "v",
         BINDING_ID_COMMAND_UNDO: "u",
-        BINDING_ID_COMMAND_REDO: "r",
+        BINDING_ID_COMMAND_REDO: "U",
+        BINDING_ID_COMMAND_RELOAD_CONFIG: "R",
+        BINDING_ID_COMMAND_MANAGE_RECOVERY: "M",
+        BINDING_ID_COMMAND_MARKDOWN_HELP: "K",
+        BINDING_ID_COMMAND_INSPECT_SEMANTIC_BLOCKS: "b",
+        BINDING_ID_COMMAND_READ_SEMANTIC_BLOCKS: "B",
+        BINDING_ID_COMMAND_INSPECT_CURSOR_COORDINATES: "I",
         BINDING_ID_COMMAND_OPEN_PALETTE: "colon",
         BINDING_ID_COMMAND_SHOW_HELP: "question_mark",
         BINDING_ID_COMMAND_CURSOR_LEFT: "h",
@@ -160,17 +180,27 @@ retention_days = 30
 # Single-key COMMAND bindings are remappable too.
 # command_write_mode = "i"
 # command_save = "w"
+# command_save_as = "W"
+# command_duplicate_document = "D"
 # command_quit = "q"
 # command_toggle_explorer = "e"
 # command_find_file = "f"
 # command_recent_documents = "o"
-# command_next_tab = "n"
-# command_previous_tab = "p"
-# command_close_tab = "c"
+# command_next_tab = "]"
+# command_previous_tab = "["
+# command_close_tab = "C"
 # command_search_text = "slash"
+# command_find_replace = "s"
+# command_document_outline = "S"
 # command_toggle_preview = "v"
 # command_undo = "u"
-# command_redo = "r"
+# command_redo = "U"
+# command_reload_config = "R"
+# command_manage_recovery = "M"
+# command_markdown_help = "K"
+# command_inspect_semantic_blocks = "b"
+# command_read_semantic_blocks = "B"
+# command_inspect_cursor_coordinates = "I"
 # command_open_palette = "colon"
 # command_show_help = "question_mark"
 # command_cursor_left = "h"

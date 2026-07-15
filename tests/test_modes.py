@@ -59,6 +59,17 @@ async def test_write_mode_inserts_navigation_letters_normally(tmp_path: Path) ->
         assert app.editor.text == "hjklsource"
 
 
+async def test_write_mode_inserts_palette_shortcut_letters_normally(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("source", encoding="utf-8")
+    app = _app(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("i", "W", "D", "s", "S", "U", "R", "M", "K", "b", "B", "I")
+
+        assert app.editor.text == "WDsSURMKbBIsource"
+
+
 async def test_cursor_changes_shape_with_the_interaction_mode(tmp_path: Path) -> None:
     path = tmp_path / "note.md"
     path.write_text("base", encoding="utf-8")
@@ -156,7 +167,7 @@ async def test_modifier_undo_and_redo_work_in_command_mode(tmp_path: Path) -> No
 
         await pilot.press("u")
         assert app.editor.text == "base"
-        await pilot.press("r")
+        await pilot.press("U")
         assert app.editor.text == "xbase"
 
 

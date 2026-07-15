@@ -355,26 +355,38 @@ async def test_command_palette_and_help_expose_product_actions(tmp_path: Path) -
     app = _app(path)
 
     async with app.run_test(size=(100, 30)) as pilot:
-        command_titles = {command.title for command in app.get_system_commands(app.screen)}
-        assert {
-            "Save document",
-            "Create file or folder",
-            "Rename selected file or folder",
-            "Move selected file or folder",
-            "Move selected file or folder to Trash",
-            "Search workspace text",
-            "Open document outline",
-            "Reload configuration",
-            "Manage recovery drafts",
-            "Shortcut help",
-            "Markdown syntax help",
-            "Quit safely",
-        } <= command_titles
         commands = {command.title: command for command in app.get_system_commands(app.screen)}
-        assert commands["Save document"].help.startswith("Keys: w  ·  ")
-        assert commands["Shortcut help"].help.startswith("Keys: ?  ·  ")
-        assert commands["Reload configuration"].help.startswith("Keys: Palette only  ·  ")
-        assert all(command.help.startswith("Keys: ") for command in commands.values())
+        expected_keys = {
+            "Save document": "w",
+            "Save document as…": "W",
+            "Duplicate document…": "D",
+            "Find file": "f",
+            "Open recent document": "o",
+            "Next document tab": "]",
+            "Previous document tab": "[",
+            "Close document tab": "C",
+            "Search workspace text": "/",
+            "Find and replace in document": "s",
+            "Open document outline": "S",
+            "Toggle file explorer": "e",
+            "Toggle preview": "v",
+            "Undo": "u",
+            "Redo": "U",
+            "Reload configuration": "R",
+            "Manage recovery drafts": "M",
+            "Shortcut help": "?",
+            "Markdown syntax help": "K",
+            "Inspect semantic blocks": "b",
+            "Read semantic blocks (experimental)": "B",
+            "Inspect cursor coordinates": "I",
+            "Quit safely": "q",
+        }
+        assert commands.keys() == expected_keys.keys()
+        assert all(
+            commands[title].help.startswith(f"Keys: {key}  ·  ")
+            for title, key in expected_keys.items()
+        )
+        assert all("Palette only" not in command.help for command in commands.values())
 
         await pilot.press("ctrl+backslash")
         assert app.screen.id == "--command-palette"

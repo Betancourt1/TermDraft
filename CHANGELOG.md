@@ -12,6 +12,8 @@ Notable changes to TermDraft are recorded here. The format follows
 ### Changed
 
 - Show workspace indexing and queued file-finder activity in the status bar during long scans.
+- Turned the command palette into a keybinding cheatsheet and moved workspace mutations to Files.
+- Aligned COMMAND keys with common Vim, Helix, Yazi, and Lazygit conventions.
 
 ## [1.0.0] - 2026-07-14
 

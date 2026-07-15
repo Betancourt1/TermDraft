@@ -2503,12 +2503,6 @@ class TermDraftApp(App[None]):
             if self._interaction_mode is not _InteractionMode.COMMAND or self._has_modal:
                 return False
             command = parameters[0] if parameters else None
-            if isinstance(self.focused, DirectoryTree) and command in {
-                "close_tab",
-                "previous_tab",
-                "editor_redo",
-            }:
-                return False
             if command in COMMAND_NAVIGATION_ACTIONS:
                 return self.document is not None and self.focused is self.editor
             return True
@@ -4422,30 +4416,6 @@ class TermDraftApp(App[None]):
                 "duplicate_document",
                 "Write the active source to a new path without changing its tab",
                 self.action_duplicate_document,
-            ),
-            (
-                "Create file or folder",
-                "create_entry",
-                "Use .md or .txt for a file, or end the path with / for a folder",
-                self.action_create_entry,
-            ),
-            (
-                "Rename selected file or folder",
-                "rename_entry",
-                "Rename the selected entry without changing its contents",
-                self.action_rename_entry,
-            ),
-            (
-                "Move selected file or folder",
-                "move_entry",
-                "Move the selected entry to a workspace-relative path",
-                self.action_move_entry,
-            ),
-            (
-                "Move selected file or folder to Trash",
-                "trash_entry",
-                "Move the selected entry to the operating system Trash",
-                self.action_trash_entry,
             ),
             (
                 "Find file",

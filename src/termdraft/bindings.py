@@ -14,18 +14,28 @@ from termdraft.config import (
     BINDING_ID_COMMAND_CURSOR_RIGHT,
     BINDING_ID_COMMAND_CURSOR_UP,
     BINDING_ID_COMMAND_DOCUMENT_END,
+    BINDING_ID_COMMAND_DOCUMENT_OUTLINE,
     BINDING_ID_COMMAND_DOCUMENT_START,
+    BINDING_ID_COMMAND_DUPLICATE_DOCUMENT,
     BINDING_ID_COMMAND_FIND_FILE,
+    BINDING_ID_COMMAND_FIND_REPLACE,
+    BINDING_ID_COMMAND_INSPECT_CURSOR_COORDINATES,
+    BINDING_ID_COMMAND_INSPECT_SEMANTIC_BLOCKS,
     BINDING_ID_COMMAND_LINE_END,
     BINDING_ID_COMMAND_LINE_START,
+    BINDING_ID_COMMAND_MANAGE_RECOVERY,
+    BINDING_ID_COMMAND_MARKDOWN_HELP,
     BINDING_ID_COMMAND_NEXT_TAB,
     BINDING_ID_COMMAND_OPEN_PALETTE,
     BINDING_ID_COMMAND_PALETTE,
     BINDING_ID_COMMAND_PREVIOUS_TAB,
     BINDING_ID_COMMAND_QUIT,
+    BINDING_ID_COMMAND_READ_SEMANTIC_BLOCKS,
     BINDING_ID_COMMAND_RECENT_DOCUMENTS,
     BINDING_ID_COMMAND_REDO,
+    BINDING_ID_COMMAND_RELOAD_CONFIG,
     BINDING_ID_COMMAND_SAVE,
+    BINDING_ID_COMMAND_SAVE_AS,
     BINDING_ID_COMMAND_SEARCH_TEXT,
     BINDING_ID_COMMAND_SHOW_HELP,
     BINDING_ID_COMMAND_TOGGLE_EXPLORER,
@@ -172,6 +182,12 @@ APP_BINDINGS: list[BindingType] = [
 COMMAND_MODE_SHORTCUTS = (
     (BINDING_ID_COMMAND_WRITE_MODE, "enter_write_mode", "Enter WRITE mode"),
     (BINDING_ID_COMMAND_SAVE, "save", "Save the current document"),
+    (BINDING_ID_COMMAND_SAVE_AS, "save_as", "Save the current document as"),
+    (
+        BINDING_ID_COMMAND_DUPLICATE_DOCUMENT,
+        "duplicate_document",
+        "Duplicate the current document",
+    ),
     (BINDING_ID_COMMAND_QUIT, "request_quit", "Quit safely"),
     (BINDING_ID_COMMAND_TOGGLE_EXPLORER, "toggle_explorer", "Show or hide files"),
     (BINDING_ID_COMMAND_FIND_FILE, "find_file", "Find a text file"),
@@ -184,6 +200,8 @@ COMMAND_MODE_SHORTCUTS = (
     ),
     (BINDING_ID_COMMAND_CLOSE_TAB, "close_tab", "Close the active tab safely"),
     (BINDING_ID_COMMAND_SEARCH_TEXT, "search_text", "Search workspace text"),
+    (BINDING_ID_COMMAND_FIND_REPLACE, "find_replace", "Find and replace in the document"),
+    (BINDING_ID_COMMAND_DOCUMENT_OUTLINE, "document_outline", "Open document outline"),
     (
         BINDING_ID_COMMAND_TOGGLE_PREVIEW,
         "toggle_preview",
@@ -191,6 +209,24 @@ COMMAND_MODE_SHORTCUTS = (
     ),
     (BINDING_ID_COMMAND_UNDO, "editor_undo", "Undo"),
     (BINDING_ID_COMMAND_REDO, "editor_redo", "Redo"),
+    (BINDING_ID_COMMAND_RELOAD_CONFIG, "reload_config", "Reload configuration"),
+    (BINDING_ID_COMMAND_MANAGE_RECOVERY, "manage_recovery", "Manage recovery drafts"),
+    (BINDING_ID_COMMAND_MARKDOWN_HELP, "show_markdown_help", "Show Markdown syntax help"),
+    (
+        BINDING_ID_COMMAND_INSPECT_SEMANTIC_BLOCKS,
+        "inspect_semantic_blocks",
+        "Inspect semantic blocks",
+    ),
+    (
+        BINDING_ID_COMMAND_READ_SEMANTIC_BLOCKS,
+        "read_semantic_blocks",
+        "Read semantic blocks experimentally",
+    ),
+    (
+        BINDING_ID_COMMAND_INSPECT_CURSOR_COORDINATES,
+        "inspect_cursor_coordinates",
+        "Inspect cursor coordinates",
+    ),
     (BINDING_ID_COMMAND_OPEN_PALETTE, "command_palette", "Open the command palette"),
     (BINDING_ID_COMMAND_SHOW_HELP, "show_help", "Show shortcut help"),
     (BINDING_ID_COMMAND_CURSOR_LEFT, "cursor_left", "Move left"),
@@ -387,11 +423,11 @@ def format_command_help(
 
 
 def format_action_shortcuts(action: str, keybindings: Mapping[str, str]) -> str:
-    """Display the single-key COMMAND shortcut for a palette action."""
+    """Display the required COMMAND shortcut for a palette action."""
     binding_id = _COMMAND_MODE_BINDING_IDS.get(action)
-    return (
-        _display_command_keys(keybindings[binding_id]) if binding_id is not None else "Palette only"
-    )
+    if binding_id is None:
+        raise ValueError(f"Palette action has no COMMAND binding: {action}")
+    return _display_command_keys(keybindings[binding_id])
 
 
 def _display_keys(keys: str) -> str:
