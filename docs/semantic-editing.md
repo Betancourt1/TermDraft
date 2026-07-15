@@ -44,10 +44,10 @@ combining marks, CJK, emoji, and ZWJ sequences. This validates the coordinate un
 does not expose a reverse mapping or permit source edits.
 
 The diagnostic prototype uses `markdown-it-py` public block tokens and `Token.map` line ranges. It
-converts logical lines to Python-string offsets without normalizing LF, CRLF, or CR and retains every
-uncovered source slice. Valid top-level link-reference definitions use defensively validated line
-maps from the parser environment and are covered by the same lossless corpus. This is not yet an
-editing-grade parser choice: the exact reference metadata shape, inline delimiters, nested
+converts logical lines to Python-string offsets without normalizing LF, CRLF, or CR and retains
+every uncovered source slice. Valid top-level link-reference definitions use defensively validated
+line maps from the parser environment and are covered by the same lossless corpus. This is not yet
+an editing-grade parser choice: the exact reference metadata shape, inline delimiters, nested
 identities, and extension-specific exact ranges are not stable source-splicing contracts.
 
 ## Active and inactive blocks
@@ -123,8 +123,8 @@ reconcile ranges, fall back immediately to the full-source editor with the edite
 
 ### Stage 5: broader constructs and performance
 
-Add lists, quotes, code fences, tables, and extension syntax one verified family at a time. Introduce
-incremental parsing only after correctness is established with full reparsing.
+Add lists, quotes, code fences, tables, and extension syntax one verified family at a time.
+Introduce incremental parsing only after correctness is established with full reparsing.
 
 Status: `termdraft-benchmark` now provides a repeatable full-map throughput workload plus real
 mounted-tab heap and active/inactive watcher measurements. The first large-workload baseline makes
@@ -143,7 +143,8 @@ use the same explicit Save As / reload / cancel flow as full-source editing.
 
 ## Unresolved risks
 
-- Exact source ranges for every Markdown extension may require parser changes or a custom source map.
+- Exact source ranges for every Markdown extension may require parser changes or a custom source
+  map.
 - Nested blocks do not always have visually independent boundaries.
 - Editing delimiters can change the semantic type and extent of neighboring blocks.
 - Reference-style links and definitions create nonlocal rendering dependencies.

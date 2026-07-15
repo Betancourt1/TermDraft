@@ -57,10 +57,9 @@ Session-restored inactive tabs initially retain only their validated path and ta
 `Document` and editor are created through the normal open pipeline when first selected. Once
 materialized, an entry keeps the normalized/exact baseline pair and independent Textual undo stack
 for the rest of the process. Widget identity routes `Changed` and selection messages to the matching
-`Document`; only the active entry drives preview and status updates. Before save, tab activation, or a
-destructive transition,
-the coordinator also reads the widget synchronously so a queued message cannot omit the latest
-keypress.
+`Document`; only the active entry drives preview and status updates. Before save, tab activation, or
+a destructive transition, the coordinator also reads the widget synchronously so a queued message
+cannot omit the latest keypress.
 
 ## Content-free workspace sessions
 
@@ -119,9 +118,10 @@ recovery draft may replace that clean buffer, but cannot replace an existing dir
 calculation to the pure `services/markdown_continuation.py` function. It continues bullets, ordered
 markers, tasks, and blockquotes, terminates empty markers, and leaves fenced or indented code to
 TextArea. Prefixes containing a tab or four-space run are ambiguous, so that narrow case parses the
-source prefix through the cursor with CommonMark and continues only if the current line begins a real
-`list_item_open` token. The replacement is one TextArea edit, so undo removes the inserted marker and
-newline together. Disabling `editor.auto_continue_lists` restores TextArea's ordinary Enter behavior.
+source prefix through the cursor with CommonMark and continues only if the current line begins a
+real `list_item_open` token. The replacement is one TextArea edit, so undo removes the inserted
+marker and newline together. Disabling `editor.auto_continue_lists` restores TextArea's ordinary
+Enter behavior.
 
 Each source edit increments a preview revision and stops the previous debounce timer. The async
 callback verifies its revision before awaiting `Markdown.update`. A stale callback rechecks the
@@ -142,10 +142,11 @@ editing contract. The map is explicitly not sufficient for source splicing.
 
 The opt-in semantic reader reuses that worker and stale-result gate. It mounts a modal snapshot over
 the still-mounted full editor, renders only top-level headings and paragraphs with the safe preview
-parser and `open_links=False`, and displays every other visible segment through `Static(markup=False)`.
-Escape dismisses the snapshot and restores the prior editor focus, cursor, scroll, and undo owner.
-The reader has no callback capable of updating `Document`; reference definitions and other nonlocal
-syntax remain source fallbacks rather than being reconstructed from render output.
+parser and `open_links=False`, and displays every other visible segment through
+`Static(markup=False)`. Escape dismisses the snapshot and restores the prior editor focus, cursor,
+scroll, and undo owner. The reader has no callback capable of updating `Document`; reference
+definitions and other nonlocal syntax remain source fallbacks rather than being reconstructed from
+render output.
 
 `services/coordinate_diagnostic.py` is a manual, read-only validation aid for the future semantic
 editing boundary. It preserves exact source line endings while translating a valid TextArea cursor
@@ -166,21 +167,22 @@ launch a browser or another external application. None of these preview transfor
 `Document.text`.
 
 Textual renders inline links as action metadata inside `Content`, not as focusable child widgets.
-`MarkdownPreview` is therefore one explicit focus stop. While it has focus, Tab/Shift+Tab indexes and
-visibly selects those allow-listed `link(...)` spans, Enter dispatches the same `Markdown.LinkClicked`
-message as a pointer click, and moving beyond either end returns to the screen focus chain. Footnote
-references and backlinks transfer selection to each other; external URLs remain inert because
-`open_links=False` and the handler stops every noninternal link. This representation dependency is
-contained in the preview widget and covered by Pilot tests under the Textual `<9` version pin.
+`MarkdownPreview` is therefore one explicit focus stop. While it has focus, Tab/Shift+Tab indexes
+and visibly selects those allow-listed `link(...)` spans, Enter dispatches the same
+`Markdown.LinkClicked` message as a pointer click, and moving beyond either end returns to the
+screen focus chain. Footnote references and backlinks transfer selection to each other; external
+URLs remain inert because `open_links=False` and the handler stops every noninternal link. This
+representation dependency is contained in the preview widget and covered by Pilot tests under the
+Textual `<9` version pin.
 
-Heading navigation is independent of link navigation. After a successful render,
-`MarkdownPreview` indexes Textual's public `table_of_contents` against its mounted blocks. Alt+Down
-and Alt+Up select and scroll headings only while the preview owns focus. A typed `HeadingFocused`
-message carries level, label, one-based position, and total to the app. The app prioritizes that text
-in the persistent status bar. This is a terminal-visible cue, not a claim of native screen-reader
-integration. Boundary presses are inert, so key repeat does not flood the interface. A failed
-render clears both link and heading indexes
-before returning, so detached blocks cannot remain keyboard-actionable.
+Heading navigation is independent of link navigation. After a successful render, `MarkdownPreview`
+indexes Textual's public `table_of_contents` against its mounted blocks. Alt+Down and Alt+Up select
+and scroll headings only while the preview owns focus. A typed `HeadingFocused` message carries
+level, label, one-based position, and total to the app. The app prioritizes that text in the
+persistent status bar. This is a terminal-visible cue, not a claim of native screen-reader
+integration. Boundary presses are inert, so key repeat does not flood the interface. A failed render
+clears both link and heading indexes before returning, so detached blocks cannot remain
+keyboard-actionable.
 
 The same heading index exposes immutable label, level, preview index, and zero-based source-line
 metadata to the document outline. Opening the outline first renders the active editor source instead
@@ -190,18 +192,18 @@ delegate to the existing heading selection and scroll behavior.
 
 ## Workspace text search
 
-`services/text_search.py` performs bounded literal, fuzzy, whole-word, or regular-expression searches
-over the validated workspace scan. Matching is case-insensitive by default, with an explicit case
-option. `services/path_filter.py` parses comma-separated workspace-relative POSIX globs: includes are
-ORed, `!` exclusions win, and an exclusion-only filter starts from all paths. File and text search
-share this contract. It uses the same safe `load_file` path as document opening, returns zero-based
-source coordinates and short line previews, and converts individual read/decode failures into
-warnings instead of aborting the search. Invalid filters and invalid or oversized regexes become
-result errors before file contents are read. The `regex` engine provides Unicode-aware whole-word
-boundaries, full case folding, GIL-releasing immutable-string searches, and a 50 ms per-line timeout
-for pathological expressions. Every open `Document.text` is passed as an override: dirty or
-conflicted source wins, while a clean document prefers current disk content and still remains
-searchable if its path disappeared.
+`services/text_search.py` performs bounded literal, fuzzy, whole-word, or regular-expression
+searches over the validated workspace scan. Matching is case-insensitive by default, with an
+explicit case option. `services/path_filter.py` parses comma-separated workspace-relative POSIX
+globs: includes are ORed, `!` exclusions win, and an exclusion-only filter starts from all paths.
+File and text search share this contract. It uses the same safe `load_file` path as document
+opening, returns zero-based source coordinates and short line previews, and converts individual
+read/decode failures into warnings instead of aborting the search. Invalid filters and invalid or
+oversized regexes become result errors before file contents are read. The `regex` engine provides
+Unicode-aware whole-word boundaries, full case folding, GIL-releasing immutable-string searches, and
+a 50 ms per-line timeout for pathological expressions. Every open `Document.text` is passed as an
+override: dirty or conflicted source wins, while a clean document prefers current disk content and
+still remains searchable if its path disappeared.
 
 The modal starts search only when Enter is submitted and runs both the recursive scan and file reads
 through a Textual thread worker. Cancellation is checked between workspace entries, files, source
@@ -263,9 +265,9 @@ Actual publication and reload/open installation are critical operations. The edi
 temporarily read-only, additional save/switch/quit actions are rejected, and Save As disables its
 input and dismissal controls. This is intentional because cancelling a Textual thread worker does
 not stop an operating-system write already in progress. Read/probe workers may finish after
-cancellation, but a cancelled or stale worker cannot pass its ticket check. `atomic_save` remains one
-indivisible worker operation so its initial check, temporary write, second check, replacement, and
-verification retain their existing ordering.
+cancellation, but a cancelled or stale worker cannot pass its ticket check. `atomic_save` remains
+one indivisible worker operation so its initial check, temporary write, second check, replacement,
+and verification retain their existing ordering.
 
 ## User configuration
 
@@ -279,12 +281,12 @@ than workspace-level, so merely opening a repository cannot install key behavior
 
 `config.toml` is parsed with the standard-library `tomllib`. Only three editor booleans, the
 `startup_mode` string enum (`"command"` or `"write"`), a positive `recovery.retention_days` integer
-representable from the current date, and a closed set of binding IDs are accepted. Values map binding
-IDs to key strings, never to Textual action names; unknown sections, options, IDs, empty values, and
-duplicate effective keys fail closed. The retention value is consulted only after the user opens
-Recovery Manager; it cannot schedule deletion. The initializer uses exclusive creation, does not
-replace existing files, and creates new directories and files with mode 0700/0600 where POSIX
-permissions apply.
+representable from the current date, and a closed set of binding IDs are accepted. Values map
+binding IDs to key strings, never to Textual action names; unknown sections, options, IDs, empty
+values, and duplicate effective keys fail closed. The retention value is consulted only after the
+user opens Recovery Manager; it cannot schedule deletion. The initializer uses exclusive creation,
+does not replace existing files, and creates new directories and files with mode 0700/0600 where
+POSIX permissions apply.
 
 TermDraft starts in the configured COMMAND or WRITE mode, defaulting to COMMAND. In COMMAND mode
 the Markdown editor stops consuming printable input and priority application bindings own the
@@ -295,13 +297,13 @@ preview, and modal inputs retain their keys. `i` enters WRITE mode and editor fo
 COMMAND mode. The persistent status bar always leads with the interaction mode and adds FILES or
 PREVIEW when focus leaves the source editor.
 
-Configured bindings keep stable IDs and are remapped through Textual's public `App.set_keymap`.
-They remain available in both interaction modes. Undo and redo are defined on the Markdown editor
+Configured bindings keep stable IDs and are remapped through Textual's public `App.set_keymap`. They
+remain available in both interaction modes. Undo and redo are defined on the Markdown editor
 subclass with IDs so remapping removes their original TextArea keys rather than leaving hidden
 aliases. F1 and CLI help are generated from the effective keymap, including remapped COMMAND keys.
 The command palette exposes fixed application callbacks as a searchable cheatsheet, and every row
-has a COMMAND key. Focused Files mutations use their own contextual keys and stay out of the palette;
-configuration cannot add callbacks.
+has a COMMAND key. Focused Files mutations use their own contextual keys and stay out of the
+palette; configuration cannot add callbacks.
 
 Bundled layout rules live in `default.tcss`. When an existing user `theme.tcss` is present, the App
 parses it with the bundled stylesheet before startup. A read or parse failure excludes only the user
@@ -322,26 +324,27 @@ and indexes only `.md` and `.markdown` files.
 file publication reuses guarded no-clobber persistence; copy, rename, and move reject existing
 destinations, workspace escapes, ignored directories, unsupported Markdown suffixes, and placing a
 folder inside itself. The focused explorer provides `a/c/x/p/r/d`; copy and cut store one in-memory
-source until paste. The app executes mutations in one exclusive worker and reloads the explorer/index
-only after success. Clean open documents are retargeted with their session views; dirty documents
-cannot move, and any open document blocks removal. Recursive folder copy and removal include entries
-hidden by the Markdown-only explorer, with removal kept behind an explicit warning.
+source until paste. The app executes mutations in one exclusive worker and reloads the
+explorer/index only after success. Clean open documents are retargeted with their session views;
+dirty documents cannot move, and any open document blocks removal. Recursive folder copy and removal
+include entries hidden by the Markdown-only explorer, with removal kept behind an explicit warning.
 
 The MVP rejects all explorer symlinks and Markdown file symlinks. This is more restrictive than
 following links that happen to resolve inside the root, but keeps both selection and replacement
 behavior understandable. Resolved containment and final-file checks are repeated before application
 I/O. Existing-file saves also compare the loaded file and parent-directory identities, then perform
 temporary creation, cleanup, and publication relative to an open parent descriptor. Initial loads
-and new Save As validation are not a complete adversarial sandbox; fully closing their validation/use
-window would require descriptor-relative traversal from the workspace root.
+and new Save As validation are not a complete adversarial sandbox; fully closing their
+validation/use window would require descriptor-relative traversal from the workspace root.
 
 ## Persistence strategy
 
 `FileSnapshot` contains existence, SHA-256 content digest, byte size, nanosecond modification time,
 mode, file device/inode, and parent-directory device/inode. The digest is the primary content check;
 replacing the file or parent identity is also treated as an external change even when bytes match.
-An existing save requires both content and origin to match its loaded baseline. A same-size edit with
-a restored timestamp is still detected. Touching identical bytes in place is not a content conflict.
+An existing save requires both content and origin to match its loaded baseline. A same-size edit
+with a restored timestamp is still detected. Touching identical bytes in place is not a content
+conflict.
 
 `load_file` uses `os.open` with `O_NOFOLLOW` where available, verifies a regular file with `fstat`,
 reads bytes without universal-newline conversion, and compares pre/post-read identity and metadata.
@@ -379,8 +382,8 @@ document path, dirty state, baseline, and recovery queue intact.
 Same-directory `os.replace` provides atomic namespace replacement on normal local POSIX filesystems;
 it does not prove identical behavior on every network filesystem. `fsync` improves crash durability
 but the filesystem and storage stack retain the final say. Replacement preserves ordinary mode bits
-where the filesystem permits, but special setuid/setgid bits are not guaranteed. It does not preserve
-the old inode, ownership differences, ACLs, extended attributes, or hard-link identity.
+where the filesystem permits, but special setuid/setgid bits are not guaranteed. It does not
+preserve the old inode, ownership differences, ACLs, extended attributes, or hard-link identity.
 
 There remains a small check-to-replace race: a non-cooperating process can modify the destination
 after the second fingerprint and immediately before `os.replace`. Ordinary cross-platform path APIs
@@ -395,12 +398,12 @@ workspace root, exact current source, UTF-8 encoding, the saved baseline fingerp
 identity, and a timezone-aware update time. It never replaces or changes a Markdown file.
 
 Each journal update creates a mode-0600 temporary file in the recovery directory, writes exact UTF-8
-JSON, flushes and `fsync`s it, publishes it with same-directory `os.replace`, and attempts to `fsync`
-the directory. Failed pre-publication writes clean the temporary entry and retain the prior complete
-journal. Persistent per-journal lock files serialize mutations by cooperating TermDraft processes;
-retarget acquires its source and destination locks in deterministic order. The locks are advisory and
-their guarantees still depend on the filesystem. The state root is injectable so tests never use
-personal files.
+JSON, flushes and `fsync`s it, publishes it with same-directory `os.replace`, and attempts to
+`fsync` the directory. Failed pre-publication writes clean the temporary entry and retain the prior
+complete journal. Persistent per-journal lock files serialize mutations by cooperating TermDraft
+processes; retarget acquires its source and destination locks in deterministic order. The locks are
+advisory and their guarantees still depend on the filesystem. The state root is injectable so tests
+never use personal files.
 
 `TermDraftApp` schedules a nominal 500 ms deadline after the first dirty edit. Later edits update
 the in-memory payload without moving that deadline, so sustained typing does not reset the timer.
@@ -420,16 +423,17 @@ every mounted editor into its `Document`, stops the pending debounce timer, free
 queues one exact recovery SAVE for every dirty tab. The existing session/recovery drain calls public
 `App.exit()` only when both pipelines are empty. If one of those required recovery publications
 fails, shutdown is cancelled and prior editor read-only states are restored. Ctrl+Q remains a
-separate interactive Save/Discard/Cancel path. `SIGKILL`, power loss, an unresponsive event loop, and
-external TERM-to-KILL deadlines remain outside this cooperative guarantee.
+separate interactive Save/Discard/Cancel path. `SIGKILL`, power loss, an unresponsive event loop,
+and external TERM-to-KILL deadlines remain outside this cooperative guarantee.
 
 On open, Restore draft keeps the freshly loaded Markdown source as `saved_text` and installs the
-journal source as current `text`, so dirty state remains derived rather than forced. If the journal's
-baseline content or file/parent identity differs from current disk, `recovery_conflict` prevents
-Ctrl+S publication even though the disk was freshly loaded; the user must choose Save As, Reload, or
-Cancel. The original baseline is retained when a recovered draft is edited and re-journaled, so a
-second crash cannot erase the conflict. Legacy digest-only entries have unknown origin and therefore
-fail closed as conflicts. Use disk version deletes the entry. Cancel opening changes neither version.
+journal source as current `text`, so dirty state remains derived rather than forced. If the
+journal's baseline content or file/parent identity differs from current disk, `recovery_conflict`
+prevents Ctrl+S publication even though the disk was freshly loaded; the user must choose Save As,
+Reload, or Cancel. The original baseline is retained when a recovered draft is edited and
+re-journaled, so a second crash cannot erase the conflict. Legacy digest-only entries have unknown
+origin and therefore fail closed as conflicts. Use disk version deletes the entry. Cancel opening
+changes neither version.
 
 When a workspace directory starts without an explicit initial file, the journal scanner validates
 hashed filenames, entry schemas, workspace containment, and Markdown suffixes. Entries whose source
@@ -461,18 +465,18 @@ immediately before moving, archiving, retargeting, or restoring a journal.
 
 A valid quarantined entry may also be exported to a new workspace-contained Markdown path. Export
 re-verifies the listed fingerprint, preserves the stored UTF-8/UTF-8-SIG source exactly, uses the
-normal parent-bound `snapshot_file` / `atomic_save` no-clobber path, and leaves the quarantine record
-unchanged. Manual retention selects only valid entries strictly older than the configured cutoff.
-The confirmation lists every selected path and carries the exact displayed `RecoveryRecord` tuple
-into a worker, so a newly appearing old record is not implicitly added after consent. Each deletion
-is independently fingerprint-guarded; every partial failure remains in the result and is reported
-rather than rolled into a false all-success message. Corrupt entries have no trusted timestamp and
-are never age-deleted.
+normal parent-bound `snapshot_file` / `atomic_save` no-clobber path, and leaves the quarantine
+record unchanged. Manual retention selects only valid entries strictly older than the configured
+cutoff. The confirmation lists every selected path and carries the exact displayed `RecoveryRecord`
+tuple into a worker, so a newly appearing old record is not implicitly added after consent. Each
+deletion is independently fingerprint-guarded; every partial failure remains in the result and is
+reported rather than rolled into a false all-success message. Corrupt entries have no trusted
+timestamp and are never age-deleted.
 
 The journal narrows crash loss but is not autosave or history. The 500 ms window, state-directory
-write failures, forced termination during the timer, and storage failure can still lose unsaved text.
-Journal contents are plaintext source protected by ordinary per-user directory and mode-0600 file
-permissions.
+write failures, forced termination during the timer, and storage failure can still lose unsaved
+text. Journal contents are plaintext source protected by ordinary per-user directory and mode-0600
+file permissions.
 
 ## External changes and transitions
 
@@ -487,15 +491,14 @@ permissions.
 Checks run before save, before guarded close/quit transitions, when a tab is reactivated, on
 `AppFocus`, and every two seconds through Textual's interval timer. Each periodic pass probes the
 active document plus one rotating inactive tab. Periodic probes compare size, mtime, ctime, mode,
-file identity, and parent identity first; exact metadata matches reuse the immutable baseline without
-opening the file, while any difference performs the stable hashed read. Save, transition,
+file identity, and parent identity first; exact metadata matches reuse the immutable baseline
+without opening the file, while any difference performs the stable hashed read. Save, transition,
 activation, and focus checks keep using unconditional full hashes. Probing occurs in a worker and
-classification occurs against the latest UI-thread document state.
-The watcher path never opens a modal: it reloads a clean external edit only when that document is
-active. An inactive edit instead gets a persistent `!` tab state; activation performs the normal
-authoritative check and can then reload or report a conflict. Polling pauses while a modal, critical
-operation, or continuation is active. Save and transition checks remain authoritative and
-revalidate immediately before acting.
+classification occurs against the latest UI-thread document state. The watcher path never opens a
+modal: it reloads a clean external edit only when that document is active. An inactive edit instead
+gets a persistent `!` tab state; activation performs the normal authoritative check and can then
+reload or report a conflict. Polling pauses while a modal, critical operation, or continuation is
+active. Save and transition checks remain authoritative and revalidate immediately before acting.
 
 A separate worker scan on the same interval compares the visible Markdown files and folders with the
 last applied workspace scan. Structural differences reload the explorer and update the file-search
@@ -516,10 +519,10 @@ dirty close/reload/quit ──► Save ──► save succeeds ──► continu
 
 No dialog merely displays a warning and then ignores the answer. A save failure or cancellation
 clears the continuation, leaves the source in memory, and stops the transition. External deletion of
-a clean file is also guarded before transition because the in-memory source may be the last copy; the
-user may save that copy under a new name, explicitly continue without it, or cancel. Multi-document
-quit starts with the active buffer, inspects every other buffer without changing MRU order, restores
-the original active buffer, and then seals editing while final state writes drain.
+a clean file is also guarded before transition because the in-memory source may be the last copy;
+the user may save that copy under a new name, explicitly continue without it, or cancel.
+Multi-document quit starts with the active buffer, inspects every other buffer without changing MRU
+order, restores the original active buffer, and then seals editing while final state writes drain.
 
 ## Widget/domain limits
 
@@ -553,7 +556,8 @@ The implementation targets Textual 8.2.8 and relies on documented APIs:
 - [`TextArea`](https://textual.textualize.io/widgets/text_area/)
 - [`ContentSwitcher`](https://textual.textualize.io/widgets/content_switcher/)
 - [`Tabs`](https://textual.textualize.io/widgets/tabs/)
-- [`markdown-it-py Token.map`](https://markdown-it-py.readthedocs.io/en/latest/api/markdown_it.token.html)
+- [`markdown-it-py
+  Token.map`](https://markdown-it-py.readthedocs.io/en/latest/api/markdown_it.token.html)
 - [`Markdown`](https://textual.textualize.io/widgets/markdown/)
 - [`mdit-py-plugins`](https://mdit-py-plugins.readthedocs.io/en/latest/)
 - [`regex`](https://pypi.org/project/regex/)
@@ -563,5 +567,5 @@ The implementation targets Textual 8.2.8 and relies on documented APIs:
 - [Textual CSS](https://textual.textualize.io/guide/CSS/)
 - [`DirectoryTree`](https://textual.textualize.io/widgets/directory_tree/)
 - [screens and typed results](https://textual.textualize.io/guide/screens/)
-- [`MessagePump.set_interval`](https://textual.textualize.io/api/message_pump/#textual.message_pump.MessagePump.set_interval)
+- [`MessagePump.set_interval`](https://textual.textualize.io/api/message_pump/)
 - [Pilot testing](https://textual.textualize.io/guide/testing/)

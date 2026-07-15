@@ -29,6 +29,8 @@ jobs:
         run: ruff format --check .
       - name: Lint
         run: ruff check .
+      - name: Check line lengths
+        run: python scripts/check_line_length.py
       - name: Type check
         run: mypy src tests
 

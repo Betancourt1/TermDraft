@@ -1351,7 +1351,9 @@ def test_retarget_collision_never_overwrites_either_draft(tmp_path: Path) -> Non
     assert journal.load(old_path) is not None
     assert journal.load(old_path).text == "draft from old path"  # type: ignore[union-attr]
     assert journal.load(occupied_path) is not None
-    assert journal.load(occupied_path).text == "existing destination draft"  # type: ignore[union-attr]
+    recovered = journal.load(occupied_path)
+    assert recovered is not None
+    assert recovered.text == "existing destination draft"
 
 
 def test_retarget_rejects_path_outside_workspace_and_keeps_source(tmp_path: Path) -> None:
