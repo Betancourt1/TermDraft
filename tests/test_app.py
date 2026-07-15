@@ -1237,7 +1237,11 @@ async def test_workspace_watcher_refreshes_external_files_and_folders(
         added.write_text("added", encoding="utf-8")
 
         for _ in range(200):
-            if added in app.workspace_files and folder in app.workspace_directories:
+            if (
+                added in app.workspace_files
+                and folder in app.workspace_directories
+                and reloads >= 1
+            ):
                 break
             await pilot.pause(0.01)
 
@@ -1248,7 +1252,7 @@ async def test_workspace_watcher_refreshes_external_files_and_folders(
         renamed = folder / "renamed.md"
         added.rename(renamed)
         for _ in range(200):
-            if renamed in app.workspace_files and added not in app.workspace_files:
+            if renamed in app.workspace_files and added not in app.workspace_files and reloads >= 2:
                 break
             await pilot.pause(0.01)
 
@@ -1258,7 +1262,11 @@ async def test_workspace_watcher_refreshes_external_files_and_folders(
         renamed.unlink()
         folder.rmdir()
         for _ in range(200):
-            if renamed not in app.workspace_files and folder not in app.workspace_directories:
+            if (
+                renamed not in app.workspace_files
+                and folder not in app.workspace_directories
+                and reloads >= 3
+            ):
                 break
             await pilot.pause(0.01)
 

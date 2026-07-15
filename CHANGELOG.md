@@ -9,8 +9,8 @@ Notable changes to TermDraft are recorded here. The format follows
 
 ### Fixed
 
-- Wait for complete UI results in the multi-tab save and footnote navigation tests instead of racing
-  disk-write and scroll callbacks.
+- Wait for complete UI results in asynchronous save, footnote navigation, and workspace watcher
+  tests instead of racing their disk-write, scroll, and explorer callbacks.
 
 ## [1.1.0] - 2026-07-15
 
