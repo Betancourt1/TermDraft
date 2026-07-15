@@ -42,7 +42,7 @@ class MarkdownEditor(TextArea):
             id=id,
             classes=classes,
             placeholder=(
-                "COMMAND mode: press : and choose Create file or folder. "
+                "Focus Files and press a to create a file or folder. "
                 "Ctrl+P opens existing files; ? shows help."
             ),
         )

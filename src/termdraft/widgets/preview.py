@@ -28,8 +28,7 @@ from termdraft.services.markdown_preview import (
 from termdraft.widgets.scrollbar import use_thin_vertical_scrollbar
 
 EMPTY_WORKSPACE_GUIDANCE = (
-    "COMMAND mode: press : and choose Create file or folder. "
-    "Ctrl+P opens existing files; ? shows help."
+    "Focus Files and press a to create a file or folder. Ctrl+P opens existing files; ? shows help."
 )
 
 

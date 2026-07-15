@@ -124,6 +124,7 @@ from termdraft.services.session import (
 from termdraft.services.text_search import TextSearchMatch, TextSearchOverride
 from termdraft.services.workspace_entries import (
     WorkspaceEntryError,
+    copy_entry,
     create_file,
     create_folder,
     move_entry,
@@ -273,6 +274,12 @@ class _WorkspaceEntryWorkerResult:
     probes: tuple[DiskProbe, ...] = ()
     external_change: tuple[Path, FileSnapshot] | None = None
     error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkspaceClipboard:
+    source: Path
+    cut: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -464,6 +471,7 @@ class TermDraftApp(App[None]):
         self._workspace_warnings: tuple[str, ...] = ()
         self._workspace_index_revision = 0
         self._workspace_index_task: Worker[None] | None = None
+        self._workspace_clipboard: _WorkspaceClipboard | None = None
         self._file_search_requested = False
         self._preview_timer: Timer | None = None
         self._external_watch_timer: Timer | None = None
@@ -2495,6 +2503,12 @@ class TermDraftApp(App[None]):
             if self._interaction_mode is not _InteractionMode.COMMAND or self._has_modal:
                 return False
             command = parameters[0] if parameters else None
+            if isinstance(self.focused, DirectoryTree) and command in {
+                "close_tab",
+                "previous_tab",
+                "editor_redo",
+            }:
+                return False
             if command in COMMAND_NAVIGATION_ACTIONS:
                 return self.document is not None and self.focused is self.editor
             return True
@@ -3582,6 +3596,93 @@ class TermDraftApp(App[None]):
     def action_create_entry(self) -> None:
         self._open_workspace_entry_dialog(WorkspaceEntryOperation.CREATE_ENTRY)
 
+    def _set_workspace_clipboard(self, *, cut: bool) -> None:
+        if self._exit_requested or self._has_modal or self._critical_io:
+            return
+        source = self._selected_workspace_entry(fallback_to_document=False)
+        if source is None:
+            return
+        if source == self.workspace.root:
+            self.notify("Select a file or folder first", severity="warning")
+            return
+        self._workspace_clipboard = _WorkspaceClipboard(source, cut)
+        relative = source.relative_to(self.workspace.root).as_posix()
+        verb = "Cut" if cut else "Copied"
+        self.notify(f"{verb} {escape(relative)} · select a destination and press p")
+
+    def action_copy_entry(self) -> None:
+        self._set_workspace_clipboard(cut=False)
+
+    def action_cut_entry(self) -> None:
+        self._set_workspace_clipboard(cut=True)
+
+    def action_paste_entry(self) -> None:
+        if self._exit_requested or self._has_modal or self._critical_io:
+            return
+        clipboard = self._workspace_clipboard
+        if clipboard is None:
+            self.notify("Copy or cut a file or folder first", severity="warning")
+            return
+        try:
+            source = self.workspace.validate_entry_path(clipboard.source)
+        except WorkspaceError as error:
+            self._workspace_clipboard = None
+            self.notify(escape(str(error)), severity="error", title="Cannot paste")
+            return
+        selected = self._selected_workspace_entry(fallback_to_document=False)
+        if selected is None:
+            return
+        destination_parent = selected if selected.is_dir() else selected.parent
+        target = destination_parent / source.name
+
+        self._sync_editor_state()
+        affected = self._open_documents_within(source) if clipboard.cut else ()
+        affected_paths = self._open_tab_paths_within(source) if clipboard.cut else ()
+        if any(document.dirty for document in affected):
+            self.notify(
+                "Save or close open documents inside this path before moving it",
+                severity="warning",
+            )
+            return
+
+        if clipboard.cut:
+            moved_paths = {self._retargeted_path(path, source, target) for path in affected_paths}
+            for opened in self._open_documents:
+                opened_path = self._tab_path(opened)
+                if opened_path in affected_paths:
+                    continue
+                if any(
+                    _paths_reserve_same_spelling(opened_path, moved_path)
+                    or paths_are_spelling_aliases(opened_path, moved_path)
+                    for moved_path in moved_paths
+                ):
+                    self.notify(
+                        "The destination is already reserved by an open document",
+                        severity="warning",
+                    )
+                    return
+
+        critical_document = (
+            self.document
+            if self.document is not None and any(self.document is document for document in affected)
+            else None
+        )
+        operation = WorkspaceEntryOperation.MOVE if clipboard.cut else WorkspaceEntryOperation.COPY
+        if not self._begin_critical_io(
+            critical_document,
+            freeze_editor=critical_document is not None,
+            status="Moving…" if critical_document is not None else None,
+        ):
+            return
+        self._workspace_entry_worker(
+            operation,
+            source,
+            str(target),
+            None,
+            affected_paths,
+            tuple((document.path, document.snapshot) for document in affected),
+        )
+
     def action_rename_entry(self) -> None:
         self._open_workspace_entry_dialog(WorkspaceEntryOperation.RENAME)
 
@@ -3756,6 +3857,8 @@ class TermDraftApp(App[None]):
                 target = create_file(self.workspace, source, value)
             elif operation is WorkspaceEntryOperation.CREATE_FOLDER:
                 target = create_folder(self.workspace, source, value)
+            elif operation is WorkspaceEntryOperation.COPY:
+                target = copy_entry(self.workspace, source, Path(value))
             elif operation is WorkspaceEntryOperation.RENAME:
                 target = rename_entry(self.workspace, source, value)
             elif operation is WorkspaceEntryOperation.MOVE:
@@ -3843,6 +3946,11 @@ class TermDraftApp(App[None]):
 
         operation = result.operation
         target = result.target
+        if (
+            operation is WorkspaceEntryOperation.MOVE
+            and self._workspace_clipboard == _WorkspaceClipboard(result.source, True)
+        ):
+            self._workspace_clipboard = None
         probes = {probe.path: probe for probe in result.probes}
         if operation in {
             WorkspaceEntryOperation.RENAME,
@@ -3935,6 +4043,7 @@ class TermDraftApp(App[None]):
         messages = {
             WorkspaceEntryOperation.CREATE_FILE: f"Created {relative}",
             WorkspaceEntryOperation.CREATE_FOLDER: f"Created folder {relative}",
+            WorkspaceEntryOperation.COPY: f"Copied to {relative}",
             WorkspaceEntryOperation.RENAME: f"Renamed to {relative}",
             WorkspaceEntryOperation.MOVE: f"Moved to {relative}",
             WorkspaceEntryOperation.TRASH: f"Moved {relative} to Trash",
@@ -3948,6 +4057,7 @@ class TermDraftApp(App[None]):
         elif operation in {
             WorkspaceEntryOperation.CREATE_FILE,
             WorkspaceEntryOperation.CREATE_FOLDER,
+            WorkspaceEntryOperation.COPY,
             WorkspaceEntryOperation.TRASH,
         }:
             self.explorer.directory_tree.focus()

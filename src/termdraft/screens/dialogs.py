@@ -55,6 +55,7 @@ class WorkspaceEntryOperation(Enum):
     CREATE_ENTRY = auto()
     CREATE_FILE = auto()
     CREATE_FOLDER = auto()
+    COPY = auto()
     RENAME = auto()
     MOVE = auto()
     TRASH = auto()

@@ -316,13 +316,14 @@ after application startup requires one restart.
 scanner uses `os.scandir`, ignores common generated directories, catches per-directory `OSError`,
 and indexes only `.md` and `.markdown` files.
 
-`services/workspace_entries.py` owns the small create, rename, move, and remove surface. New file
-publication reuses guarded no-clobber persistence; rename and move reject existing destinations,
-workspace escapes, ignored directories, unsupported Markdown suffixes, and moving a folder inside
-itself. The app executes mutations in one exclusive worker and reloads the explorer/index only after
-success. Clean open documents are retargeted with their session views; dirty documents cannot move,
-and any open document blocks removal. Recursive folder removal stays behind an explicit warning that
-includes entries hidden by the Markdown-only explorer.
+`services/workspace_entries.py` owns the small create, copy, move, rename, and remove surface. New
+file publication reuses guarded no-clobber persistence; copy, rename, and move reject existing
+destinations, workspace escapes, ignored directories, unsupported Markdown suffixes, and placing a
+folder inside itself. The focused explorer provides `a/c/x/p/r/d`; copy and cut store one in-memory
+source until paste. The app executes mutations in one exclusive worker and reloads the explorer/index
+only after success. Clean open documents are retargeted with their session views; dirty documents
+cannot move, and any open document blocks removal. Recursive folder copy and removal include entries
+hidden by the Markdown-only explorer, with removal kept behind an explicit warning.
 
 The MVP rejects all explorer symlinks and Markdown file symlinks. This is more restrictive than
 following links that happen to resolve inside the root, but keeps both selection and replacement

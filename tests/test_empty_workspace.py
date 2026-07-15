@@ -19,8 +19,8 @@ async def test_empty_workspace_explains_create_open_and_help_actions(tmp_path: P
         guidance = app.editor.placeholder
         assert app.document is None
         assert app.preview.source_text == guidance
-        assert "COMMAND mode" in guidance
-        assert "press :" in guidance
-        assert "Create file or folder" in guidance
+        assert "Focus Files" in guidance
+        assert "press a" in guidance
+        assert "create a file or folder" in guidance
         assert "Ctrl+P" in guidance
         assert "? shows help" in guidance

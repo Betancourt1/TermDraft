@@ -5,6 +5,10 @@ Notable changes to TermDraft are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Added focused Files keys for create, copy, cut, paste, rename, and Trash operations.
+
 ### Changed
 
 - Show workspace indexing and queued file-finder activity in the status bar during long scans.

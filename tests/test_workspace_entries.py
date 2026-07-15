@@ -21,6 +21,7 @@ from termdraft.services.recovery import RecoveryJournal
 from termdraft.services.session import DocumentViewState, SessionState, SessionStore
 from termdraft.services.workspace_entries import (
     WorkspaceEntryError,
+    copy_entry,
     create_file,
     create_folder,
     move_entry,
@@ -36,6 +37,15 @@ def _app(target: Path, state_root: Path) -> TermDraftApp:
         recovery_journal=RecoveryJournal(state_root / "recovery"),
         session_store=SessionStore(state_root / "sessions"),
     )
+
+
+def _select_root_entry(app: TermDraftApp, path: Path) -> None:
+    tree = app.explorer.directory_tree
+    node = next(
+        child for child in tree.root.children if child.data is not None and child.data.path == path
+    )
+    tree.move_cursor(node)
+    tree.focus()
 
 
 def test_create_file_and_folder_use_explicit_workspace_locations(tmp_path: Path) -> None:
@@ -61,6 +71,43 @@ def test_rename_and_move_preserve_file_contents(tmp_path: Path) -> None:
     assert not source.exists()
     assert not renamed.exists()
     assert moved.read_text(encoding="utf-8") == "# Draft\n"
+
+
+def test_copy_file_and_folder_preserves_contents_without_moving_source(tmp_path: Path) -> None:
+    workspace = Workspace.from_target(tmp_path)
+    source_file = tmp_path / "draft.md"
+    source_file.write_text("draft", encoding="utf-8")
+    source_folder = tmp_path / "notes"
+    source_folder.mkdir()
+    (source_folder / "visible.md").write_text("visible", encoding="utf-8")
+    (source_folder / ".hidden.txt").write_text("hidden", encoding="utf-8")
+
+    copied_file = copy_entry(workspace, source_file, tmp_path / "draft-copy.md")
+    copied_folder = copy_entry(workspace, source_folder, tmp_path / "notes-copy")
+
+    assert source_file.read_text(encoding="utf-8") == "draft"
+    assert copied_file.read_text(encoding="utf-8") == "draft"
+    assert (source_folder / "visible.md").is_file()
+    assert (copied_folder / "visible.md").read_text(encoding="utf-8") == "visible"
+    assert (copied_folder / ".hidden.txt").read_text(encoding="utf-8") == "hidden"
+
+
+def test_copy_rejects_existing_destination_and_folder_self_copy(tmp_path: Path) -> None:
+    workspace = Workspace.from_target(tmp_path)
+    source = tmp_path / "source.md"
+    target = tmp_path / "target.md"
+    source.write_text("source", encoding="utf-8")
+    target.write_text("target", encoding="utf-8")
+    folder = tmp_path / "folder"
+    folder.mkdir()
+
+    with pytest.raises(WorkspaceEntryError, match="already exists"):
+        copy_entry(workspace, source, target)
+    with pytest.raises(WorkspaceEntryError, match="inside itself"):
+        copy_entry(workspace, folder, folder / "copy")
+
+    assert source.read_text(encoding="utf-8") == "source"
+    assert target.read_text(encoding="utf-8") == "target"
 
 
 @pytest.fixture
@@ -195,6 +242,112 @@ async def test_create_entry_dialog_opens_a_new_text_document(tmp_path: Path) -> 
         assert app.document is not None
         assert app.document.path == path
         assert app.editor.text == ""
+
+
+async def test_explorer_keys_create_copy_cut_and_paste_entries(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    source = workspace_root / "draft.md"
+    source.write_text("draft", encoding="utf-8")
+    copied_destination = workspace_root / "copies"
+    copied_destination.mkdir()
+    moved_destination = workspace_root / "archive"
+    moved_destination.mkdir()
+    app = _app(source, tmp_path / "state")
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        for _ in range(100):
+            if len(app.explorer.directory_tree.root.children) == 3:
+                break
+            await pilot.pause(0.01)
+
+        _select_root_entry(app, source)
+        await pilot.press("c")
+        assert app.document is not None
+        assert app.document.path == source
+
+        _select_root_entry(app, copied_destination)
+        await pilot.press("p")
+        copied = copied_destination / source.name
+        for _ in range(100):
+            if copied.exists() and not app._critical_io:
+                break
+            await pilot.pause(0.01)
+
+        assert copied.read_text(encoding="utf-8") == "draft"
+        assert source.is_file()
+
+        _select_root_entry(app, source)
+        await pilot.press("x")
+        _select_root_entry(app, moved_destination)
+        await pilot.press("p")
+        moved = moved_destination / source.name
+        for _ in range(100):
+            if moved.exists() and not app._critical_io:
+                break
+            await pilot.pause(0.01)
+
+        assert not source.exists()
+        assert moved.read_text(encoding="utf-8") == "draft"
+        assert app.document is not None
+        assert app.document.path == moved
+        assert app._workspace_clipboard is None
+
+        app.explorer.directory_tree.focus()
+        await pilot.press("a")
+        assert isinstance(app.screen, WorkspaceEntryDialog)
+
+
+async def test_explorer_cut_keeps_a_dirty_document_at_its_original_path(tmp_path: Path) -> None:
+    source = tmp_path / "draft.md"
+    source.write_text("draft", encoding="utf-8")
+    destination = tmp_path / "archive"
+    destination.mkdir()
+    app = _app(source, tmp_path / "state")
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("i", "x", "escape")
+        tree = app.explorer.directory_tree
+        for _ in range(100):
+            if len(tree.root.children) == 2:
+                break
+            await pilot.pause(0.01)
+
+        _select_root_entry(app, source)
+        await pilot.press("x")
+        _select_root_entry(app, destination)
+        await pilot.press("p")
+        await pilot.pause()
+
+        assert source.read_text(encoding="utf-8") == "draft"
+        assert not (destination / source.name).exists()
+        assert app.document is not None
+        assert app.document.path == source
+        assert app.document.dirty
+        assert app._workspace_clipboard is not None
+
+
+async def test_explorer_keys_rename_and_trash_the_selected_entry(tmp_path: Path) -> None:
+    source = tmp_path / "draft.md"
+    source.write_text("draft", encoding="utf-8")
+    app = _app(tmp_path, tmp_path / "state")
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        tree = app.explorer.directory_tree
+        for _ in range(100):
+            if tree.root.children:
+                break
+            await pilot.pause(0.01)
+
+        _select_root_entry(app, source)
+        await pilot.press("r")
+        assert isinstance(app.screen, WorkspaceEntryDialog)
+        assert app.screen.operation is WorkspaceEntryOperation.RENAME
+        await pilot.press("escape")
+
+        _select_root_entry(app, source)
+        await pilot.press("d")
+        assert isinstance(app.screen, TrashWorkspaceEntryDialog)
 
 
 async def test_create_entry_uses_trailing_slash_for_folder_and_only_warns_about_weird_name(

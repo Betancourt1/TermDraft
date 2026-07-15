@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import errno
 import os
+import shutil
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -181,6 +182,39 @@ def move_entry(workspace: Workspace, source: Path, target: Path) -> Path:
         raise
     except OSError as error:
         raise WorkspaceEntryError(f"Cannot move {safe_source}: {error}") from error
+    return safe_target
+
+
+def copy_entry(workspace: Workspace, source: Path, target: Path) -> Path:
+    """Copy one file or folder without replacing an existing entry."""
+    safe_source = _validate_visible_path(workspace, source, must_exist=True)
+    safe_target = _validate_visible_path(workspace, target, must_exist=False)
+    _validate_parent(workspace, safe_target.parent)
+    if safe_target.exists() or safe_target.is_symlink():
+        raise WorkspaceEntryError(f"An entry already exists at {safe_target}.")
+    try:
+        if safe_source.is_dir():
+            try:
+                safe_target.relative_to(safe_source)
+            except ValueError:
+                pass
+            else:
+                raise WorkspaceEntryError("A folder cannot be copied inside itself.")
+            shutil.copytree(safe_source, safe_target)
+        else:
+            with safe_source.open("rb") as source_file, safe_target.open("xb") as target_file:
+                shutil.copyfileobj(source_file, target_file)
+            shutil.copystat(safe_source, safe_target)
+    except FileExistsError as error:
+        raise WorkspaceEntryError(f"An entry already exists at {safe_target}.") from error
+    except WorkspaceEntryError:
+        raise
+    except OSError as error:
+        if safe_target.is_file():
+            safe_target.unlink(missing_ok=True)
+        elif safe_target.is_dir():
+            shutil.rmtree(safe_target, ignore_errors=True)
+        raise WorkspaceEntryError(f"Cannot copy {safe_source}: {error}") from error
     return safe_target
 
 

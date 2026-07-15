@@ -216,6 +216,15 @@ COMMAND_NAVIGATION_ACTIONS = frozenset(
     }
 )
 
+FILES_SHORTCUTS = (
+    ("a", "Create a file or folder"),
+    ("c", "Copy the selected file or folder"),
+    ("x", "Cut the selected file or folder"),
+    ("p", "Paste into the selected folder or beside the selected file"),
+    ("r", "Rename the selected file or folder"),
+    ("d", "Move the selected file or folder to Trash"),
+)
+
 _COMMAND_MODE_BINDING_IDS = {
     action: binding_id for binding_id, action, _description in COMMAND_MODE_SHORTCUTS
 }
@@ -322,6 +331,7 @@ def format_shortcut_help(
         (_display_keys(keybindings[binding_id]), description)
         for binding_id, description in _SHORTCUTS
     ]
+    files_rows = list(FILES_SHORTCUTS)
     extra_rows = [
         ("Tab / Shift+Tab in preview", "Select links or leave the preview"),
         ("Enter in preview", "Activate the selected preview link"),
@@ -337,6 +347,8 @@ def format_shortcut_help(
     return (
         "Modes and COMMAND keys\n"
         + format_rows(command_rows)
+        + "\n\nFocused Files keys\n"
+        + format_rows(files_rows)
         + "\n\nConfigured shortcuts (available in both modes)\n"
         + format_rows(configured_rows)
         + "\n\nEditor and preview controls\n"
@@ -362,14 +374,15 @@ def format_command_help(
         + f"Press {command_palette} in COMMAND mode or {palette} in either mode to search all "
         + "commands, "
         + "including:\n"
-        + "  Save, create/rename/move/trash files and folders, find file, open recent,\n"
+        + "  Save, find file, open recent,\n"
         + "  next/previous/close tab, search workspace text,\n"
         + "  toggle files, toggle preview,\n"
         + "  undo, redo,\n"
         + "  reload configuration, manage recovery drafts, inspect semantic blocks,\n"
         + "  read semantic blocks experimentally, inspect cursor coordinates,\n"
         + "  shortcut help,\n"
-        + "  Markdown syntax help, and safe quit."
+        + "  Markdown syntax help, and safe quit.\n\n"
+        + "Focus Files to create, copy, cut, paste, rename, or trash workspace entries."
     )
 
 

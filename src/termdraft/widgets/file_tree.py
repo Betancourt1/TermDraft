@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from pathlib import Path
+from typing import ClassVar
 
 from rich.style import Style
 from rich.text import Text
 from textual import events
 from textual.app import ComposeResult
+from textual.binding import Binding, BindingType
 from textual.containers import Vertical
 from textual.widgets import DirectoryTree, Static
 from textual.widgets._directory_tree import DirEntry
@@ -30,6 +32,15 @@ EXPLORER_MAX_WIDTH = 48
 
 class MarkdownDirectoryTree(DirectoryTree):
     """Directory tree that omits unsafe paths and unsupported files."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("a", "app.create_entry", "Create", show=False),
+        Binding("c", "app.copy_entry", "Copy", show=False),
+        Binding("x", "app.cut_entry", "Cut", show=False),
+        Binding("p", "app.paste_entry", "Paste", show=False),
+        Binding("r", "app.rename_entry", "Rename", show=False),
+        Binding("d", "app.trash_entry", "Trash", show=False),
+    ]
 
     ICON_FILE = MARKDOWN_ICON
     ICON_NODE = FOLDER_ICON

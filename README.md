@@ -141,20 +141,26 @@ termdraft --commands
 
 ### File and folder management
 
-Open the command palette with `:` in COMMAND mode or Ctrl+\ and choose **Create file or folder**,
-**Rename selected file or folder**, **Move selected file or folder**, or
-**Move selected file or folder to Trash**. Actions use the selected explorer entry; when the tree has no
-selection, the active document is used. New files are created beside the selected file or inside the
-selected folder. End the path with `/` to create a folder; `.md`, `.markdown`, and `.txt` files
-open in TermDraft. Unusual names and unsupported file extensions show a warning without blocking
-creation.
+Focus the file explorer and use its Yazi-style keys:
 
-Move destinations are workspace-relative paths such as `archive/essay.md`. Clean open documents
-follow a rename or move without losing their tab, cursor, or contents. Save or close dirty documents
-first. Rename and move publication never replaces a destination that appears concurrently. Open
-documents cannot be trashed; close them through TermDraft's save guard before trying again. Moving a
-folder to the operating system Trash includes every nested entry, including files hidden by the
-Markdown-only explorer. A Trash failure leaves the original entry in place.
+| Files key | Action |
+| --- | --- |
+| `a` | Create a file or folder |
+| `c` | Copy the selected entry |
+| `x` | Cut the selected entry |
+| `p` | Paste inside the selected folder or beside the selected file |
+| `r` | Rename the selected entry |
+| `d` | Move the selected entry to the operating system Trash |
+
+New files are created beside the selected file or inside the selected folder. End the path with `/`
+to create a folder; `.md`, `.markdown`, and `.txt` files open in TermDraft. Copy and cut keep the
+source name, never replace an existing destination, and preserve nested folder contents. A copied
+entry stays available for another paste; a successfully pasted cut is cleared.
+
+Clean open documents follow a cut and paste or rename without losing their tab, cursor, or contents.
+Save or close dirty documents first. Open documents cannot be trashed; close them through TermDraft's
+save guard before trying again. Moving a folder to Trash includes every nested entry, including files
+hidden by the Markdown-only explorer. A Trash failure leaves the original entry in place.
 
 ## Markdown support
 

@@ -145,6 +145,9 @@ def test_cli_commands_show_effective_remapped_keys(
     assert "inspect semantic blocks" in output
     assert "read semantic blocks experimentally" in output
     assert "Modes and COMMAND keys" in output
+    assert "Focused Files keys" in output
+    assert "Copy the selected file or folder" in output
+    assert "Paste into the selected folder" in output
     assert "Enter COMMAND mode" in output
     assert "Enter WRITE mode" in output
     assert "Tab / Shift+Tab in preview" in output
