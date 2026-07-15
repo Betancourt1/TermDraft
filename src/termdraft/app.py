@@ -6,14 +6,13 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum, auto
-from operator import attrgetter
 from pathlib import Path, PurePath
 
 from rich.markup import escape
 from textual import events, on, work
 from textual.app import App, ComposeResult, SystemCommand
 from textual.color import Color
-from textual.command import Command, CommandList, CommandPalette, SearchIcon
+from textual.command import CommandPalette, SearchIcon
 from textual.containers import Horizontal
 from textual.css.stylesheet import Stylesheet
 from textual.filter import LineFilter, Monochrome
@@ -44,6 +43,7 @@ from termdraft.models.workspace import (
     path_spelling_key,
     paths_are_spelling_aliases,
 )
+from termdraft.screens.command_palette import GroupedCommandPalette
 from termdraft.screens.coordinate_inspector import CoordinateInspectorDialog
 from termdraft.screens.dialogs import (
     ConflictDecision,
@@ -372,31 +372,6 @@ class _DeferredDocumentTab:
 
 
 _DocumentTab = _OpenDocument | _DeferredDocumentTab
-
-
-class _GroupedCommandPalette(CommandPalette):
-    """Separate command results without splitting titles from their help text."""
-
-    def _refresh_command_list(
-        self,
-        command_list: CommandList,
-        commands: list[Command],
-        clear_current: bool,
-    ) -> None:
-        del clear_current
-        sorted_commands = sorted(commands, key=attrgetter("hit.score"), reverse=True)
-        separated: list[Command | None] = []
-        for command in sorted_commands:
-            if separated:
-                separated.append(None)
-            separated.append(command)
-        command_list.clear_options().add_options(separated)
-
-        if sorted_commands:
-            command_list.highlighted = 0
-
-        self._list_visible = bool(command_list.option_count)
-        self._hit_count = command_list.option_count
 
 
 class TermDraftApp(App[None]):
@@ -1002,9 +977,14 @@ class TermDraftApp(App[None]):
         icon.styles.color = Color.parse(SEARCH_ICON_COLOR)
 
     def action_command_palette(self) -> None:
-        """Open the command palette with grouped result spacing."""
+        """Open the compact grouped command cheatsheet."""
         if self.use_command_palette and not self.screen.has_class("--textual-command-palette"):
-            self.push_screen(_GroupedCommandPalette(id="--command-palette"))
+            self.push_screen(
+                GroupedCommandPalette(
+                    id="--command-palette",
+                    placeholder="Search commands…",
+                )
+            )
 
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
         if not isinstance(event.widget, MarkdownPreview):

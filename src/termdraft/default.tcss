@@ -373,10 +373,117 @@ ModalScreen {
     height: auto;
 }
 
-CommandPalette CommandList > .option-list--option {
-    padding: 0 3;
+CommandPalette {
+    background: $background 80%;
+    align: center middle;
 }
 
-CommandPalette CommandList > .option-list--separator {
-    color: $background;
+CommandPalette > #--container {
+    width: 54;
+    max-width: 94%;
+    height: auto;
+    max-height: 90%;
+    margin: 0;
+    padding: 0;
+    visibility: visible;
+    background: $background;
+}
+
+CommandPalette #--input {
+    height: 1;
+    margin-bottom: 1;
+    border: none;
+}
+
+CommandPalette #--input.--list-visible {
+    border: none;
+}
+
+CommandPalette #--input SearchIcon {
+    width: 2;
+    height: 1;
+    margin: 0 0 0 1;
+}
+
+CommandPalette #--input Input,
+CommandPalette #--input Input:focus {
+    height: 1;
+    padding: 0;
+    border: none;
+    background: transparent;
+}
+
+CommandPalette #--results {
+    overlay: none;
+    height: auto;
+    max-height: 70vh;
+}
+
+CommandPalette #--command-source {
+    visibility: hidden;
+    overlay: screen;
+    width: 1;
+    height: 70vh;
+}
+
+CommandPalette #--command-groups {
+    height: auto;
+    grid-size: 2 2;
+    grid-columns: 1fr 1fr;
+    grid-rows: auto auto;
+    grid-gutter: 1 2;
+}
+
+CommandPalette .command-group {
+    height: auto;
+}
+
+CommandPalette .command-group-title {
+    height: 1;
+    margin-left: 1;
+    color: $text-muted;
+    text-style: bold;
+}
+
+CommandPalette .command-group-list {
+    height: auto;
+    padding: 0;
+    border: none;
+    background: transparent;
+}
+
+CommandPalette .command-group-list > .option-list--option {
+    padding: 0 1;
+    color: $foreground;
+    text-style: not bold;
+}
+
+CommandPalette .command-group-list > .option-list--option-highlighted {
+    color: $block-cursor-foreground;
+    background: $block-cursor-background;
+    text-style: $block-cursor-text-style;
+}
+
+CommandPalette #--command-description {
+    height: 2;
+    padding: 0 1;
+    border-top: solid $panel-lighten-2;
+    color: $text-muted;
+}
+
+CommandPalette #--command-empty {
+    height: 3;
+    padding: 1;
+    color: $text-muted;
+    text-align: center;
+}
+
+CommandPalette.-compact > #--container {
+    width: 94%;
+}
+
+CommandPalette.-compact #--command-groups {
+    grid-size: 1 4;
+    grid-columns: 1fr;
+    grid-rows: auto auto auto auto;
 }

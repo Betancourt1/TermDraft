@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from textual.color import Color
-from textual.command import CommandList, SearchIcon
+from textual.command import CommandInput, SearchIcon
 from textual.filter import Monochrome
-from textual.widgets import Input, Static
+from textual.pilot import Pilot
+from textual.widgets import Input, OptionList, Static
 
 from termdraft.app import TermDraftApp
 from termdraft.config import EditorConfig, TermDraftConfig, load_config
@@ -30,6 +32,14 @@ def _app(
         config=config,
         use_user_theme=use_user_theme,
     )
+
+
+async def _wait_until(pilot: Pilot[None], condition: Callable[[], bool]) -> None:
+    for _ in range(200):
+        if condition():
+            return
+        await pilot.pause(0.01)
+    raise AssertionError("condition did not become true")
 
 
 def test_default_theme_is_black_and_grayscale(tmp_path: Path) -> None:
@@ -390,21 +400,118 @@ async def test_command_palette_and_help_expose_product_actions(tmp_path: Path) -
 
         await pilot.press("ctrl+backslash")
         assert app.screen.id == "--command-palette"
-        command_list = app.screen.query_one(CommandList)
-        option_padding = command_list.get_component_styles("option-list--option").padding
-        options = command_list.options
         search_icon = app.screen.query_one(SearchIcon)
-        assert option_padding.left == option_padding.right == 3
-        assert option_padding.top == option_padding.bottom == 0
-        assert all(option._divider for option in options[:-1])
-        assert not options[-1]._divider
-        command_list._update_lines()
-        assert command_list._line_cache.index_to_line[1] == 3
+        group_prompts = {
+            group: [
+                str(option.prompt) for option in app.screen.query_one(selector, OptionList).options
+            ]
+            for group, selector in {
+                "document": "#--command-document",
+                "navigate": "#--command-navigate",
+                "edit": "#--command-edit",
+                "view": "#--command-view",
+            }.items()
+        }
+        assert group_prompts == {
+            "document": [
+                "w  Save",
+                "W  Save as",
+                "D  Duplicate",
+                "f  Find file",
+                "o  Recent documents",
+                "C  Close tab",
+            ],
+            "navigate": [
+                "]  Next tab",
+                "[  Previous tab",
+                "/  Search workspace",
+                "s  Find and replace",
+                "S  Outline",
+                "e  Explorer",
+            ],
+            "edit": [
+                "u  Undo",
+                "U  Redo",
+                "R  Reload config",
+                "b  Inspect blocks",
+                "B  Read blocks",
+            ],
+            "view": [
+                "v  Preview",
+                "M  Recovery drafts",
+                "?  Shortcut help",
+                "K  Markdown help",
+                "I  Cursor coordinates",
+                "q  Quit",
+            ],
+        }
+        assert all(
+            "\n" not in prompt and "Keys:" not in prompt
+            for prompts in group_prompts.values()
+            for prompt in prompts
+        )
+        assert app.screen.query_one("#--command-document", OptionList).highlighted == 0
+        assert all(
+            app.screen.query_one(selector, OptionList).highlighted is None
+            for selector in (
+                "#--command-navigate",
+                "#--command-edit",
+                "#--command-view",
+            )
+        )
+        assert str(app.screen.query_one("#--command-description", Static).render()) == (
+            "Save the open Markdown source"
+        )
         assert search_icon.icon == SEARCH_ICON
         assert search_icon.styles.color == Color.parse(SEARCH_ICON_COLOR)
+        await pilot.resize_terminal(56, 30)
+        assert app.screen.has_class("-compact")
         await pilot.press("escape")
 
         app.action_show_markdown_help()
         assert isinstance(app.screen, HelpDialog)
         assert app.screen.dialog_title == "Markdown syntax"
         assert "double underscores mean bold" in app.screen.content
+
+
+async def test_palette_filters_navigates_and_executes_commands(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    app = _app(path)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("ctrl+backslash", "down")
+        assert app.screen.query_one("#--command-document", OptionList).highlighted == 1
+        assert "new path" in str(app.screen.query_one("#--command-description", Static).render())
+
+        command_input = app.screen.query_one(CommandInput)
+        command_input.value = "toggle preview"
+        lists = list(app.screen.query(".command-group-list").results(OptionList))
+        await _wait_until(pilot, lambda: sum(widget.option_count for widget in lists) == 1)
+        assert [widget.option_count for widget in lists] == [0, 0, 0, 1]
+        assert str(lists[-1].options[0].prompt) == "v  Preview"
+
+        preview_was_visible = app.preview.display
+        await pilot.press("enter")
+        assert app.preview.display is not preview_was_visible
+        assert app.screen.id != "--command-palette"
+
+
+async def test_palette_uses_effective_command_key_remaps(tmp_path: Path) -> None:
+    path = tmp_path / "note.md"
+    path.write_text("base", encoding="utf-8")
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    (config_root / "config.toml").write_text(
+        '[keybindings]\ncommand_save = "z"\ncommand_toggle_preview = "V"\n',
+        encoding="utf-8",
+    )
+    app = _app(path, load_config(config_root))
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("ctrl+backslash")
+        document = app.screen.query_one("#--command-document", OptionList)
+        view = app.screen.query_one("#--command-view", OptionList)
+
+        assert str(document.options[0].prompt) == "z  Save"
+        assert str(view.options[0].prompt) == "V  Preview"

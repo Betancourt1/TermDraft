@@ -303,7 +303,8 @@ subclass with IDs so remapping removes their original TextArea keys rather than 
 aliases. F1 and CLI help are generated from the effective keymap, including remapped COMMAND keys.
 The command palette exposes fixed application callbacks as a searchable cheatsheet, and every row
 has a COMMAND key. Focused Files mutations use their own contextual keys and stay out of the
-palette; configuration cannot add callbacks.
+palette; configuration cannot add callbacks. The palette groups its one-line rows into Document,
+Navigate, Edit, and View columns, then stacks those groups when the terminal is narrow.
 
 Bundled layout rules live in `default.tcss`. When an existing user `theme.tcss` is present, the App
 parses it with the bundled stylesheet before startup. A read or parse failure excludes only the user
