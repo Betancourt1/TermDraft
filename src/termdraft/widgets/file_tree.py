@@ -79,6 +79,35 @@ class MarkdownDirectoryTree(DirectoryTree):
                 continue
         return filtered
 
+    async def reload_and_reveal(self, path: Path) -> None:
+        """Reload the tree, expand the target's parents, and reveal it."""
+        await self.reload()
+        try:
+            relative = path.relative_to(self.workspace.root)
+        except ValueError:
+            return
+
+        node = self.root
+        current_path = self.workspace.root
+        for part in relative.parts:
+            current_path /= part
+            child = next(
+                (
+                    child
+                    for child in node.children
+                    if child.data is not None and child.data.path == current_path
+                ),
+                None,
+            )
+            if child is None:
+                return
+            node = child
+            if current_path != path and node.allow_expand and not node.is_expanded:
+                await self.reload_node(node)
+
+        self.move_cursor(node)
+        self.scroll_to_node(node, animate=False)
+
     async def _on_click(self, event: events.Click) -> None:
         """Select on one click and activate on a double click."""
         event.prevent_default()

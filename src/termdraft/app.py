@@ -4019,8 +4019,13 @@ class TermDraftApp(App[None]):
                 self._clear_recovery(path)
             self._persist_session()
 
-        self._refresh_workspace_index()
-        self.explorer.directory_tree.reload()
+        created = operation in {
+            WorkspaceEntryOperation.CREATE_FILE,
+            WorkspaceEntryOperation.CREATE_FOLDER,
+        }
+        if not created:
+            self._refresh_workspace_index()
+            self.explorer.directory_tree.reload()
         self._finish_critical_io(restore_status=False)
         if dialog is not None:
             dialog.set_busy(False)
@@ -4036,17 +4041,32 @@ class TermDraftApp(App[None]):
             WorkspaceEntryOperation.TRASH: f"Moved {relative} to Trash",
         }
         self.notify(escape(messages[operation]))
+        if created:
+            self.run_worker(
+                self._refresh_created_workspace_entry(target, operation),
+                group="workspace-tree",
+                exclusive=True,
+                exit_on_error=False,
+            )
+        elif operation in {
+            WorkspaceEntryOperation.COPY,
+            WorkspaceEntryOperation.TRASH,
+        }:
+            self.explorer.directory_tree.focus()
+
+    async def _refresh_created_workspace_entry(
+        self,
+        target: Path,
+        operation: WorkspaceEntryOperation,
+    ) -> None:
+        await self.explorer.directory_tree.reload_and_reveal(target)
+        self._refresh_workspace_index()
         if (
             operation is WorkspaceEntryOperation.CREATE_FILE
             and target.suffix.casefold() in EDITABLE_SUFFIXES
         ):
-            self.call_after_refresh(self._request_open, target)
-        elif operation in {
-            WorkspaceEntryOperation.CREATE_FILE,
-            WorkspaceEntryOperation.CREATE_FOLDER,
-            WorkspaceEntryOperation.COPY,
-            WorkspaceEntryOperation.TRASH,
-        }:
+            self._request_open(target)
+        else:
             self.explorer.directory_tree.focus()
 
     def action_toggle_explorer(self) -> None:

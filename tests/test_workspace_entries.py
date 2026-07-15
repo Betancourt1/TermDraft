@@ -246,6 +246,60 @@ async def test_create_entry_dialog_opens_a_new_text_document(tmp_path: Path) -> 
         assert app.editor.text == ""
 
 
+async def test_create_entry_keeps_parent_expanded_and_reveals_new_file(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    parent = workspace_root / "notes"
+    parent.mkdir(parents=True)
+    (parent / "existing.md").write_text("existing", encoding="utf-8")
+    app = _app(workspace_root, tmp_path / "state")
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        tree = app.explorer.directory_tree
+        for _ in range(100):
+            if tree.root.children:
+                break
+            await pilot.pause(0.01)
+
+        parent_node = next(
+            child
+            for child in tree.root.children
+            if child.data is not None and child.data.path == parent
+        )
+        tree.move_cursor(parent_node)
+        parent_node.expand()
+        for _ in range(100):
+            if parent_node.children:
+                break
+            await pilot.pause(0.01)
+
+        app.action_create_entry()
+        await pilot.pause()
+        dialog = app.screen
+        assert isinstance(dialog, WorkspaceEntryDialog)
+        dialog.query_one("#workspace-entry-input", Input).value = "new-note.md"
+        await pilot.press("enter")
+
+        target = parent / "new-note.md"
+        for _ in range(200):
+            if app.document is not None and app.document.path == target:
+                break
+            await pilot.pause(0.01)
+
+        refreshed_parent = next(
+            child
+            for child in tree.root.children
+            if child.data is not None and child.data.path == parent
+        )
+        assert refreshed_parent.is_expanded
+        assert any(
+            child.data is not None and child.data.path == target
+            for child in refreshed_parent.children
+        )
+        assert tree.cursor_node is not None
+        assert tree.cursor_node.data is not None
+        assert tree.cursor_node.data.path == target
+
+
 async def test_explorer_keys_create_copy_cut_and_paste_entries(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
