@@ -126,12 +126,18 @@ async def test_saving_active_tab_does_not_write_or_clean_another_buffer(
         await _open(app, pilot, second)
         await pilot.press("y", "ctrl+s")
         for _ in range(200):
-            if second.read_text(encoding="utf-8") == "ysecond":
+            second_buffer = app._open_document_for_path(second)
+            if (
+                second.read_text(encoding="utf-8") == "ysecond"
+                and second_buffer is not None
+                and not second_buffer.dirty
+            ):
                 break
             await pilot.pause(0.01)
+        else:
+            raise AssertionError("active tab did not finish saving")
 
         first_buffer = app._open_document_for_path(first)
-        second_buffer = app._open_document_for_path(second)
         assert first_buffer is not None and first_buffer.dirty
         assert first_buffer.text == "xfirst"
         assert first.read_text(encoding="utf-8") == "first"
