@@ -9,7 +9,6 @@ from textual.widgets import Static, TextArea
 
 from termdraft.bindings import EDITOR_BINDINGS
 from termdraft.services.markdown_continuation import continuation_edit
-from termdraft.widgets.scrollbar import use_thin_vertical_scrollbar
 
 _COMMAND_NAVIGATION_KEYS = frozenset({"up", "down", "left", "right"})
 MAX_VISUAL_LINE_WIDTH = 100
@@ -49,9 +48,6 @@ class MarkdownEditor(TextArea):
         )
         self.set_write_mode(True)
         self.read_only = read_only
-
-    def on_mount(self) -> None:
-        use_thin_vertical_scrollbar(self)
 
     @property
     def wrap_width(self) -> int:

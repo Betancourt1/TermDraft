@@ -24,6 +24,7 @@ class TermDraftStatusBar(Static):
         mode: str,
         activity: str | None = None,
         announcement: str | None = None,
+        location: str | None = None,
     ) -> None:
         status = Text(mode, style="bold")
         if document is None:
@@ -54,6 +55,10 @@ class TermDraftStatusBar(Static):
             self.update(status)
             return
         status.append(f"  |  {document.word_count} words")
-        status.append(f"  |  Ln {document.cursor.line + 1}, Col {document.cursor.column + 1}")
+        status.append(
+            f"  |  {location}"
+            if location is not None
+            else f"  |  Ln {document.cursor.line + 1}, Col {document.cursor.column + 1}"
+        )
         status.append(f"  |  {document.last_save_status}")
         self.update(status)

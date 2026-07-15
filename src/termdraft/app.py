@@ -1005,6 +1005,11 @@ class TermDraftApp(App[None]):
         self._preview_heading_announcement = announcement
         self._refresh_status()
 
+    @on(MarkdownPreview.ScrollPositionChanged)
+    def preview_scroll_position_changed(self) -> None:
+        if isinstance(self.focused, MarkdownPreview):
+            self._refresh_status()
+
     def _open_document_for_path(self, path: Path) -> Document | None:
         for opened in self._materialized_open_documents():
             if paths_are_spelling_aliases(opened.document.path, path):
@@ -2471,6 +2476,7 @@ class TermDraftApp(App[None]):
             return
         if revision != self._preview_revision and self.document is not None:
             await self.preview.render_source(self.document.text)
+        self._refresh_status()
 
     def action_save(self) -> None:
         if not self._has_modal:
@@ -4530,6 +4536,21 @@ class TermDraftApp(App[None]):
             return f"{interaction} · PREVIEW"
         return interaction
 
+    def _document_location(self) -> str | None:
+        document = self.document
+        if document is None:
+            return None
+        preview_focused = isinstance(self.focused, MarkdownPreview) or (
+            self._narrow and self.preview.display
+        )
+        if preview_focused:
+            maximum = float(self.preview.max_scroll_y)
+            percentage = 100 if maximum <= 0 else round(self.preview.scroll_y / maximum * 100)
+            return f"Preview {min(max(percentage, 0), 100)}%"
+        line = document.cursor.line + 1
+        total = max(line, document.text.count("\n") + 1)
+        return f"Ln {line}/{total}, Col {document.cursor.column + 1}"
+
     def _refresh_status(self) -> None:
         if self.query("#document-tabs"):
             self._refresh_document_tabs()
@@ -4549,4 +4570,5 @@ class TermDraftApp(App[None]):
             mode=self._focus_mode(),
             activity=activity,
             announcement=self._preview_heading_announcement,
+            location=self._document_location(),
         )

@@ -81,11 +81,8 @@ Screen {
 }
 
 .markdown-editor-buffer, #markdown-preview {
-    scrollbar-size-vertical: 1;
+    scrollbar-size-vertical: 0;
     scrollbar-size-horizontal: 0;
-    scrollbar-background: transparent;
-    scrollbar-background-hover: transparent;
-    scrollbar-background-active: transparent;
 }
 
 #markdown-preview-pane {

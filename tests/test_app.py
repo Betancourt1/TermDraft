@@ -44,7 +44,7 @@ from termdraft.services.recovery import (
 from termdraft.services.session import DocumentViewState, SessionState, SessionStore
 from termdraft.widgets.editor import WORKBENCH_MIN_PANE_WIDTH
 from termdraft.widgets.file_tree import EXPLORER_MAX_WIDTH, EXPLORER_MIN_WIDTH
-from termdraft.widgets.scrollbar import ThinScrollBarRender
+from termdraft.widgets.status_bar import TermDraftStatusBar
 
 
 def app_for_file(
@@ -941,19 +941,32 @@ async def test_explorer_single_click_selects_and_double_click_opens(tmp_path: Pa
         assert app.document.path == second
 
 
-async def test_editor_and_preview_use_compact_scrollbars(tmp_path: Path) -> None:
+async def test_editor_and_preview_use_status_positions_without_scrollbar_lanes(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "note.md"
-    path.write_text("\n".join(f"line {index}" for index in range(100)), encoding="utf-8")
+    path.write_text("\n\n".join(f"# Heading {index}" for index in range(100)), encoding="utf-8")
     app = app_for_file(path)
 
     async with app.run_test(size=(120, 20)) as pilot:
         await pilot.pause(0.03)
         for widget in (app.editor, app.preview):
-            assert widget.styles.scrollbar_size_vertical == 1
+            assert widget.styles.scrollbar_size_vertical == 0
             assert widget.styles.scrollbar_size_horizontal == 0
-            assert widget.scrollbar_size_vertical == 1
+            assert widget.scrollbar_size_vertical == 0
             assert widget.scrollbar_size_horizontal == 0
-            assert widget.vertical_scrollbar.renderer is ThinScrollBarRender
+
+        app.editor.focus()
+        app.editor.move_cursor((40, 0))
+        await pilot.pause()
+        status = app.query_one(TermDraftStatusBar).render_line(0).text
+        assert "Ln 41/199, Col 1" in status
+
+        app.preview.focus()
+        app.preview.scroll_end(animate=False)
+        await pilot.pause()
+        status = app.query_one(TermDraftStatusBar).render_line(0).text
+        assert "Preview 100%" in status
 
 
 async def test_raw_and_preview_measures_center_and_shrink_with_their_panes(

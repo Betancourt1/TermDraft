@@ -5,6 +5,11 @@ Notable changes to TermDraft are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced persistent editor and preview scrollbars with contextual line and preview progress in the
+  status bar, leaving more room for writing.
+
 ## [1.1.1] - 2026-07-15
 
 ### Fixed

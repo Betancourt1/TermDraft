@@ -25,7 +25,6 @@ from termdraft.services.markdown_preview import (
     FOOTNOTE_LABEL_TOKEN,
     preview_parser,
 )
-from termdraft.widgets.scrollbar import use_thin_vertical_scrollbar
 
 EMPTY_WORKSPACE_GUIDANCE = (
     "Focus Files and press a to create a file or folder. Ctrl+P opens existing files; ? shows help."
@@ -136,6 +135,9 @@ class MarkdownPreview(Markdown):
             """Return the preview associated with this message."""
             return self.preview
 
+    class ScrollPositionChanged(Message):
+        """Report a visible preview scroll change to the application."""
+
     def __init__(self) -> None:
         self.source_text = EMPTY_WORKSPACE_GUIDANCE
         self._footnote_origins: dict[str, float] = {}
@@ -151,8 +153,10 @@ class MarkdownPreview(Markdown):
             parser_factory=preview_parser,
         )
 
-    def on_mount(self) -> None:
-        use_thin_vertical_scrollbar(self)
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        super().watch_scroll_y(old_value, new_value)
+        if self.is_mounted and round(old_value) != round(new_value):
+            self.post_message(self.ScrollPositionChanged())
 
     async def render_source(self, source: str) -> None:
         """Replace the rendered document and wait for its blocks to mount."""
