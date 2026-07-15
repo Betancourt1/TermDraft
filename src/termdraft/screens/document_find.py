@@ -7,12 +7,13 @@ from typing import ClassVar
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Grid, Vertical
+from textual.containers import Grid
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Input, Static
 
 from termdraft.services.document_search import DocumentSearchMatch, find_document_matches
+from termdraft.widgets.dialog import TerminalDialog
 
 
 class DocumentFindDialog(ModalScreen[None]):
@@ -63,8 +64,7 @@ class DocumentFindDialog(ModalScreen[None]):
         super().__init__(id="document-find-screen")
 
     def compose(self) -> ComposeResult:
-        with Vertical(classes="dialog", id="document-find-dialog"):
-            yield Static("Find and replace", classes="dialog-title", markup=False)
+        with TerminalDialog("Find and replace", id="document-find-dialog"):
             yield Input(placeholder="Find in the active document…", id="document-find-input")
             yield Input(
                 placeholder="Replace with…",
@@ -73,7 +73,7 @@ class DocumentFindDialog(ModalScreen[None]):
             )
             yield Checkbox("Match case", compact=True, id="document-find-case")
             yield Static("Enter text to find", id="document-find-status", markup=False)
-            with Grid(id="document-find-buttons"):
+            with Grid(classes="dialog-buttons", id="document-find-buttons"):
                 yield Button("Previous", id="document-find-previous")
                 yield Button("Next", id="document-find-next", variant="primary")
                 yield Button("Replace", id="document-replace-one", disabled=self.read_only)

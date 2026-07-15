@@ -5,12 +5,13 @@ from typing import ClassVar
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal
 from textual.screen import ModalScreen
 from textual.widgets import Button, OptionList, Static
 from textual.widgets.option_list import Option
 
 from termdraft.services.semantic_blocks import SemanticBlock, SemanticBlockMap
+from termdraft.widgets.dialog import TerminalDialog
 
 
 class SemanticInspectorDialog(ModalScreen[SemanticBlock | None]):
@@ -31,8 +32,7 @@ class SemanticInspectorDialog(ModalScreen[SemanticBlock | None]):
         ]
         if not options:
             options = [Option("No semantic blocks in this document", disabled=True)]
-        with Vertical(classes="dialog", id="semantic-inspector-dialog"):
-            yield Static("Semantic source blocks", classes="dialog-title", markup=False)
+        with TerminalDialog("Semantic source blocks", id="semantic-inspector-dialog"):
             yield Static(
                 "Parser ranges are read-only and use zero-based, end-exclusive internals.",
                 classes="dialog-message",

@@ -11,6 +11,7 @@ from textual.widgets import Button, ContentSwitcher, Markdown, Static
 
 from termdraft.services.markdown_preview import preview_parser
 from termdraft.services.semantic_blocks import SemanticBlock, SemanticBlockMap
+from termdraft.widgets.dialog import TerminalDialog
 
 _RENDERED_KINDS = frozenset({"heading", "paragraph"})
 
@@ -76,8 +77,7 @@ class SemanticReaderDialog(ModalScreen[None]):
         super().__init__(id="semantic-reader-screen")
 
     def compose(self) -> ComposeResult:
-        with Vertical(classes="dialog", id="semantic-reader-dialog"):
-            yield Static("Experimental semantic reading", classes="dialog-title", markup=False)
+        with TerminalDialog("Experimental semantic reading", id="semantic-reader-dialog"):
             yield Static(
                 "Headings and paragraphs render independently. Every other construct stays "
                 "visible as exact Markdown source.",

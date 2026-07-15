@@ -1,22 +1,28 @@
-# Command palette design QA
+# Terminal dialog design QA
 
 ## Reference and render
 
-- Reference: the approved compact 2x2 command-cheatsheet mockup.
-- Render: `TermDraftApp.run_test(size=(100, 30))` with the palette open on `README.md`.
-- Compared at full-window and palette-focused scales.
+- Reference: the selected Yazi-like mockup with a border title, footer divider, plain actions,
+  and inverse focus.
+- Render: `TermDraftApp.run_test(size=(153, 50))` with the real Trash confirmation open.
+- Evidence: `termdraft-dialog-option1.png` in the task visualization directory.
 
 ## Findings
 
 | Severity | Finding | Resolution |
 | --- | --- | --- |
-| P2 | The original search field used three rows, placing its icon below the label. | Reduced the field to one row and aligned the icon, cursor, and placeholder. |
-| P2 | The original command list repeated full help text and separators, making scanning slow. | Replaced it with four labeled groups, one-line key/action rows, one selection, and one shared description. |
-| P2 | A fixed 2x2 layout would clip on narrow terminals. | Added a single-column stacked layout below 58 columns while keeping the results scrollable. |
-| P3 | The reference omits Find file and Shortcut help. | Kept both because TermDraft's palette contract requires every application command to remain discoverable. |
+| P1 | Textual variants rendered actions as conventional filled buttons. | Flattened every dialog action at rest and reserved the inverse block for focus or press. |
+| P1 | Dialog titles occupied a separate content row instead of reading as part of the frame. | Added a shared `TerminalDialog` that places centered titles directly in the border. |
+| P2 | Actions lacked the reference's clear separation from message content. | Added one thin footer divider to every action group. |
+| P2 | Primary, warning, and error variants competed with keyboard focus. | Neutralized variant chrome while preserving labels, handlers, and disabled states. |
+| P2 | Compact multi-row grids could collapse button content at very narrow widths. | Removed grid-only inner padding and retained the existing responsive scroll behavior. |
+| P3 | The reference uses generic `yes` and `no` labels. | Kept precise actions such as `Move to Trash` and `Reload external` to preserve decision clarity. |
 
 ## Final check
 
+- The rendered Trash dialog matches the reference's square frame, centered border title,
+  monochrome footer divider, flat resting actions, and compact inverse focus.
+- Functional tests cover click behavior, busy and disabled states, action focus, and the
+  24-column recovery-manager layout.
 - No P0, P1, or unresolved P2 differences remain.
-- Search, arrow navigation, remapped keys, command execution, selection feedback, and narrow layout are covered by functional tests.
 - Final result: passed.

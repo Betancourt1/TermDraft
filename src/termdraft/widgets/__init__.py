@@ -1,5 +1,6 @@
 """Textual widgets used by TermDraft."""
 
+from termdraft.widgets.dialog import TerminalDialog
 from termdraft.widgets.editor import MarkdownEditor, WorkbenchResizeHandle
 from termdraft.widgets.file_tree import ExplorerResizeHandle, FileExplorer, MarkdownDirectoryTree
 from termdraft.widgets.preview import MarkdownPreview
@@ -12,5 +13,6 @@ __all__ = [
     "MarkdownEditor",
     "MarkdownPreview",
     "TermDraftStatusBar",
+    "TerminalDialog",
     "WorkbenchResizeHandle",
 ]

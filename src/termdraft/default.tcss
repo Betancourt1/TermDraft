@@ -126,15 +126,13 @@ ModalScreen {
     height: auto;
     max-height: 90%;
     padding: 1 2;
-    background: $surface;
-    border: round $primary;
+    background: $background;
+    border: solid $border;
+    border-title-align: center;
+    border-title-background: $background;
+    border-title-color: $text;
+    border-title-style: bold;
     overflow-y: auto;
-}
-
-.dialog-title {
-    height: 1;
-    margin-bottom: 1;
-    text-style: bold;
 }
 
 .dialog-message {
@@ -144,11 +142,48 @@ ModalScreen {
 
 .dialog-buttons {
     height: 3;
-    align-horizontal: right;
+    padding-top: 1;
+    border-top: solid $border;
+    align-horizontal: center;
 }
 
-.dialog-buttons Button {
-    margin-left: 1;
+.dialog-buttons Button,
+.dialog-buttons Button.-primary,
+.dialog-buttons Button.-success,
+.dialog-buttons Button.-warning,
+.dialog-buttons Button.-error {
+    width: auto;
+    min-width: 0;
+    height: 1;
+    padding: 0 1;
+    margin: 0 1;
+    border: none !important;
+    background: transparent !important;
+    color: $text-muted;
+    text-style: none;
+}
+
+.dialog-buttons Button:hover {
+    border: none !important;
+    background: transparent !important;
+    color: $text;
+}
+
+.dialog-buttons Button:focus,
+.dialog-buttons Button.-active {
+    border: none !important;
+    background: $foreground !important;
+    color: $background;
+    text-style: bold;
+    tint: transparent;
+}
+
+.dialog-buttons Button:disabled {
+    border: none !important;
+    background: transparent !important;
+    color: $text-muted;
+    text-opacity: 0.45;
+    text-style: dim;
 }
 
 #unsaved-dialog {
@@ -247,15 +282,17 @@ ModalScreen {
 }
 
 #recovery-manager-buttons {
-    height: 6;
+    height: 3;
+    padding-top: 0;
     grid-size: 3 2;
     grid-columns: 1fr 1fr 1fr;
-    grid-rows: 3 3;
+    grid-rows: 1 1;
     grid-gutter: 0 1;
 }
 
 #recovery-manager-buttons Button {
     width: 1fr;
+    padding: 0;
     margin: 0;
 }
 
@@ -267,14 +304,16 @@ ModalScreen {
 }
 
 #recovery-retention-buttons {
-    height: 6;
+    height: 3;
+    padding-top: 0;
     grid-size: 1 2;
     grid-columns: 1fr;
-    grid-rows: 3 3;
+    grid-rows: 1 1;
 }
 
 #recovery-retention-buttons Button {
     width: 1fr;
+    padding: 0;
     margin: 0;
 }
 
@@ -313,15 +352,17 @@ ModalScreen {
 }
 
 #document-find-buttons {
-    height: 6;
+    height: 3;
+    padding-top: 0;
     grid-size: 2 2;
     grid-columns: 1fr 1fr;
-    grid-rows: 3 3;
+    grid-rows: 1 1;
     grid-gutter: 0 1;
 }
 
 #document-find-buttons Button {
     width: 1fr;
+    padding: 0;
     margin: 0;
 }
 

@@ -8,10 +8,11 @@ from typing import ClassVar
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
+
+from termdraft.widgets.dialog import TerminalDialog
 
 
 class RecentDocumentsDialog(ModalScreen[Path | None]):
@@ -48,8 +49,7 @@ class RecentDocumentsDialog(ModalScreen[Path | None]):
         options = [
             Option(self._label(path), id=str(index)) for index, path in enumerate(self.paths)
         ]
-        with Vertical(classes="dialog", id="recent-documents-dialog"):
-            yield Static("Recent documents", classes="dialog-title", markup=False)
+        with TerminalDialog("Recent documents", id="recent-documents-dialog"):
             yield Static(
                 "Most recently used first. Select a document and press Enter.",
                 classes="dialog-message",

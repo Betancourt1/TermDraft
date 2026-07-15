@@ -5,12 +5,13 @@ from typing import ClassVar
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal
 from textual.geometry import Offset
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
 from termdraft.services.coordinate_diagnostic import CoordinateDiagnostic
+from termdraft.widgets.dialog import TerminalDialog
 
 
 class CoordinateInspectorDialog(ModalScreen[None]):
@@ -30,8 +31,7 @@ class CoordinateInspectorDialog(ModalScreen[None]):
         split_warning = (
             "yes — unsafe for block editing" if diagnostic.wrap_splits_grapheme else "no"
         )
-        with Vertical(classes="dialog", id="coordinate-inspector-dialog"):
-            yield Static("Cursor coordinate diagnostic", classes="dialog-title", markup=False)
+        with TerminalDialog("Cursor coordinate diagnostic", id="coordinate-inspector-dialog"):
             yield Static(
                 "\n".join(
                     (

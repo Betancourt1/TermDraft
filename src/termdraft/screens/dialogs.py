@@ -30,6 +30,7 @@ from termdraft.services.text_search import (
     TextSearchResult,
     search_text,
 )
+from termdraft.widgets.dialog import TerminalDialog
 
 
 class UnsavedDecision(Enum):
@@ -123,8 +124,7 @@ class RecoveryDialog(ModalScreen[RecoveryDecision | None]):
             )
         elif self.disk_changed:
             detail += " The Markdown file also changed; restoring will require conflict recovery."
-        with Vertical(classes="dialog", id="recovery-dialog"):
-            yield Static("Recover unsaved draft", classes="dialog-title", markup=False)
+        with TerminalDialog("Recover unsaved draft", id="recovery-dialog"):
             yield Static(detail, classes="dialog-message", markup=False)
             with Horizontal(classes="dialog-buttons"):
                 yield Button("Restore draft", id="recovery-restore", variant="primary")
@@ -171,8 +171,7 @@ class RecoveryManagerDialog(ModalScreen[RecoveryManagerRequest | RecoveryRetenti
         super().__init__(id="recovery-manager-screen")
 
     def compose(self) -> ComposeResult:
-        with Vertical(classes="dialog", id="recovery-manager-dialog"):
-            yield Static("Manage recovery drafts", classes="dialog-title", markup=False)
+        with TerminalDialog("Manage recovery drafts", id="recovery-manager-dialog"):
             yield Static(
                 "Archive preserves bytes in quarantine. Quarantined entries can be restored, "
                 "exported as Markdown, or deleted forever.",
@@ -408,8 +407,7 @@ class RecoveryDeleteDialog(ModalScreen[bool]):
         super().__init__(id="recovery-delete-screen")
 
     def compose(self) -> ComposeResult:
-        with Vertical(classes="dialog", id="recovery-delete-dialog"):
-            yield Static("Permanently delete recovery?", classes="dialog-title", markup=False)
+        with TerminalDialog("Permanently delete recovery?", id="recovery-delete-dialog"):
             yield Static(
                 f"Delete quarantined bytes for {self.description}? This cannot be undone.",
                 classes="dialog-message",
@@ -456,8 +454,7 @@ class RecoveryRetentionDialog(ModalScreen[bool]):
         for record in self.request.records:
             path = record.journal_path if record.entry is None else record.entry.document_path
             options.append(Option(f"{path.name} · {path}", disabled=True))
-        with Vertical(classes="dialog", id="recovery-retention-dialog"):
-            yield Static("Delete expired recoveries?", classes="dialog-title", markup=False)
+        with TerminalDialog("Delete expired recoveries?", id="recovery-retention-dialog"):
             yield Static(
                 f"Permanently delete {count} quarantined {noun} older than "
                 f"{self.request.retention_days} days? This cannot be undone.",
@@ -504,8 +501,7 @@ class MixedLineEndingsDialog(ModalScreen[bool]):
         super().__init__(id="mixed-line-endings-dialog-screen")
 
     def compose(self) -> ComposeResult:
-        with Vertical(classes="dialog", id="mixed-line-endings-dialog"):
-            yield Static("Mixed line endings", classes="dialog-title", markup=False)
+        with TerminalDialog("Mixed line endings", id="mixed-line-endings-dialog"):
             yield Static(
                 f"{self.path.name} mixes line-ending styles. Textual will normalize them to "
                 f"{self.target} after the first edit. The file stays byte-for-byte unchanged "
@@ -588,8 +584,7 @@ class ConflictDialog(ModalScreen[ConflictDecision | None]):
             )
         else:
             message = f"{self.path.name} no longer exists. The original path will not be recreated."
-        with Vertical(classes="dialog", id="conflict-dialog"):
-            yield Static("External change conflict", classes="dialog-title", markup=False)
+        with TerminalDialog("External change conflict", id="conflict-dialog"):
             yield Static(message, classes="dialog-message", markup=False)
             with Horizontal(classes="dialog-buttons"):
                 yield Button("Save local as…", id="conflict-save-as", variant="primary")
@@ -660,8 +655,7 @@ class SaveAsDialog(ModalScreen[bool]):
         else:
             title = "Save document as"
             confirm_label = "Save as"
-        with Vertical(classes="dialog", id="save-as-dialog"):
-            yield Static(title, classes="dialog-title", markup=False)
+        with TerminalDialog(title, id="save-as-dialog"):
             yield Input(
                 self.suggested_path,
                 placeholder="notes/local-copy.md",
@@ -792,8 +786,7 @@ class WorkspaceEntryDialog(ModalScreen[bool]):
             }
             else ""
         )
-        with Vertical(classes="dialog", id="workspace-entry-dialog"):
-            yield Static(title, classes="dialog-title", markup=False)
+        with TerminalDialog(title, id="workspace-entry-dialog"):
             yield Static(message, classes="dialog-message", markup=False)
             yield Input(value, placeholder=initial, id="workspace-entry-input")
             yield Static("", id="workspace-entry-feedback", markup=False)
@@ -892,8 +885,7 @@ class TrashWorkspaceEntryDialog(ModalScreen[bool]):
             message += (
                 " Everything inside it will be removed, including files hidden by the explorer."
             )
-        with Vertical(classes="dialog", id="remove-workspace-entry-dialog"):
-            yield Static(title, classes="dialog-title", markup=False)
+        with TerminalDialog(title, id="remove-workspace-entry-dialog"):
             yield Static(message, classes="dialog-message", markup=False)
             with Horizontal(classes="dialog-buttons"):
                 yield Button(
@@ -929,8 +921,7 @@ class FileSearchDialog(ModalScreen[Path | None]):
         super().__init__(id="file-search-screen")
 
     def compose(self) -> ComposeResult:
-        with Vertical(classes="dialog", id="search-dialog"):
-            yield Static("Find text file", classes="dialog-title", markup=False)
+        with TerminalDialog("Find text file", id="search-dialog"):
             yield Input(placeholder="Type part of a path…", id="search-input")
             yield Input(
                 placeholder="Includes/excludes, e.g. notes/**, !notes/archive/**",
@@ -1023,8 +1014,7 @@ class TextSearchDialog(ModalScreen[TextSearchMatch | None]):
         super().__init__(id="text-search-screen")
 
     def compose(self) -> ComposeResult:
-        with Vertical(classes="dialog", id="text-search-dialog"):
-            yield Static("Search workspace text", classes="dialog-title", markup=False)
+        with TerminalDialog("Search workspace text", id="text-search-dialog"):
             yield Input(
                 placeholder="Type a query and press Enter…",
                 id="text-search-input",
@@ -1203,8 +1193,7 @@ class HelpDialog(ModalScreen[None]):
         super().__init__(id="help-dialog-screen")
 
     def compose(self) -> ComposeResult:
-        with Vertical(classes="dialog", id="help-dialog"):
-            yield Static(self.dialog_title, classes="dialog-title", markup=False)
+        with TerminalDialog(self.dialog_title, id="help-dialog"):
             yield Static(self.content, id="help-shortcuts", markup=False)
             with Horizontal(classes="dialog-buttons"):
                 yield Button("Close", id="help-close", variant="primary")

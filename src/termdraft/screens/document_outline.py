@@ -9,11 +9,12 @@ from typing import ClassVar
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
+from termdraft.widgets.dialog import TerminalDialog
 from termdraft.widgets.preview import PreviewHeading
 
 
@@ -46,8 +47,7 @@ class DocumentOutlineDialog(ModalScreen[OutlineSelection | None]):
         super().__init__(id="document-outline-screen")
 
     def compose(self) -> ComposeResult:
-        with Vertical(classes="dialog", id="document-outline-dialog"):
-            yield Static("Document outline", classes="dialog-title", markup=False)
+        with TerminalDialog("Document outline", id="document-outline-dialog"):
             yield Input(placeholder="Filter headings…", id="document-outline-input")
             yield Static("", id="document-outline-status", markup=False)
             yield OptionList(id="document-outline-results", markup=False)

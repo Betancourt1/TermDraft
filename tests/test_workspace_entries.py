@@ -28,6 +28,7 @@ from termdraft.services.workspace_entries import (
     move_to_trash,
     rename_entry,
 )
+from termdraft.widgets.dialog import TerminalDialog
 
 
 def _app(target: Path, state_root: Path) -> TermDraftApp:
@@ -229,7 +230,8 @@ async def test_create_entry_dialog_opens_a_new_text_document(tmp_path: Path) -> 
         await pilot.pause()
         dialog = app.screen
         assert isinstance(dialog, WorkspaceEntryDialog)
-        assert "file or folder" in str(dialog.query_one(".dialog-title", Static).render())
+        frame = dialog.query_one(TerminalDialog)
+        assert "file or folder" in str(frame.border_title)
         dialog.query_one("#workspace-entry-input", Input).value = "new-note.txt"
         await pilot.press("enter")
         for _ in range(200):

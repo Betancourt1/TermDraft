@@ -18,6 +18,9 @@ from termdraft.screens.dialogs import (
     SaveAsDialog,
 )
 from termdraft.services.recovery import RecoveryJournal
+from termdraft.widgets.dialog import TerminalDialog
+
+DEFAULT_CSS = Path(__file__).parents[1] / "src" / "termdraft" / "default.tcss"
 
 
 class SaveAsHarness(App[None]):
@@ -26,7 +29,7 @@ class SaveAsHarness(App[None]):
     def __init__(self, dialog: SaveAsDialog) -> None:
         self.dialog = dialog
         self.submissions: list[str] = []
-        super().__init__()
+        super().__init__(css_path=DEFAULT_CSS)
 
     def on_mount(self) -> None:
         self.push_screen(self.dialog)
@@ -136,6 +139,28 @@ async def test_save_as_error_restores_editable_focused_state() -> None:
         await pilot.press("escape")
         await pilot.pause()
         assert app.screen is not dialog
+
+
+async def test_dialog_uses_border_title_and_terminal_action_focus() -> None:
+    dialog = SaveAsDialog("note-local.md")
+    app = SaveAsHarness(dialog)
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        frame = dialog.query_one(TerminalDialog)
+        actions = dialog.query_one(".dialog-buttons")
+        confirm = dialog.query_one("#save-as-confirm", Button)
+
+        assert str(frame.border_title) == "Save document as"
+        assert actions.region.height == 3
+        assert confirm.region.height == 1
+        assert confirm.styles.background.a == 0
+
+        confirm.focus()
+        await pilot.pause()
+
+        assert confirm.styles.background.a == 1
+        assert confirm.styles.text_style.bold
 
 
 async def test_recovery_manager_protects_active_draft_and_can_archive_corrupt_entry(
