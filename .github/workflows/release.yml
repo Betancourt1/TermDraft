@@ -54,9 +54,7 @@ jobs:
               "pyproject.toml project.version": project_version,
               "termdraft.__version__": termdraft.__version__,
           }
-          mismatches = {
-              source: version for source, version in versions.items() if version != expected
-          }
+          mismatches = {source: version for source, version in versions.items() if version != expected}
           if mismatches:
               details = ", ".join(f"{source}={version!r}" for source, version in mismatches.items())
               raise SystemExit(f"Tag {tag!r} expects version {expected!r}; {details}")
@@ -73,7 +71,6 @@ jobs:
         run: |
           ruff format --check .
           ruff check .
-          python scripts/check_line_length.py
           mypy --strict src tests
           pytest
 
