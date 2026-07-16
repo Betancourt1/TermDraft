@@ -420,9 +420,10 @@ serializes SAVE and DELETE tickets: pending saves for a path coalesce to the new
 DELETE removes queued saves and forms an ordering barrier behind any in-flight publication. A save
 completion marks `recovery_saved` only when its document identity, path, exact source, encoding, and
 baseline still match. Successful Markdown saves, explicit discards, and reloads wait for ordered
-cleanup before continuing. The status bar shows `RECOVERY STORED` only after a current publication
-succeeds. Destructive transitions keep the affected editor read-only across this cleanup barrier;
-Discard restores the model's saved source before its close or quit continuation runs.
+cleanup before continuing. Routine recovery publications stay silent in the status bar; failures
+still produce a visible notification. Destructive transitions keep the affected editor read-only
+across this cleanup barrier; Discard restores the model's saved source before its close or quit
+continuation runs.
 
 The CLI installs temporary `SIGTERM` and, where available, `SIGHUP` handlers around `App.run()` and
 restores the process's previous handlers afterward. A handler performs no I/O; it only records the

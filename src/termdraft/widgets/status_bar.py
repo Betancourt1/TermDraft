@@ -40,8 +40,6 @@ class TermDraftStatusBar(Static):
             status.append("  |  CONFLICT", style="bold red")
         if document.dirty:
             status.append("  |  ● modified", style="bold yellow")
-        if document.recovery_saved:
-            status.append("  |  RECOVERY STORED", style="bold cyan")
         if document.has_mixed_line_endings:
             status.append(f"  |  {document.line_ending_label}", style="bold magenta")
         if activity is not None:

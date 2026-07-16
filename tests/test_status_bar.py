@@ -36,10 +36,10 @@ async def test_persistent_safety_markers_precede_a_long_path(tmp_path: Path) -> 
         )
 
         rendered = str(status.render())
+        assert "RECOVERY STORED" not in rendered
         prioritized = (
             "CONFLICT",
             "● modified",
-            "RECOVERY STORED",
             "MIXED→CRLF",
             "INDEXING",
             path.name,
@@ -70,5 +70,5 @@ async def test_narrow_terminal_keeps_safety_markers_visible(tmp_path: Path) -> N
         visible_status = app.query_one(TermDraftStatusBar).render_line(0).text
         assert "CONFLICT" in visible_status
         assert "● modified" in visible_status
-        assert "RECOVERY STORED" in visible_status
+        assert "RECOVERY STORED" not in visible_status
         assert path.name not in visible_status
