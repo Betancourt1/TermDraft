@@ -6,7 +6,9 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap};
 
-use crate::app::{App, ConfirmAction, Focus, Mode, Overlay, ViewMode, command_candidates};
+use crate::app::{
+    App, ConfirmAction, Focus, Mode, Overlay, TextInput, ViewMode, command_candidates,
+};
 use crate::editor::apply_inline_preview;
 
 const BACKGROUND: Color = Color::Black;
@@ -279,8 +281,8 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
         .padding(Padding::horizontal(2));
     match overlay {
         Overlay::Help => draw_help(frame, area, block),
-        Overlay::Palette { query, selected } => {
-            let commands = command_candidates(query);
+        Overlay::Palette { input, selected } => {
+            let commands = command_candidates(&input.value);
             let items = commands
                 .iter()
                 .map(|command| {
@@ -298,14 +300,14 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
                 frame,
                 area,
                 block.title(" Commands "),
-                query,
+                Some(input),
                 items,
                 *selected,
             );
         }
-        Overlay::FileFinder { query, selected } => {
+        Overlay::FileFinder { input, selected } => {
             let items = app
-                .file_candidates(query)
+                .file_candidates(&input.value)
                 .into_iter()
                 .take(100)
                 .map(|index| {
@@ -317,30 +319,30 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
                 frame,
                 area,
                 block.title(" Find file "),
-                query,
+                Some(input),
                 items,
                 *selected,
             );
         }
-        Overlay::Find { query } => draw_input(
+        Overlay::Find { input } => draw_input(
             frame,
             area,
             block.title(" Find in document "),
-            query,
+            input,
             "Enter finds next · Esc cancels",
         ),
-        Overlay::WorkspaceSearch { query } => draw_input(
+        Overlay::WorkspaceSearch { input } => draw_input(
             frame,
             area,
             block.title(" Search workspace "),
-            query,
+            input,
             "Literal search · up to 100 results",
         ),
-        Overlay::PathInput { action, value } => draw_input(
+        Overlay::PathInput { action, input } => draw_input(
             frame,
             area,
             block.title(action.title()),
-            value,
+            input,
             "Workspace-relative .md, .markdown, or .txt path · Enter confirms",
         ),
         Overlay::Recovery { entry } => {
@@ -386,7 +388,7 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
                 frame,
                 area,
                 block.title(" Search results "),
-                "",
+                None,
                 items,
                 *selected,
             );
@@ -403,7 +405,7 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
                 frame,
                 area,
                 block.title(" Document outline "),
-                "",
+                None,
                 lines,
                 *selected,
             );
@@ -472,21 +474,20 @@ fn draw_picker(
     frame: &mut Frame,
     area: Rect,
     block: Block<'_>,
-    query: &str,
+    input: Option<&TextInput>,
     items: Vec<Line<'_>>,
     selected: usize,
 ) {
-    let [input, results, footer] = Layout::vertical([
+    let [input_area, results, footer] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Min(1),
         Constraint::Length(1),
     ])
     .areas(block.inner(area));
     frame.render_widget(block, area);
-    frame.render_widget(
-        Paragraph::new(format!("> {query}")).style(Style::new().fg(BRIGHT)),
-        input,
-    );
+    if let Some(value) = input {
+        frame.render_widget(Paragraph::new(input_line(value)), input_area);
+    }
     let list = List::new(items.into_iter().map(ListItem::new))
         .highlight_symbol("› ")
         .highlight_style(Style::new().bg(Color::Rgb(44, 44, 44)).fg(BRIGHT).bold());
@@ -498,19 +499,26 @@ fn draw_picker(
     );
 }
 
-fn draw_input(frame: &mut Frame, area: Rect, block: Block<'_>, query: &str, footer: &str) {
+fn draw_input(frame: &mut Frame, area: Rect, block: Block<'_>, input: &TextInput, footer: &str) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let [input, hint] =
+    let [input_area, hint] =
         Layout::vertical([Constraint::Length(2), Constraint::Length(1)]).areas(inner);
-    frame.render_widget(
-        Paragraph::new(format!("> {query}█")).style(Style::new().fg(BRIGHT)),
-        input,
-    );
+    frame.render_widget(Paragraph::new(input_line(input)), input_area);
     frame.render_widget(
         Paragraph::new(footer.to_owned()).style(Style::new().fg(MUTED)),
         hint,
     );
+}
+
+fn input_line(input: &TextInput) -> Line<'_> {
+    let byte = input.byte_cursor();
+    Line::from(vec![
+        Span::styled("> ", Style::new().fg(MUTED)),
+        Span::styled(&input.value[..byte], Style::new().fg(BRIGHT)),
+        Span::styled("█", Style::new().fg(BRIGHT)),
+        Span::styled(&input.value[byte..], Style::new().fg(TEXT)),
+    ])
 }
 
 fn centered(area: Rect, max_width: u16) -> Rect {

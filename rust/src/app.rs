@@ -89,18 +89,18 @@ pub enum ConfirmAction {
 pub enum Overlay {
     Help,
     Palette {
-        query: String,
+        input: TextInput,
         selected: usize,
     },
     FileFinder {
-        query: String,
+        input: TextInput,
         selected: usize,
     },
     Find {
-        query: String,
+        input: TextInput,
     },
     WorkspaceSearch {
-        query: String,
+        input: TextInput,
     },
     SearchResults {
         results: Vec<TextMatch>,
@@ -112,13 +112,77 @@ pub enum Overlay {
     },
     PathInput {
         action: PathAction,
-        value: String,
+        input: TextInput,
     },
     Recovery {
         entry: Box<RecoveryEntry>,
     },
     Confirm(ConfirmAction),
     Message(String),
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TextInput {
+    pub value: String,
+    pub cursor: usize,
+}
+
+impl TextInput {
+    #[must_use]
+    pub fn byte_cursor(&self) -> usize {
+        self.value
+            .char_indices()
+            .nth(self.cursor)
+            .map_or(self.value.len(), |(index, _)| index)
+    }
+
+    pub fn insert(&mut self, text: &str) {
+        let text = text
+            .chars()
+            .filter(|character| !matches!(character, '\r' | '\n'))
+            .collect::<String>();
+        if text.is_empty() {
+            return;
+        }
+        let byte = self.byte_cursor();
+        self.value.insert_str(byte, &text);
+        self.cursor += text.chars().count();
+    }
+
+    pub fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let end = self.byte_cursor();
+        self.cursor -= 1;
+        let start = self.byte_cursor();
+        self.value.replace_range(start..end, "");
+    }
+
+    pub fn delete(&mut self) {
+        let start = self.byte_cursor();
+        let Some((offset, character)) = self.value[start..].char_indices().next() else {
+            return;
+        };
+        let end = start + offset + character.len_utf8();
+        self.value.replace_range(start..end, "");
+    }
+
+    pub fn move_left(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+
+    pub fn move_right(&mut self) {
+        self.cursor = (self.cursor + 1).min(self.value.chars().count());
+    }
+
+    pub fn move_home(&mut self) {
+        self.cursor = 0;
+    }
+
+    pub fn move_end(&mut self) {
+        self.cursor = self.value.chars().count();
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -794,18 +858,18 @@ impl App {
             CommandAction::Quit => self.request_quit(),
             CommandAction::FileFinder => {
                 self.overlay = Some(Overlay::FileFinder {
-                    query: String::new(),
+                    input: TextInput::default(),
                     selected: 0,
                 });
             }
             CommandAction::WorkspaceSearch => {
                 self.overlay = Some(Overlay::WorkspaceSearch {
-                    query: String::new(),
+                    input: TextInput::default(),
                 });
             }
             CommandAction::Find => {
                 self.overlay = Some(Overlay::Find {
-                    query: String::new(),
+                    input: TextInput::default(),
                 });
             }
             CommandAction::Outline => self.open_outline(),
@@ -860,35 +924,40 @@ impl App {
         }
         self.overlay = Some(Overlay::PathInput {
             action,
-            value: String::new(),
+            input: TextInput::default(),
         });
     }
 
-    fn apply_path_action(&mut self, action: PathAction, value: &str) {
+    fn apply_path_action(&mut self, action: PathAction, value: &str) -> bool {
         let value = value.trim();
         if value.is_empty() {
             self.status_message = Some(format!("Cannot {} an empty path", action.verb()));
-            return;
+            return false;
         }
         let target = match self.workspace.new_document_path(Path::new(value)) {
             Ok(target) => target,
             Err(error) => {
                 self.status_message = Some(format!("Cannot {} · {error}", action.verb()));
-                return;
+                return false;
             }
         };
 
         if action == PathAction::Create {
-            match save_atomic(&target, "", Encoding::Utf8, LineEnding::Lf, None, true) {
-                Ok(_) => self.finish_new_document(&target, "Created"),
-                Err(error) => self.status_message = Some(format!("Create failed · {error}")),
-            }
-            return;
+            return match save_atomic(&target, "", Encoding::Utf8, LineEnding::Lf, None, true) {
+                Ok(_) => {
+                    self.finish_new_document(&target, "Created");
+                    true
+                }
+                Err(error) => {
+                    self.status_message = Some(format!("Create failed · {error}"));
+                    false
+                }
+            };
         }
 
         self.sync_active_document();
         let Some(tab) = self.active_tab() else {
-            return;
+            return false;
         };
         let text = tab.document.text.clone();
         let encoding = tab.document.encoding;
@@ -908,10 +977,15 @@ impl App {
                 if let Some(previous) = previous {
                     self.discard_recovery_for(&previous);
                 }
+                true
             }
-            Ok(_) => self.finish_new_document(&target, "Duplicated as"),
+            Ok(_) => {
+                self.finish_new_document(&target, "Duplicated as");
+                true
+            }
             Err(error) => {
                 self.status_message = Some(format!("{} failed · {error}", action.verb()));
+                false
             }
         }
     }
@@ -1053,7 +1127,7 @@ impl App {
             KeyCode::Char('U') => self.execute_command(CommandAction::Redo),
             KeyCode::Char(':') => {
                 self.overlay = Some(Overlay::Palette {
-                    query: String::new(),
+                    input: TextInput::default(),
                     selected: 0,
                 });
             }
@@ -1164,8 +1238,8 @@ impl App {
                 }
                 _ => true,
             },
-            Overlay::Palette { query, selected } => {
-                let candidates = command_candidates(query);
+            Overlay::Palette { input, selected } => {
+                let candidates = command_candidates(&input.value);
                 match key.code {
                     KeyCode::Up => {
                         *selected = selected.saturating_sub(1);
@@ -1173,16 +1247,6 @@ impl App {
                     }
                     KeyCode::Down => {
                         *selected = (*selected + 1).min(candidates.len().saturating_sub(1));
-                        true
-                    }
-                    KeyCode::Backspace => {
-                        query.pop();
-                        *selected = 0;
-                        true
-                    }
-                    KeyCode::Char(character) => {
-                        query.push(character);
-                        *selected = 0;
                         true
                     }
                     KeyCode::Enter => {
@@ -1191,11 +1255,15 @@ impl App {
                         }
                         false
                     }
+                    _ if edit_text_input(input, key) => {
+                        *selected = 0;
+                        true
+                    }
                     _ => true,
                 }
             }
-            Overlay::FileFinder { query, selected } => {
-                let candidates = self.file_candidates(query);
+            Overlay::FileFinder { input, selected } => {
+                let candidates = self.file_candidates(&input.value);
                 match key.code {
                     KeyCode::Up => {
                         *selected = selected.saturating_sub(1);
@@ -1203,16 +1271,6 @@ impl App {
                     }
                     KeyCode::Down => {
                         *selected = (*selected + 1).min(candidates.len().saturating_sub(1));
-                        true
-                    }
-                    KeyCode::Backspace => {
-                        query.pop();
-                        *selected = 0;
-                        true
-                    }
-                    KeyCode::Char(character) => {
-                        query.push(character);
-                        *selected = 0;
                         true
                     }
                     KeyCode::Enter => {
@@ -1224,52 +1282,32 @@ impl App {
                         }
                         false
                     }
+                    _ if edit_text_input(input, key) => {
+                        *selected = 0;
+                        true
+                    }
                     _ => true,
                 }
             }
-            Overlay::Find { query } => match key.code {
-                KeyCode::Backspace => {
-                    query.pop();
-                    true
-                }
-                KeyCode::Char(character) => {
-                    query.push(character);
-                    true
-                }
+            Overlay::Find { input } => match key.code {
                 KeyCode::Enter => {
-                    self.find_in_document(query);
+                    self.find_in_document(&input.value);
                     false
                 }
+                _ if edit_text_input(input, key) => true,
                 _ => true,
             },
-            Overlay::WorkspaceSearch { query } => match key.code {
-                KeyCode::Backspace => {
-                    query.pop();
-                    true
-                }
-                KeyCode::Char(character) => {
-                    query.push(character);
-                    true
-                }
+            Overlay::WorkspaceSearch { input } => match key.code {
                 KeyCode::Enter => {
-                    self.run_workspace_search(query);
+                    self.run_workspace_search(&input.value);
                     false
                 }
+                _ if edit_text_input(input, key) => true,
                 _ => true,
             },
-            Overlay::PathInput { action, value } => match key.code {
-                KeyCode::Backspace => {
-                    value.pop();
-                    true
-                }
-                KeyCode::Char(character) => {
-                    value.push(character);
-                    true
-                }
-                KeyCode::Enter => {
-                    self.apply_path_action(*action, value);
-                    false
-                }
+            Overlay::PathInput { action, input } => match key.code {
+                KeyCode::Enter => !self.apply_path_action(*action, &input.value),
+                _ if edit_text_input(input, key) => true,
                 _ => true,
             },
             Overlay::Recovery { entry } => match key.code {
@@ -1329,6 +1367,26 @@ impl App {
         };
         if keep && self.overlay.is_none() {
             self.overlay = Some(overlay);
+        }
+    }
+
+    fn paste_into_overlay(&mut self, text: &str) -> bool {
+        let Some(overlay) = self.overlay.as_mut() else {
+            return false;
+        };
+        match overlay {
+            Overlay::Palette { input, selected } | Overlay::FileFinder { input, selected } => {
+                input.insert(text);
+                *selected = 0;
+                true
+            }
+            Overlay::Find { input }
+            | Overlay::WorkspaceSearch { input }
+            | Overlay::PathInput { input, .. } => {
+                input.insert(text);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -1499,6 +1557,36 @@ impl App {
     }
 }
 
+fn edit_text_input(input: &mut TextInput, key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Backspace => input.backspace(),
+        KeyCode::Delete => input.delete(),
+        KeyCode::Left => input.move_left(),
+        KeyCode::Right => input.move_right(),
+        KeyCode::Home => input.move_home(),
+        KeyCode::End => input.move_end(),
+        KeyCode::Char(character)
+            if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(character, 'a' | 'A') =>
+        {
+            input.move_home();
+        }
+        KeyCode::Char(character)
+            if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(character, 'e' | 'E') =>
+        {
+            input.move_end();
+        }
+        KeyCode::Char(character)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER) =>
+        {
+            input.insert(&character.to_string());
+        }
+        _ => return false,
+    }
+    true
+}
+
 #[must_use]
 pub fn command_candidates(query: &str) -> Vec<CommandSpec> {
     let mut commands = COMMANDS
@@ -1548,10 +1636,12 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
                         {
                             app.handle_key(key);
                         }
-                        Event::Paste(text) if app.mode == Mode::Write => {
-                            if let Some(tab) = app
-                                .active_tab_mut()
-                                .filter(|tab| tab.document.is_editable())
+                        Event::Paste(text) => {
+                            if !app.paste_into_overlay(&text)
+                                && app.mode == Mode::Write
+                                && let Some(tab) = app
+                                    .active_tab_mut()
+                                    .filter(|tab| tab.document.is_editable())
                             {
                                 tab.editor.insert_str(text);
                                 tab.sync_document();
@@ -1646,6 +1736,74 @@ mod tests {
             std::collections::BTreeSet::from([
                 "DOCUMENT", "EDIT", "FILES", "MODE", "NAVIGATE", "VIEW"
             ])
+        );
+    }
+
+    #[test]
+    fn popup_input_edits_unicode_at_the_character_cursor() {
+        let mut input = TextInput::default();
+        input.insert("café");
+        input.move_left();
+        input.insert(" noir");
+        assert_eq!(input.value, "caf noiré");
+
+        input.backspace();
+        assert_eq!(input.value, "caf noié");
+        input.delete();
+        assert_eq!(input.value, "caf noi");
+
+        input.move_home();
+        input.delete();
+        input.move_end();
+        input.backspace();
+        assert_eq!(input.value, "af no");
+    }
+
+    #[test]
+    fn paste_targets_the_open_popup_instead_of_the_document() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "source").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.set_mode(Mode::Write);
+        app.overlay = Some(Overlay::Find {
+            input: TextInput::default(),
+        });
+
+        assert!(app.paste_into_overlay("café\nneedle"));
+
+        let Some(Overlay::Find { input }) = &app.overlay else {
+            panic!("find popup closed unexpectedly");
+        };
+        assert_eq!(input.value, "caféneedle");
+        assert_eq!(
+            source_from_textarea(&app.active_tab().unwrap().editor),
+            "source"
+        );
+    }
+
+    #[test]
+    fn invalid_path_keeps_the_popup_open_for_correction() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "source").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        let mut input = TextInput::default();
+        input.insert("not-supported.png");
+        app.overlay = Some(Overlay::PathInput {
+            action: PathAction::Create,
+            input,
+        });
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(matches!(app.overlay, Some(Overlay::PathInput { .. })));
+        assert!(
+            app.status_message
+                .as_deref()
+                .is_some_and(|message| message.contains("unsupported"))
         );
     }
 
