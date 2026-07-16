@@ -1,6 +1,6 @@
 //! Ratatui event/update coordinator.
 
-use std::io::stdout;
+use std::io::{self, stdout};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -409,6 +409,7 @@ impl App {
         self.status_message = mixed.then(|| {
             "Mixed line endings · read-only until normalization is implemented".to_owned()
         });
+        self.enforce_active_read_only();
         Ok(())
     }
 
@@ -452,7 +453,7 @@ impl App {
         if mode == Mode::Write
             && self
                 .active_tab()
-                .is_none_or(|tab| !tab.document.is_editable())
+                .is_some_and(|tab| !tab.document.is_editable())
         {
             self.status_message = Some("This document is read-only".to_owned());
             return;
@@ -462,6 +463,21 @@ impl App {
         if let Some(tab) = self.active_tab_mut() {
             style_cursor(&mut tab.editor, mode);
         }
+    }
+
+    fn enforce_active_read_only(&mut self) {
+        if self.mode != Mode::Write
+            || self
+                .active_tab()
+                .is_none_or(|tab| tab.document.is_editable())
+        {
+            return;
+        }
+        self.mode = Mode::Command;
+        if let Some(tab) = self.active_tab_mut() {
+            style_cursor(&mut tab.editor, Mode::Command);
+        }
+        self.status_message = Some("Mixed line endings · read-only".to_owned());
     }
 
     fn request_quit(&mut self) {
@@ -509,6 +525,7 @@ impl App {
         let next = (isize::try_from(current).unwrap_or_default() + direction).rem_euclid(len);
         self.active_tab = usize::try_from(next).ok();
         self.preview_scroll = 0;
+        self.enforce_active_read_only();
     }
 
     fn move_editor(&mut self, movement: CursorMove) {
@@ -704,19 +721,22 @@ impl App {
             self.set_mode(Mode::Command);
             return;
         }
+        if self
+            .active_tab()
+            .is_none_or(|tab| !tab.document.is_editable())
+        {
+            self.enforce_active_read_only();
+            return;
+        }
         let auto_continue = self.config.editor.auto_continue_lists
             && key.code == KeyCode::Enter
             && !key
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         let modified = self.active_tab_mut().is_some_and(|tab| {
-            if auto_continue {
+            if auto_continue && !tab.editor.is_selecting() {
                 let (row, column) = tab.editor.cursor();
-                let prefix = tab.editor.lines()[row]
-                    .chars()
-                    .take(column)
-                    .collect::<String>();
-                match action_for(&prefix) {
+                match action_for(tab.editor.lines(), row, column) {
                     EnterAction::Continue(marker) => {
                         tab.editor.insert_str(format!("\n{marker}"));
                         true
@@ -853,14 +873,28 @@ impl App {
         let keep = match &mut overlay {
             Overlay::Help | Overlay::Message(_) => key.code != KeyCode::Enter,
             Overlay::Confirm(action) => match key.code {
-                KeyCode::Char('y') | KeyCode::Enter => {
+                KeyCode::Char('y') => match action {
+                    ConfirmAction::Quit => {
+                        let saved = self.save_all_dirty();
+                        self.should_quit = saved;
+                        !saved
+                    }
+                    ConfirmAction::CloseTab => {
+                        self.save_active();
+                        let saved = self.active_tab().is_none_or(|tab| !tab.document.is_dirty());
+                        if saved {
+                            self.close_active_discarding();
+                        }
+                        !saved
+                    }
+                },
+                KeyCode::Char('n') => {
                     match action {
                         ConfirmAction::Quit => self.should_quit = true,
                         ConfirmAction::CloseTab => self.close_active_discarding(),
                     }
                     false
                 }
-                KeyCode::Char('n') => false,
                 _ => true,
             },
             Overlay::Palette { query, selected } => {
@@ -1032,7 +1066,11 @@ impl App {
                     .cmp(&self.entries[*right].relative)
             })
         });
-        candidates.into_iter().map(|(_, index)| index).collect()
+        candidates
+            .into_iter()
+            .take(100)
+            .map(|(_, index)| index)
+            .collect()
     }
 
     fn find_in_document(&mut self, query: &str) {
@@ -1159,6 +1197,22 @@ impl App {
             }
         }
     }
+
+    fn save_all_dirty(&mut self) -> bool {
+        let original = self.active_tab;
+        for index in 0..self.tabs.len() {
+            if !self.tabs[index].document.is_dirty() {
+                continue;
+            }
+            self.active_tab = Some(index);
+            self.save_active();
+            if self.tabs[index].document.is_dirty() {
+                return false;
+            }
+        }
+        self.active_tab = original;
+        true
+    }
 }
 
 #[must_use]
@@ -1192,7 +1246,7 @@ pub fn run(workspace: Workspace) -> anyhow::Result<()> {
 pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<()> {
     let mut app = App::with_config(workspace, config)?;
     ratatui::run(|terminal| -> anyhow::Result<()> {
-        execute!(stdout(), EnableMouseCapture, SetCursorStyle::SteadyBlock)?;
+        let mut terminal_extras = TerminalExtrasGuard::enable()?;
         let result = (|| {
             let mut rendered_mode = app.mode;
             let mut needs_draw = true;
@@ -1210,7 +1264,10 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
                             app.handle_key(key);
                         }
                         Event::Paste(text) if app.mode == Mode::Write => {
-                            if let Some(tab) = app.active_tab_mut() {
+                            if let Some(tab) = app
+                                .active_tab_mut()
+                                .filter(|tab| tab.document.is_editable())
+                            {
                                 tab.editor.insert_str(text);
                                 tab.sync_document();
                             }
@@ -1235,14 +1292,51 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
             }
             Ok(())
         })();
-        execute!(
-            stdout(),
-            DisableMouseCapture,
-            SetCursorStyle::DefaultUserShape
-        )
-        .context("restore mouse and cursor state")?;
+        terminal_extras
+            .restore()
+            .context("restore mouse and cursor state")?;
         result
     })
+}
+
+struct TerminalExtrasGuard {
+    active: bool,
+}
+
+impl TerminalExtrasGuard {
+    fn enable() -> io::Result<Self> {
+        execute!(stdout(), EnableMouseCapture)?;
+        let guard = Self { active: true };
+        if let Err(error) = execute!(stdout(), SetCursorStyle::SteadyBlock) {
+            drop(guard);
+            return Err(error);
+        }
+        Ok(guard)
+    }
+
+    fn restore(&mut self) -> io::Result<()> {
+        if self.active {
+            execute!(
+                stdout(),
+                DisableMouseCapture,
+                SetCursorStyle::DefaultUserShape
+            )?;
+            self.active = false;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for TerminalExtrasGuard {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = execute!(
+                stdout(),
+                DisableMouseCapture,
+                SetCursorStyle::DefaultUserShape
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1312,6 +1406,63 @@ mod tests {
             Some(Overlay::Confirm(ConfirmAction::Quit))
         ));
         assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn dirty_guard_never_discards_on_enter_and_y_saves() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "disk").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.active_tab_mut().unwrap().editor.insert_str("local ");
+        app.sync_active_document();
+        app.request_quit();
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Confirm(ConfirmAction::Quit))
+        ));
+        assert!(!app.should_quit);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "disk");
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert!(app.should_quit);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "local disk");
+    }
+
+    #[test]
+    fn mixed_line_endings_cannot_inherit_write_mode() {
+        let directory = tempfile::tempdir().unwrap();
+        let normal = directory.path().join("normal.md");
+        let mixed = directory.path().join("mixed.md");
+        fs::write(&normal, "normal").unwrap();
+        fs::write(&mixed, b"one\r\ntwo\n").unwrap();
+        let workspace = Workspace::from_target(&normal).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.set_mode(Mode::Write);
+
+        app.open_document(&mixed).unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+
+        assert_eq!(app.mode, Mode::Command);
+        assert_eq!(
+            source_from_textarea(&app.active_tab().unwrap().editor),
+            "one\ntwo\n"
+        );
+    }
+
+    #[test]
+    fn configured_write_mode_survives_an_empty_directory_launch() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let mut config = Config::default();
+        config.editor.startup_mode = StartupMode::Write;
+
+        let app = App::with_config(workspace, config).unwrap();
+
+        assert_eq!(app.mode, Mode::Write);
     }
 
     #[test]

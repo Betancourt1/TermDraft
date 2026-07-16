@@ -164,7 +164,7 @@ pub fn config_root(explicit: Option<&Path>) -> Result<PathBuf, ConfigError> {
     }
     for name in ["TERMDRAFT_CONFIG_HOME", "TERMWRITER_CONFIG_HOME"] {
         if let Some(value) = env::var_os(name) {
-            if value.is_empty() {
+            if value.to_string_lossy().trim().is_empty() {
                 return Err(ConfigError::EmptyEnvironment(name));
             }
             return absolutize(Path::new(&value));

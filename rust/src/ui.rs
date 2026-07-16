@@ -176,17 +176,19 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
     let Some(tab) = app.active_tab_mut() else {
         return;
     };
-    let mut editor = tab.editor.clone();
     if inline {
-        apply_inline_preview(&mut editor);
+        apply_inline_preview(&mut tab.editor);
     }
     if mode == Mode::Command {
-        editor.set_cursor_line_style(Style::new().bg(Color::Rgb(10, 10, 10)));
+        tab.editor
+            .set_cursor_line_style(Style::new().bg(Color::Rgb(10, 10, 10)));
     }
-    frame.render_widget(&editor, area);
-    if show_cursor && let Some(position) = editor.rendered_cursor_position() {
+    frame.render_widget(&tab.editor, area);
+    if show_cursor && let Some(position) = tab.editor.rendered_cursor_position() {
         frame.set_cursor_position(position);
     }
+    tab.editor.clear_custom_highlight();
+    tab.editor.set_cursor_line_style(Style::new());
 }
 
 fn draw_preview(frame: &mut Frame, app: &App, area: Rect) {
@@ -390,7 +392,7 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
             let text = Text::from(vec![
                 Line::from(message).style(Style::new().fg(TEXT)),
                 Line::from(""),
-                Line::from("y / Enter  Discard     n / Esc  Cancel").style(Style::new().fg(MUTED)),
+                Line::from("y  Save     n  Discard     Esc  Cancel").style(Style::new().fg(MUTED)),
             ]);
             frame.render_widget(
                 Paragraph::new(text).block(block.title(" Unsaved changes ")),
@@ -540,5 +542,12 @@ mod tests {
         assert!(rendered.contains("Files"));
         assert!(rendered.contains("COMMAND"));
         assert!(rendered.contains("note.md"));
+        assert!(
+            app.active_tab()
+                .unwrap()
+                .editor
+                .rendered_cursor_position()
+                .is_some()
+        );
     }
 }

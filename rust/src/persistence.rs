@@ -134,7 +134,7 @@ pub fn save_atomic(
     let mut temporary = NamedTempFile::new_in(parent)?;
     #[cfg(unix)]
     {
-        let mode = expected.map_or(0o600, |snapshot| snapshot.mode & 0o777);
+        let mode = expected.map_or(0o600, |snapshot| snapshot.mode & 0o7777);
         temporary
             .as_file()
             .set_permissions(fs::Permissions::from_mode(mode))?;
@@ -142,6 +142,14 @@ pub fn save_atomic(
     temporary.write_all(&bytes)?;
     temporary.flush()?;
     temporary.as_file().sync_all()?;
+
+    if let Some(expected) = expected {
+        let current = load_file(path)
+            .map_err(|error| io::Error::other(format!("cannot recheck destination: {error}")))?;
+        if current.snapshot != *expected {
+            return Err(SaveError::Conflict);
+        }
+    }
 
     if no_clobber {
         temporary
