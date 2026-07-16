@@ -263,7 +263,9 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
         Overlay::FileFinder { .. } | Overlay::SearchResults { .. } | Overlay::Outline { .. } => {
             popup(frame.area(), 76, 20)
         }
-        Overlay::Find { .. } | Overlay::WorkspaceSearch { .. } => popup(frame.area(), 66, 7),
+        Overlay::Find { .. } | Overlay::WorkspaceSearch { .. } | Overlay::PathInput { .. } => {
+            popup(frame.area(), 66, 7)
+        }
         Overlay::Confirm(_) | Overlay::Message(_) => popup(frame.area(), 62, 7),
     };
     frame.render_widget(Clear, area);
@@ -330,6 +332,13 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
             block.title(" Search workspace "),
             query,
             "Literal search · up to 100 results",
+        ),
+        Overlay::PathInput { action, value } => draw_input(
+            frame,
+            area,
+            block.title(action.title()),
+            value,
+            "Workspace-relative .md, .markdown, or .txt path · Enter confirms",
         ),
         Overlay::SearchResults { results, selected } => {
             let items = results
@@ -400,6 +409,8 @@ fn draw_help(frame: &mut Frame, area: Rect, block: Block<'_>) {
         help_line("MODE", "i", "Enter WRITE mode"),
         help_line("MODE", "Esc", "Return to COMMAND mode"),
         help_line("DOCUMENT", "w / Ctrl+S", "Save safely"),
+        help_line("DOCUMENT", "W", "Save as a new path"),
+        help_line("DOCUMENT", "D", "Duplicate current source"),
         help_line("DOCUMENT", "q / Ctrl+Q", "Quit safely"),
         help_line("NAVIGATE", "h j k l", "Move cursor"),
         help_line("NAVIGATE", "[ / ]", "Previous / next tab"),
@@ -408,6 +419,7 @@ fn draw_help(frame: &mut Frame, area: Rect, block: Block<'_>) {
         help_line("NAVIGATE", "s / Ctrl+F", "Find in document"),
         help_line("NAVIGATE", "S", "Document outline"),
         help_line("VIEW", "e / Ctrl+B", "Show or hide Files"),
+        help_line("FILES", "a", "Create a Markdown file"),
         help_line("VIEW", "v / Ctrl+E", "Inline / split / source"),
         help_line("EDIT", "u / U", "Undo / redo"),
         help_line("MENU", ":", "Open grouped command menu"),

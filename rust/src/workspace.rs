@@ -18,6 +18,12 @@ pub enum WorkspaceError {
     Unsupported(PathBuf),
     #[error("path is outside the workspace: {0}")]
     Outside(PathBuf),
+    #[error("destination must be a workspace-relative file path: {0}")]
+    InvalidDestination(PathBuf),
+    #[error("destination already exists: {0}")]
+    AlreadyExists(PathBuf),
+    #[error("destination parent is not an existing workspace directory: {0}")]
+    MissingParent(PathBuf),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -87,6 +93,47 @@ impl Workspace {
         }
         validate_suffix(&canonical)?;
         Ok(canonical)
+    }
+
+    /// Validate a new document destination without creating it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceError`] when the destination is absolute, escapes the workspace, has an
+    /// unsupported suffix, has no existing parent, or already exists.
+    pub fn new_document_path(&self, relative: &Path) -> Result<PathBuf, WorkspaceError> {
+        if relative.as_os_str().is_empty()
+            || relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(WorkspaceError::InvalidDestination(relative.to_path_buf()));
+        }
+        validate_suffix(relative)?;
+        let candidate = self.root.join(relative);
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(_) => return Err(WorkspaceError::AlreadyExists(candidate)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(WorkspaceError::Io(error)),
+        }
+        let parent = candidate
+            .parent()
+            .ok_or_else(|| WorkspaceError::MissingParent(candidate.clone()))?;
+        let canonical_parent = parent
+            .canonicalize()
+            .map_err(|_| WorkspaceError::MissingParent(parent.to_path_buf()))?;
+        if !canonical_parent.starts_with(&self.root) {
+            return Err(WorkspaceError::Outside(candidate));
+        }
+        if !canonical_parent.is_dir() {
+            return Err(WorkspaceError::MissingParent(canonical_parent));
+        }
+        Ok(canonical_parent.join(
+            candidate
+                .file_name()
+                .ok_or_else(|| WorkspaceError::InvalidDestination(relative.to_path_buf()))?,
+        ))
     }
 
     #[must_use]
@@ -189,5 +236,36 @@ mod tests {
         assert!(paths.contains(&PathBuf::from("notes/nested/b.txt")));
         assert!(!paths.contains(&PathBuf::from("notes/image.png")));
         assert!(!paths.iter().any(|path| path.starts_with(".git")));
+    }
+
+    #[test]
+    fn validates_new_documents_without_escape_or_overwrite() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("notes")).unwrap();
+        std::fs::write(directory.path().join("exists.md"), "x").unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+
+        assert_eq!(
+            workspace
+                .new_document_path(Path::new("notes/new.md"))
+                .unwrap(),
+            directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("notes/new.md")
+        );
+        assert!(matches!(
+            workspace.new_document_path(Path::new("../escape.md")),
+            Err(WorkspaceError::InvalidDestination(_))
+        ));
+        assert!(matches!(
+            workspace.new_document_path(Path::new("exists.md")),
+            Err(WorkspaceError::AlreadyExists(_))
+        ));
+        assert!(matches!(
+            workspace.new_document_path(Path::new("image.png")),
+            Err(WorkspaceError::Unsupported(_))
+        ));
     }
 }

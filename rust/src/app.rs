@@ -17,7 +17,7 @@ use tui_textarea::{CursorMove, TextArea};
 
 use crate::config::{Config, EditorConfig, StartupMode, StartupView};
 use crate::continuation::{EnterAction, action_for};
-use crate::document::Document;
+use crate::document::{Document, Encoding, LineEnding};
 use crate::editor::{
     apply_editor_config, source_from_textarea, style_cursor, textarea_from_source,
 };
@@ -105,13 +105,47 @@ pub enum Overlay {
         items: Vec<(usize, usize, String)>,
         selected: usize,
     },
+    PathInput {
+        action: PathAction,
+        value: String,
+    },
     Confirm(ConfirmAction),
     Message(String),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PathAction {
+    Create,
+    SaveAs,
+    Duplicate,
+}
+
+impl PathAction {
+    #[must_use]
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Create => " Create file ",
+            Self::SaveAs => " Save as ",
+            Self::Duplicate => " Duplicate document ",
+        }
+    }
+
+    #[must_use]
+    pub const fn verb(self) -> &'static str {
+        match self {
+            Self::Create => "create",
+            Self::SaveAs => "save",
+            Self::Duplicate => "duplicate",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommandAction {
     Save,
+    SaveAs,
+    Duplicate,
+    Create,
     CloseTab,
     Quit,
     FileFinder,
@@ -136,6 +170,18 @@ pub struct CommandSpec {
 }
 
 pub const COMMANDS: &[CommandSpec] = &[
+    CommandSpec {
+        group: "DOCUMENT",
+        label: "Save as",
+        shortcut: "W",
+        action: CommandAction::SaveAs,
+    },
+    CommandSpec {
+        group: "DOCUMENT",
+        label: "Duplicate document",
+        shortcut: "D",
+        action: CommandAction::Duplicate,
+    },
     CommandSpec {
         group: "DOCUMENT",
         label: "Save",
@@ -171,6 +217,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         label: "Document outline",
         shortcut: "S",
         action: CommandAction::Outline,
+    },
+    CommandSpec {
+        group: "FILES",
+        label: "Create Markdown file",
+        shortcut: "a",
+        action: CommandAction::Create,
     },
     CommandSpec {
         group: "FILES",
@@ -463,6 +515,9 @@ impl App {
         self.overlay = None;
         match action {
             CommandAction::Save => self.save_active(),
+            CommandAction::SaveAs => self.open_path_input(PathAction::SaveAs),
+            CommandAction::Duplicate => self.open_path_input(PathAction::Duplicate),
+            CommandAction::Create => self.open_path_input(PathAction::Create),
             CommandAction::CloseTab => self.close_active(),
             CommandAction::Quit => self.request_quit(),
             CommandAction::FileFinder => {
@@ -524,6 +579,86 @@ impl App {
         } else {
             self.overlay = Some(Overlay::Outline { items, selected: 0 });
         }
+    }
+
+    fn open_path_input(&mut self, action: PathAction) {
+        if action != PathAction::Create && self.active_tab().is_none() {
+            self.status_message = Some("No document open".to_owned());
+            return;
+        }
+        self.overlay = Some(Overlay::PathInput {
+            action,
+            value: String::new(),
+        });
+    }
+
+    fn apply_path_action(&mut self, action: PathAction, value: &str) {
+        let value = value.trim();
+        if value.is_empty() {
+            self.status_message = Some(format!("Cannot {} an empty path", action.verb()));
+            return;
+        }
+        let target = match self.workspace.new_document_path(Path::new(value)) {
+            Ok(target) => target,
+            Err(error) => {
+                self.status_message = Some(format!("Cannot {} · {error}", action.verb()));
+                return;
+            }
+        };
+
+        if action == PathAction::Create {
+            match save_atomic(&target, "", Encoding::Utf8, LineEnding::Lf, None, true) {
+                Ok(_) => self.finish_new_document(&target, "Created"),
+                Err(error) => self.status_message = Some(format!("Create failed · {error}")),
+            }
+            return;
+        }
+
+        self.sync_active_document();
+        let Some(tab) = self.active_tab() else {
+            return;
+        };
+        let text = tab.document.text.clone();
+        let encoding = tab.document.encoding;
+        let line_ending = tab.document.line_ending;
+        match save_atomic(&target, &text, encoding, line_ending, None, true) {
+            Ok(snapshot) if action == PathAction::SaveAs => {
+                if let Some(tab) = self.active_tab_mut() {
+                    tab.document.path.clone_from(&target);
+                    tab.document.mark_saved(snapshot);
+                }
+                self.refresh_entries(Some(&target));
+                self.status_message = Some(format!(
+                    "Saved as {}",
+                    self.workspace.relative(&target).display()
+                ));
+            }
+            Ok(_) => self.finish_new_document(&target, "Duplicated as"),
+            Err(error) => {
+                self.status_message = Some(format!("{} failed · {error}", action.verb()));
+            }
+        }
+    }
+
+    fn finish_new_document(&mut self, target: &Path, verb: &str) {
+        self.refresh_entries(Some(target));
+        match self.open_document(target) {
+            Ok(()) => {
+                self.status_message = Some(format!(
+                    "{verb} {}",
+                    self.workspace.relative(target).display()
+                ));
+            }
+            Err(error) => self.status_message = Some(format!("Open failed · {error}")),
+        }
+    }
+
+    fn refresh_entries(&mut self, selected_path: Option<&Path>) {
+        self.entries = self.workspace.scan();
+        let selected = selected_path
+            .and_then(|path| self.entries.iter().position(|entry| entry.path == path))
+            .or_else(|| (!self.entries.is_empty()).then_some(0));
+        self.explorer_state.select(selected);
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -616,12 +751,18 @@ impl App {
                     self.focus = Focus::Editor;
                     return;
                 }
+                KeyCode::Char('a') => {
+                    self.open_path_input(PathAction::Create);
+                    return;
+                }
                 _ => {}
             }
         }
         match key.code {
             KeyCode::Char('i') => self.set_mode(Mode::Write),
             KeyCode::Char('w') => self.save_active(),
+            KeyCode::Char('W') => self.open_path_input(PathAction::SaveAs),
+            KeyCode::Char('D') => self.open_path_input(PathAction::Duplicate),
             KeyCode::Char('q') => self.request_quit(),
             KeyCode::Char('e') => self.execute_command(CommandAction::ToggleExplorer),
             KeyCode::Char('f') => self.execute_command(CommandAction::FileFinder),
@@ -805,6 +946,21 @@ impl App {
                 }
                 KeyCode::Enter => {
                     self.run_workspace_search(query);
+                    false
+                }
+                _ => true,
+            },
+            Overlay::PathInput { action, value } => match key.code {
+                KeyCode::Backspace => {
+                    value.pop();
+                    true
+                }
+                KeyCode::Char(character) => {
+                    value.push(character);
+                    true
+                }
+                KeyCode::Enter => {
+                    self.apply_path_action(*action, value);
                     false
                 }
                 _ => true,
@@ -1102,5 +1258,68 @@ mod tests {
             source_from_textarea(&app.active_tab().unwrap().editor),
             "- item\n- "
         );
+    }
+
+    #[test]
+    fn create_and_save_as_use_no_clobber_workspace_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("original.md");
+        fs::write(&original, "draft").unwrap();
+        let workspace = Workspace::from_target(&original).unwrap();
+        let mut app = App::new(workspace).unwrap();
+
+        app.apply_path_action(PathAction::Create, "new.md");
+        assert_eq!(
+            fs::read_to_string(directory.path().join("new.md")).unwrap(),
+            ""
+        );
+        assert_eq!(app.tabs.len(), 2);
+
+        app.active_tab_mut().unwrap().editor.insert_str("created");
+        app.apply_path_action(PathAction::SaveAs, "retargeted.md");
+        assert_eq!(
+            fs::read_to_string(directory.path().join("retargeted.md")).unwrap(),
+            "created"
+        );
+        assert_eq!(
+            app.active_tab().unwrap().document.path,
+            directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("retargeted.md")
+        );
+
+        app.apply_path_action(PathAction::Create, "retargeted.md");
+        assert_eq!(
+            fs::read_to_string(directory.path().join("retargeted.md")).unwrap(),
+            "created"
+        );
+        assert!(
+            app.status_message
+                .as_deref()
+                .unwrap()
+                .contains("already exists")
+        );
+    }
+
+    #[test]
+    fn duplicate_keeps_the_dirty_original_and_opens_a_saved_copy() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("original.md");
+        fs::write(&original, "draft").unwrap();
+        let workspace = Workspace::from_target(&original).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.active_tab_mut().unwrap().editor.insert_str(" changed");
+
+        app.apply_path_action(PathAction::Duplicate, "copy.md");
+
+        assert_eq!(
+            fs::read_to_string(directory.path().join("copy.md")).unwrap(),
+            " changeddraft"
+        );
+        assert_eq!(app.tabs.len(), 2);
+        assert!(app.tabs[0].document.is_dirty());
+        assert!(!app.tabs[1].document.is_dirty());
     }
 }
