@@ -2,12 +2,14 @@
 
 from typing import ClassVar
 
+from rich.text import Text
 from textual import events
 from textual.binding import BindingType
 from textual.widget import Widget
 from textual.widgets import Static, TextArea
 
 from termdraft.bindings import EDITOR_BINDINGS
+from termdraft.services.inline_preview import render_inline_preview_line
 from termdraft.services.markdown_continuation import continuation_edit
 
 _COMMAND_NAVIGATION_KEYS = frozenset({"up", "down", "left", "right"})
@@ -27,11 +29,13 @@ class MarkdownEditor(TextArea):
         auto_continue_lists: bool = True,
         soft_wrap: bool = True,
         show_line_numbers: bool = True,
+        inline_preview: bool = False,
         read_only: bool = True,
         id: str | None = "markdown-editor",
         classes: str | None = None,
     ) -> None:
         self.auto_continue_lists = auto_continue_lists
+        self.inline_preview = False
         super().__init__(
             text,
             language="markdown",
@@ -47,12 +51,27 @@ class MarkdownEditor(TextArea):
             ),
         )
         self.set_write_mode(True)
+        self.set_inline_preview(inline_preview)
         self.read_only = read_only
 
     @property
     def wrap_width(self) -> int:
         """Soft-wrap wide views without changing the document source."""
         return min(super().wrap_width, MAX_VISUAL_LINE_WIDTH)
+
+    def get_line(self, line_index: int) -> Text:
+        """Render inactive lines while keeping the cursor line as exact source."""
+        if self.inline_preview and line_index != self.cursor_location[0]:
+            return render_inline_preview_line(self.document.get_line(line_index))
+        return super().get_line(line_index)
+
+    def set_inline_preview(self, enabled: bool) -> None:
+        """Switch line presentation and discard cached source-line renders."""
+        if self.inline_preview == enabled:
+            return
+        self.inline_preview = enabled
+        self._line_cache.clear()
+        self.refresh()
 
     def undo(self) -> None:
         """Keep history immutable while a background writer owns the source."""

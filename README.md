@@ -2,19 +2,20 @@
 
 **A local-first Markdown editor for the terminal.**
 
-TermDraft gives you a file explorer, source editor, and rendered preview in one keyboard-first
-interface. It works directly with ordinary `.md`, `.markdown`, and `.txt` files—no database,
+TermDraft gives you a file explorer and an inline Markdown editor in one keyboard-first interface.
+Every line is presented as a preview until the cursor reaches it, when its exact Markdown source is
+shown for editing. It works directly with ordinary `.md`, `.markdown`, and `.txt` files—no database,
 proprietary project format, or import step.
 
 ```text
 ┌ TermDraft · ~/notes ─────────────────────────────────────────────────────────┐
 │ journal/2026-07-11.md │ ● projects/termdraft.md                             │
-│ Files                    │ Markdown source            │ Rendered preview     │
-│  journal/                │ # Friday                   │ Friday               │
-│   2026-07-11.md          │                            │                      │
-│  projects/               │ Today I learned…           │ Today I learned…     │
-│   termdraft.md           │                            │                      │
-├──────────────────────────┴────────────────────────────┴──────────────────────┤
+│ Files                    │ Friday                                            │
+│  journal/                │                                                   │
+│   2026-07-11.md          │ Today I learned…                                  │
+│  projects/               │                                                   │
+│   termdraft.md           │ # Current line is exact Markdown source           │
+├──────────────────────────┴───────────────────────────────────────────────────┤
 │ COMMAND | journal/2026-07-11.md ● modified | 36 words                      │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -27,8 +28,8 @@ proprietary project format, or import step.
   switching applications.
 - **The keyboard comes first.** COMMAND and WRITE modes keep navigation fast while protecting text
   from accidental edits.
-- **Markdown is visible as you write.** The side-by-side preview supports common extensions,
-  including tables, task lists, footnotes, and alerts.
+- **Markdown is visible as you write.** Inactive lines show headings, emphasis, links, tasks, and
+  other common syntax without their source markers; the cursor line always shows exact source.
 - **Unsaved work is treated carefully.** Atomic saves, external-change detection, guarded exits,
   and crash-recovery drafts reduce the chance of losing work.
 
@@ -99,15 +100,15 @@ termdraft --commands
 
 - Multiple open documents with independent undo histories and restored sessions
 - File search, workspace text search, find and replace, and document outline
-- Resizable explorer, editor, and preview panes with a focused layout for narrow terminals
+- Inline preview editing by default, with a configurable resizable split source/preview layout
 - File and folder creation, rename, copy, move, and Trash operations
 - Configurable editor behavior, keybindings, and Textual CSS theme
 - Safe Markdown rendering with raw HTML shown as text instead of executed
 - Recovery-draft management for crashes, conflicts, and missing files
 
-TermDraft deliberately remains a source editor with a read-only preview. It does not rewrite your
-Markdown or hide the underlying syntax. Experimental semantic-block reading exists, but hybrid
-WYSIWYM editing is not part of the current product.
+TermDraft remains a source editor: inline presentation only changes how inactive lines look and
+never reconstructs or rewrites the Markdown. Set `editor.view_mode = "split"` in `config.toml` to
+use the traditional source editor and read-only preview side by side.
 
 ## Configuration
 
@@ -121,6 +122,16 @@ termdraft --config-path
 The defaults live in `~/.termdraft/config.toml` and `~/.termdraft/theme.tcss`. Open `?` inside the
 app or run `termdraft --commands` after remapping keys; both show the effective configuration rather
 than a hard-coded shortcut list.
+
+The default editor view is:
+
+```toml
+[editor]
+view_mode = "inline"
+```
+
+Change it to `"split"` for permanent side-by-side source and preview panes. Reload configuration
+with `R`, or restart TermDraft.
 
 ## Learn more
 

@@ -1,8 +1,10 @@
 # Future semantic block editing
 
-This document describes a possible WYSIWYM mode for TermDraft. It is a design direction, not a
-promise that the hard interaction problems are solved. The MVP now includes only Stage 1's read-only
-top-level range inspector; rendered-block and hybrid editing remain unimplemented.
+This document describes deeper block-aware WYSIWYM editing beyond TermDraft's default inline view.
+The inline view is deliberately presentation-only: inactive logical lines hide common Markdown
+markers without changing their character positions, and the cursor line stays exact source. It does
+not mount semantic blocks or splice rendered output back into the file. The stages below remain the
+direction for that richer model.
 
 ## Goal
 

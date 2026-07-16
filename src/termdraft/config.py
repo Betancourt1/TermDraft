@@ -150,6 +150,8 @@ soft_wrap = true
 show_line_numbers = true
 # Applied on the next launch: "command" or "write".
 startup_mode = "command"
+# "inline" previews every line except the cursor line. Use "split" for two panes.
+view_mode = "inline"
 
 [recovery]
 # Used only when you explicitly choose age-based cleanup in Recovery Manager.
@@ -237,6 +239,7 @@ class EditorConfig:
     soft_wrap: bool = True
     show_line_numbers: bool = True
     startup_mode: Literal["command", "write"] = "command"
+    view_mode: Literal["inline", "split"] = "inline"
 
 
 @dataclass(frozen=True, slots=True)
@@ -349,6 +352,7 @@ def _parse_editor(raw_editor: object) -> EditorConfig:
         "soft_wrap",
         "show_line_numbers",
         "startup_mode",
+        "view_mode",
     }
     unknown_keys = set(editor) - allowed_keys
     if unknown_keys:
@@ -371,11 +375,16 @@ def _parse_editor(raw_editor: object) -> EditorConfig:
     if not isinstance(startup_mode, str) or startup_mode not in {"command", "write"}:
         raise ConfigError('editor.startup_mode must be "command" or "write"')
 
+    view_mode = editor.get("view_mode", "inline")
+    if not isinstance(view_mode, str) or view_mode not in {"inline", "split"}:
+        raise ConfigError('editor.view_mode must be "inline" or "split"')
+
     return EditorConfig(
         auto_continue_lists=values["auto_continue_lists"],
         soft_wrap=values["soft_wrap"],
         show_line_numbers=values["show_line_numbers"],
         startup_mode=cast(Literal["command", "write"], startup_mode),
+        view_mode=cast(Literal["inline", "split"], view_mode),
     )
 
 

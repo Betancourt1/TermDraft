@@ -799,10 +799,13 @@ class TermDraftApp(App[None]):
                 )
 
     def _apply_panel_visibility(self) -> None:
+        inline_view = self.config.editor.view_mode == "inline"
         self.explorer.display = self._explorer_visible
         self.explorer_resize_handle.display = self._explorer_visible
-        self.workbench_resize_handle.display = not self._narrow and self._preview_visible
-        if self._narrow:
+        self.workbench_resize_handle.display = (
+            not inline_view and not self._narrow and self._preview_visible
+        )
+        if inline_view or self._narrow:
             show_preview = self._preview_visible and self._narrow_pane == "preview"
             self.editor_switcher.display = not show_preview
             self.editor.display = not show_preview
@@ -1067,6 +1070,7 @@ class TermDraftApp(App[None]):
             auto_continue_lists=self.config.editor.auto_continue_lists,
             soft_wrap=self.config.editor.soft_wrap,
             show_line_numbers=self.config.editor.show_line_numbers,
+            inline_preview=self.config.editor.view_mode == "inline",
             read_only=read_only,
             id=editor_id,
             classes="markdown-editor-buffer",
@@ -4082,7 +4086,7 @@ class TermDraftApp(App[None]):
     def action_toggle_preview(self) -> None:
         if self._has_modal:
             return
-        if self._narrow:
+        if self.config.editor.view_mode == "inline" or self._narrow:
             self._preview_visible = True
             self._narrow_pane = "preview" if self._narrow_pane == "editor" else "editor"
         else:
@@ -4410,6 +4414,10 @@ class TermDraftApp(App[None]):
             editor.auto_continue_lists = config.editor.auto_continue_lists
             editor.soft_wrap = config.editor.soft_wrap
             editor.show_line_numbers = config.editor.show_line_numbers
+            editor.set_inline_preview(config.editor.view_mode == "inline")
+        if config.editor.view_mode == "inline" and self._narrow_pane == "preview":
+            self._narrow_pane = "editor"
+        self._apply_panel_visibility()
         self._refresh_status()
         self.notify("Reloaded config.toml; existing theme.tcss files reload when saved")
 

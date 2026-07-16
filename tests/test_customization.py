@@ -264,7 +264,10 @@ async def test_configuration_reload_updates_keys_and_editor_options(tmp_path: Pa
     config_root = tmp_path / "config"
     config_root.mkdir()
     config_path = config_root / "config.toml"
-    config_path.write_text('[keybindings]\nsave = "ctrl+g"\n', encoding="utf-8")
+    config_path.write_text(
+        '[editor]\nview_mode = "split"\n\n[keybindings]\nsave = "ctrl+g"\n',
+        encoding="utf-8",
+    )
     app = _app(path, load_config(config_root))
 
     async with app.run_test(size=(100, 30)) as pilot:
@@ -274,6 +277,7 @@ async def test_configuration_reload_updates_keys_and_editor_options(tmp_path: Pa
 auto_continue_lists = false
 soft_wrap = false
 show_line_numbers = false
+view_mode = "inline"
 
 [keybindings]
 save = "ctrl+r"
@@ -286,6 +290,9 @@ save = "ctrl+r"
         assert not app.editor.auto_continue_lists
         assert not app.editor.soft_wrap
         assert not app.editor.show_line_numbers
+        assert app.editor.inline_preview
+        assert not app.preview.display
+        assert not app.workbench_resize_handle.display
 
         await pilot.press("i", "x", "ctrl+g")
         assert path.read_text(encoding="utf-8") == "base"

@@ -1,0 +1,42 @@
+"""Coverage for the default inline Markdown presentation."""
+
+from __future__ import annotations
+
+from termdraft.services.inline_preview import render_inline_preview_line
+from termdraft.widgets.editor import MarkdownEditor
+
+
+def test_inactive_line_preview_preserves_source_positions() -> None:
+    source = "- [x] Read **carefully** and [follow](https://example.com)"
+
+    rendered = render_inline_preview_line(source)
+
+    assert len(rendered.plain) == len(source)
+    assert rendered.plain.startswith("• ☑   Read   carefully")
+    assert "follow" in rendered.plain
+    assert "https://example.com" not in rendered.plain
+
+
+def test_editor_keeps_only_the_cursor_line_as_exact_source() -> None:
+    editor = MarkdownEditor(
+        "# Heading\nThis is **bold**.",
+        inline_preview=True,
+        read_only=False,
+    )
+
+    assert editor.get_line(0).plain == "# Heading"
+    assert editor.get_line(1).plain == "This is   bold  ."
+
+    editor.move_cursor((1, 0))
+
+    assert editor.get_line(0).plain == "  Heading"
+    assert editor.get_line(1).plain == "This is **bold**."
+
+
+def test_editor_can_switch_from_split_source_to_inline_preview() -> None:
+    editor = MarkdownEditor("active\n# Inactive", read_only=False)
+    assert editor.get_line(1).plain == "# Inactive"
+
+    editor.set_inline_preview(True)
+
+    assert editor.get_line(1).plain == "  Inactive"

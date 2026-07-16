@@ -130,6 +130,7 @@ def test_config_applies_editor_and_keybinding_overrides(tmp_path: Path) -> None:
 auto_continue_lists = false
 show_line_numbers = false
 startup_mode = "write"
+view_mode = "split"
 
 [recovery]
 retention_days = 45
@@ -152,6 +153,7 @@ command_cursor_left = "a"
         soft_wrap=True,
         show_line_numbers=False,
         startup_mode="write",
+        view_mode="split",
     )
     assert config.recovery == RecoveryConfig(retention_days=45)
     assert config.keybindings["save"] == "ctrl+alt+s"
@@ -173,6 +175,8 @@ command_cursor_left = "a"
         ("[editor]\nsoft_wrap = 1\n", "editor.soft_wrap must be true or false"),
         ('[editor]\nstartup_mode = "insert"\n', "editor.startup_mode"),
         ("[editor]\nstartup_mode = false\n", "editor.startup_mode"),
+        ('[editor]\nview_mode = "wide"\n', "editor.view_mode"),
+        ("[editor]\nview_mode = false\n", "editor.view_mode"),
         ("recovery = true\n", "recovery must be a TOML table"),
         ("[recovery]\nunknown = 1\n", "unknown recovery option"),
         ("[recovery]\nretention_days = 0\n", "must be a positive integer"),
@@ -280,6 +284,7 @@ def test_templates_are_valid_and_initialization_is_private(tmp_path: Path) -> No
     assert stat.S_IMODE((root / CONFIG_FILE_NAME).stat().st_mode) == 0o600
     assert stat.S_IMODE((root / THEME_FILE_NAME).stat().st_mode) == 0o600
     assert tomllib.loads(CONFIG_TEMPLATE)["editor"]["soft_wrap"] is True
+    assert tomllib.loads(CONFIG_TEMPLATE)["editor"]["view_mode"] == "inline"
     assert tomllib.loads(CONFIG_TEMPLATE)["recovery"]["retention_days"] == 30
 
 

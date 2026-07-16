@@ -123,6 +123,14 @@ source prefix through the cursor with CommonMark and continues only if the curre
 `list_item_open` token. The replacement is one TextArea edit, so undo removes the inserted marker and
 newline together. Disabling `editor.auto_continue_lists` restores TextArea's ordinary Enter behavior.
 
+The default `inline` view remains one full-source `TextArea`. Its inactive logical lines receive a
+position-preserving presentation transform: Markdown delimiters become spaces or same-width symbols
+and the visible content receives Rich styles. The cursor line bypasses that transform and shows exact
+source. Because the displayed string retains the source character count, TextArea continues to own
+cursor movement, selection, wrapping, undo, recovery, and saving; rendered text is never parsed back
+into the document. `editor.view_mode = "split"` disables that transform and reveals the existing
+read-only preview beside the source editor.
+
 Each source edit increments a preview revision and stops the previous debounce timer. The async
 callback verifies its revision before awaiting `Markdown.update`. A stale callback rechecks the
 revision, so an old file's render cannot become the final preview for a newer file. Rendering errors
@@ -277,9 +285,10 @@ when that exists, and otherwise the new leaf. A new location therefore wins over
 counterpart, and nothing is moved or merged automatically. Configuration remains user-level rather
 than workspace-level, so merely opening a repository cannot install key behavior or visual rules.
 
-`config.toml` is parsed with the standard-library `tomllib`. Only three editor booleans, the
-`startup_mode` string enum (`"command"` or `"write"`), a positive `recovery.retention_days` integer
-representable from the current date, and a closed set of binding IDs are accepted. Values map binding
+`config.toml` is parsed with the standard-library `tomllib`. Only three editor booleans,
+`startup_mode` (`"command"` or `"write"`), `view_mode` (`"inline"` or `"split"`), a positive
+`recovery.retention_days` integer representable from the current date, and a closed set of binding IDs
+are accepted. Values map binding
 IDs to key strings, never to Textual action names; unknown sections, options, IDs, empty values, and
 duplicate effective keys fail closed. The retention value is consulted only after the user opens
 Recovery Manager; it cannot schedule deletion. The initializer uses exclusive creation, does not

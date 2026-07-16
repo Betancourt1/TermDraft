@@ -14,6 +14,7 @@ from textual.pilot import Pilot
 from textual.widgets import Button, Input, Static
 
 from termdraft.app import TermDraftApp, _RecoveryCleanupWorkerResult
+from termdraft.config import EditorConfig, TermDraftConfig
 from termdraft.models.document import FileSnapshot
 from termdraft.models.workspace import Workspace
 from termdraft.screens.dialogs import (
@@ -55,6 +56,7 @@ def app_for_file(
     recovery_debounce: float = 0.5,
     recovery_journal: RecoveryJournal | None = None,
     session_store: SessionStore | None = None,
+    config: TermDraftConfig | None = None,
 ) -> TermDraftApp:
     return TermDraftApp(
         Workspace.from_target(path),
@@ -63,7 +65,12 @@ def app_for_file(
         recovery_debounce=recovery_debounce,
         recovery_journal=recovery_journal or RecoveryJournal(path.parent / ".test-recovery"),
         session_store=session_store,
+        config=config,
     )
+
+
+def split_config(root: Path) -> TermDraftConfig:
+    return TermDraftConfig(root=root, editor=EditorConfig(view_mode="split"))
 
 
 async def _wait_until(
@@ -92,6 +99,9 @@ async def test_app_starts_and_opens_an_explicit_file(tmp_path: Path) -> None:
         assert app.editor.text == "# Hello\n"
         assert app.preview.source_text == "# Hello\n"
         assert not app.document.dirty
+        assert app.editor.inline_preview
+        assert not app.preview.display
+        assert not app.workbench_resize_handle.display
 
 
 async def test_directory_session_reopens_last_document_and_view(tmp_path: Path) -> None:
@@ -974,7 +984,7 @@ async def test_raw_and_preview_measures_center_and_shrink_with_their_panes(
 ) -> None:
     path = tmp_path / "note.md"
     path.write_text("x" * 120, encoding="utf-8")
-    app = app_for_file(path)
+    app = app_for_file(path, config=split_config(tmp_path / "config"))
 
     async with app.run_test(size=(280, 30)) as pilot:
         await pilot.pause(0.03)
@@ -1005,7 +1015,7 @@ async def test_raw_and_preview_panes_can_be_resized_and_keep_minimum_widths(
 ) -> None:
     path = tmp_path / "note.md"
     path.write_text("content", encoding="utf-8")
-    app = app_for_file(path)
+    app = app_for_file(path, config=split_config(tmp_path / "config"))
 
     async with app.run_test(size=(120, 30)) as pilot:
         initial_editor_width = app.editor_switcher.region.width
@@ -1031,7 +1041,7 @@ async def test_raw_and_preview_panes_can_be_resized_and_keep_minimum_widths(
 async def test_showing_wide_preview_focuses_keyboard_link_navigation(tmp_path: Path) -> None:
     path = tmp_path / "note.md"
     path.write_text("[Reference](https://example.com)\n", encoding="utf-8")
-    app = app_for_file(path)
+    app = app_for_file(path, config=split_config(tmp_path / "config"))
 
     async with app.run_test(size=(120, 30)) as pilot:
         await pilot.pause(0.03)

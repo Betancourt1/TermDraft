@@ -5,6 +5,12 @@ Notable changes to TermDraft are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Added a default inline preview mode that keeps the cursor line as exact Markdown source and
+  presents every other line without common syntax markers. The previous side-by-side source and
+  preview layout remains available through `editor.view_mode = "split"`.
+
 ### Changed
 
 - Replaced persistent editor and preview scrollbars with contextual line and preview progress in the
