@@ -5,16 +5,28 @@ Notable changes to TermDraft are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-16
+
 ### Added
 
 - Added a default inline preview mode that keeps the cursor line as exact Markdown source and
   presents every other line without common syntax markers. The previous side-by-side source and
   preview layout remains available through `editor.view_mode = "split"`.
+- Added command-palette actions for switching modes and managing entries in the focused Files pane.
 
 ### Changed
 
 - Replaced persistent editor and preview scrollbars with contextual line and preview progress in the
   status bar, leaving more room for writing.
+- Restyled dialogs as compact terminal action panels with framed titles, separated actions, and
+  focus-driven emphasis.
+- Strengthened the inline heading hierarchy and alignment while keeping the active source line
+  legible.
+- Kept routine recovery saves silent so the status bar remains focused on user actions.
+
+### Fixed
+
+- Kept the Files pane open after creating a file or folder so keyboard workflows retain context.
 
 ## [1.1.1] - 2026-07-15
 
@@ -82,7 +94,8 @@ Notable changes to TermDraft are recorded here. The format follows
 - Established the local-first terminal writing loop with a file explorer, Markdown source editor,
   rendered preview, protected saves, and crash-recovery journals.
 
-[Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/Betancourt1/TermDraft/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/Betancourt1/TermDraft/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Betancourt1/TermDraft/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v1.0.0
