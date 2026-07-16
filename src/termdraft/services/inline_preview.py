@@ -21,12 +21,12 @@ _STRIKE = re.compile(r"(~~)(.+?)\1")
 _EMPHASIS = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)|(?<!_)_([^_\n]+)_(?!_)")
 
 _HEADING_PRESENTATION = (
-    ("▌", Style(bold=True)),
-    ("▌", Style(bold=True)),
-    ("│", Style()),
-    ("·", Style()),
-    ("·", Style(italic=True)),
-    ("·", Style(italic=True)),
+    ("|", Style(bold=True)),
+    ("|", Style(bold=True)),
+    ("|", Style()),
+    (".", Style()),
+    (".", Style(italic=True)),
+    (".", Style(italic=True)),
 )
 
 
