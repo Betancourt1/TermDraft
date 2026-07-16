@@ -1,6 +1,7 @@
 //! Rust implementation of `TermDraft`'s portable core.
 
 pub mod app;
+pub mod bindings;
 pub mod config;
 pub mod continuation;
 pub mod document;

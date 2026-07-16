@@ -10,6 +10,8 @@ use directories::BaseDirs;
 use serde::Deserialize;
 use thiserror::Error;
 
+use crate::bindings::{BindingError, Keymap};
+
 pub const CONFIG_FILE_NAME: &str = "config.toml";
 pub const THEME_FILE_NAME: &str = "theme.tcss";
 
@@ -28,7 +30,7 @@ view_mode = "inline"
 retention_days = 30
 
 [keybindings]
-# The Rust comparison build currently reports these overrides but keeps its fixed keys.
+# Bindings override keys only. They cannot define actions or commands.
 # save = "ctrl+s"
 "#;
 
@@ -44,7 +46,10 @@ pub struct Config {
     pub root: PathBuf,
     pub editor: EditorConfig,
     pub recovery: RecoveryConfig,
-    pub keybindings: BTreeMap<String, String>,
+    /// Entries explicitly loaded from `[keybindings]`.
+    pub keybinding_overrides: BTreeMap<String, String>,
+    /// The complete validated keymap after applying overrides to official defaults.
+    pub keybindings: Keymap,
 }
 
 impl Default for Config {
@@ -53,7 +58,8 @@ impl Default for Config {
             root: PathBuf::new(),
             editor: EditorConfig::default(),
             recovery: RecoveryConfig::default(),
-            keybindings: BTreeMap::new(),
+            keybinding_overrides: BTreeMap::new(),
+            keybindings: Keymap::default(),
         }
     }
 }
@@ -146,6 +152,8 @@ pub enum ConfigError {
     },
     #[error("recovery.retention_days must be a positive integer")]
     InvalidRetention,
+    #[error(transparent)]
+    InvalidKeybindings(#[from] BindingError),
     #[error("cannot create configuration at {path}: {source}")]
     Create {
         path: PathBuf,
@@ -200,11 +208,13 @@ pub fn load(root: PathBuf) -> Result<Config, ConfigError> {
     if parsed.recovery.retention_days == 0 {
         return Err(ConfigError::InvalidRetention);
     }
+    let keybindings = Keymap::resolve(&parsed.keybindings)?;
     Ok(Config {
         root,
         editor: parsed.editor,
         recovery: parsed.recovery,
-        keybindings: parsed.keybindings,
+        keybinding_overrides: parsed.keybindings,
+        keybindings,
     })
 }
 
@@ -308,6 +318,59 @@ retention_days = 45
         assert_eq!(config.editor.startup_mode, StartupMode::Write);
         assert_eq!(config.editor.view_mode, StartupView::Split);
         assert_eq!(config.recovery.retention_days, 45);
+        assert_eq!(config.keybindings["save"], "ctrl+s");
+        assert!(config.keybinding_overrides.is_empty());
+    }
+
+    #[test]
+    fn resolves_keybinding_overrides_over_complete_defaults() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join(CONFIG_FILE_NAME),
+            "[keybindings]\nsave = \"ctrl+alt+s\"\nredo = \"ctrl+r, ctrl+shift+r\"\n",
+        )
+        .unwrap();
+
+        let config = load(directory.path().to_path_buf()).unwrap();
+
+        assert_eq!(config.keybinding_overrides["save"], "ctrl+alt+s");
+        assert_eq!(config.keybinding_overrides["redo"], "ctrl+r, ctrl+shift+r");
+        assert_eq!(config.keybindings["save"], "ctrl+alt+s");
+        assert_eq!(config.keybindings["redo"], "ctrl+r,ctrl+shift+r");
+        assert_eq!(config.keybindings["quit"], "ctrl+q");
+        assert_eq!(config.keybindings.len(), 52);
+    }
+
+    #[test]
+    fn rejects_invalid_effective_keybindings() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join(CONFIG_FILE_NAME);
+
+        fs::write(&config_path, "[keybindings]\nsave = \"ctrl+q\"\n").unwrap();
+        assert!(matches!(
+            load(directory.path().to_path_buf()),
+            Err(ConfigError::InvalidKeybindings(
+                BindingError::Collision { .. }
+            ))
+        ));
+
+        fs::write(
+            &config_path,
+            "[keybindings]\npreview_next_heading = \"tab\"\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            load(directory.path().to_path_buf()),
+            Err(ConfigError::InvalidKeybindings(
+                BindingError::ReservedPreviewKey(_)
+            ))
+        ));
+
+        fs::write(&config_path, "[keybindings]\nunknown = \"ctrl+x\"\n").unwrap();
+        assert!(matches!(
+            load(directory.path().to_path_buf()),
+            Err(ConfigError::InvalidKeybindings(BindingError::UnknownId(_)))
+        ));
     }
 
     #[test]
