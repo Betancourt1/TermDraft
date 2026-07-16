@@ -15,8 +15,12 @@ use ratatui::crossterm::execute;
 use ratatui::widgets::ListState;
 use tui_textarea::{CursorMove, TextArea};
 
+use crate::config::{Config, EditorConfig, StartupMode, StartupView};
+use crate::continuation::{EnterAction, action_for};
 use crate::document::Document;
-use crate::editor::{source_from_textarea, style_cursor, textarea_from_source};
+use crate::editor::{
+    apply_editor_config, source_from_textarea, style_cursor, textarea_from_source,
+};
 use crate::persistence::{SaveError, load_file, save_atomic};
 use crate::search::{TextMatch, fuzzy_score, heading_outline, search_text};
 use crate::ui;
@@ -224,9 +228,10 @@ pub struct EditorTab {
 }
 
 impl EditorTab {
-    fn from_path(path: &Path) -> anyhow::Result<Self> {
+    fn from_path(path: &Path, config: &EditorConfig) -> anyhow::Result<Self> {
         let loaded = load_file(path)?;
-        let editor = textarea_from_source(&loaded.text);
+        let mut editor = textarea_from_source(&loaded.text);
+        apply_editor_config(&mut editor, config);
         Ok(Self {
             document: loaded.into_document(),
             editor,
@@ -240,6 +245,7 @@ impl EditorTab {
 
 pub struct App {
     pub workspace: Workspace,
+    pub config: Config,
     pub entries: Vec<WorkspaceEntry>,
     pub explorer_state: ListState,
     pub tabs: Vec<EditorTab>,
@@ -261,6 +267,15 @@ impl App {
     ///
     /// Returns an error when the initial file cannot be loaded safely.
     pub fn new(workspace: Workspace) -> anyhow::Result<Self> {
+        Self::with_config(workspace, Config::default())
+    }
+
+    /// Build an application with the resolved `TermDraft` configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the initial file cannot be loaded safely.
+    pub fn with_config(workspace: Workspace, config: Config) -> anyhow::Result<Self> {
         let entries = workspace.scan();
         let selected = workspace
             .initial_file
@@ -270,14 +285,20 @@ impl App {
         explorer_state.select(selected.or_else(|| (!entries.is_empty()).then_some(0)));
 
         let initial_file = workspace.initial_file.clone();
+        let startup_mode = config.editor.startup_mode;
+        let view_mode = match config.editor.view_mode {
+            StartupView::Inline => ViewMode::Inline,
+            StartupView::Split => ViewMode::Split,
+        };
         let mut app = Self {
             workspace,
+            config,
             entries,
             explorer_state,
             tabs: Vec::new(),
             active_tab: None,
             mode: Mode::Command,
-            view_mode: ViewMode::Inline,
+            view_mode,
             focus: Focus::Editor,
             show_explorer: true,
             overlay: None,
@@ -290,6 +311,9 @@ impl App {
         } else if app.entries.is_empty() {
             app.focus = Focus::Explorer;
             app.status_message = Some("Empty workspace · create or add a Markdown file".to_owned());
+        }
+        if startup_mode == StartupMode::Write {
+            app.set_mode(Mode::Write);
         }
         Ok(app)
     }
@@ -317,7 +341,8 @@ impl App {
             self.focus = Focus::Editor;
             return Ok(());
         }
-        let tab = EditorTab::from_path(&path)?;
+        let mut tab = EditorTab::from_path(&path, &self.config.editor)?;
+        style_cursor(&mut tab.editor, self.mode);
         let mixed = !tab.document.is_editable();
         self.tabs.push(tab);
         self.active_tab = Some(self.tabs.len() - 1);
@@ -538,9 +563,34 @@ impl App {
             self.set_mode(Mode::Command);
             return;
         }
-        let modified = self
-            .active_tab_mut()
-            .is_some_and(|tab| tab.editor.input(key));
+        let auto_continue = self.config.editor.auto_continue_lists
+            && key.code == KeyCode::Enter
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        let modified = self.active_tab_mut().is_some_and(|tab| {
+            if auto_continue {
+                let (row, column) = tab.editor.cursor();
+                let prefix = tab.editor.lines()[row]
+                    .chars()
+                    .take(column)
+                    .collect::<String>();
+                match action_for(&prefix) {
+                    EnterAction::Continue(marker) => {
+                        tab.editor.insert_str(format!("\n{marker}"));
+                        true
+                    }
+                    EnterAction::EndMarker(characters) => {
+                        tab.editor.delete_str(characters);
+                        tab.editor.insert_newline();
+                        true
+                    }
+                    EnterAction::Plain => tab.editor.input(key),
+                }
+            } else {
+                tab.editor.input(key)
+            }
+        });
         if modified {
             self.sync_active_document();
             self.status_message = None;
@@ -899,7 +949,16 @@ pub fn command_candidates(query: &str) -> Vec<CommandSpec> {
 ///
 /// Returns an error when initial loading, terminal drawing, or event input fails.
 pub fn run(workspace: Workspace) -> anyhow::Result<()> {
-    let mut app = App::new(workspace)?;
+    run_with_config(workspace, Config::default())
+}
+
+/// Run the full-screen application with a resolved configuration.
+///
+/// # Errors
+///
+/// Returns an error when initial loading, terminal drawing, or event input fails.
+pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<()> {
+    let mut app = App::with_config(workspace, config)?;
     ratatui::run(|terminal| -> anyhow::Result<()> {
         execute!(stdout(), EnableMouseCapture, SetCursorStyle::SteadyBlock)?;
         let result = (|| {
@@ -1016,5 +1075,32 @@ mod tests {
             Some(Overlay::Confirm(ConfirmAction::Quit))
         ));
         assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn configured_startup_and_markdown_continuation_reach_the_editor() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "- item").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut config = Config::default();
+        config.editor.startup_mode = StartupMode::Write;
+        config.editor.view_mode = StartupView::Split;
+        config.editor.show_line_numbers = false;
+        let mut app = App::with_config(workspace, config).unwrap();
+        app.active_tab_mut()
+            .unwrap()
+            .editor
+            .move_cursor(CursorMove::End);
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.mode, Mode::Write);
+        assert_eq!(app.view_mode, ViewMode::Split);
+        assert_eq!(app.active_tab().unwrap().editor.line_number_style(), None);
+        assert_eq!(
+            source_from_textarea(&app.active_tab().unwrap().editor),
+            "- item\n- "
+        );
     }
 }

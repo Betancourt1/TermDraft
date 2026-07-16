@@ -172,6 +172,7 @@ fn draw_workbench(frame: &mut Frame, app: &mut App, area: Rect) {
 fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
     let area = centered(area, 108);
     let mode = app.mode;
+    let show_cursor = app.overlay.is_none() && app.focus == Focus::Editor;
     let Some(tab) = app.active_tab_mut() else {
         return;
     };
@@ -183,6 +184,9 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
         editor.set_cursor_line_style(Style::new().bg(Color::Rgb(10, 10, 10)));
     }
     frame.render_widget(&editor, area);
+    if show_cursor && let Some(position) = editor.rendered_cursor_position() {
+        frame.set_cursor_position(position);
+    }
 }
 
 fn draw_preview(frame: &mut Frame, app: &App, area: Rect) {

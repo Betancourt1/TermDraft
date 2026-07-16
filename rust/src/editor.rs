@@ -7,6 +7,7 @@ use regex::{Match, Regex};
 use tui_textarea::{CursorRenderMode, TextArea, WrapMode};
 
 use crate::app::Mode;
+use crate::config::EditorConfig;
 
 const MUTED: Color = Color::Rgb(92, 92, 92);
 const TEXT: Color = Color::Rgb(218, 218, 218);
@@ -20,7 +21,7 @@ pub fn textarea_from_source(source: &str) -> TextArea<'static> {
     editor.set_wrap_mode(WrapMode::WordOrGlyph);
     editor.set_line_number_style(Style::new().fg(Color::Rgb(72, 72, 72)));
     editor.set_cursor_line_style(Style::new());
-    editor.set_cursor_render_mode(CursorRenderMode::Cell);
+    editor.set_cursor_render_mode(CursorRenderMode::Hidden);
     editor.set_selection_style(Style::new().bg(Color::Rgb(68, 68, 68)));
     editor.set_placeholder_text(
         "Focus Files and press Enter to open a document. Press ? for shortcuts.",
@@ -28,6 +29,19 @@ pub fn textarea_from_source(source: &str) -> TextArea<'static> {
     editor.set_placeholder_style(Style::new().fg(MUTED));
     style_cursor(&mut editor, Mode::Command);
     editor
+}
+
+pub fn apply_editor_config(editor: &mut TextArea<'_>, config: &EditorConfig) {
+    editor.set_wrap_mode(if config.soft_wrap {
+        WrapMode::WordOrGlyph
+    } else {
+        WrapMode::None
+    });
+    if config.show_line_numbers {
+        editor.set_line_number_style(Style::new().fg(Color::Rgb(72, 72, 72)));
+    } else {
+        editor.remove_line_number();
+    }
 }
 
 pub fn style_cursor(editor: &mut TextArea<'_>, mode: Mode) {
