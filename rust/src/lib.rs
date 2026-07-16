@@ -7,6 +7,7 @@ pub mod document;
 pub mod editor;
 pub mod persistence;
 pub mod search;
+pub mod session;
 pub mod ui;
 pub mod workspace;
 

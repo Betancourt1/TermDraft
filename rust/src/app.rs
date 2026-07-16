@@ -25,6 +25,7 @@ use crate::editor::{
 };
 use crate::persistence::{LoadedFile, SaveError, load_file, save_atomic};
 use crate::search::{TextMatch, fuzzy_score, heading_outline, search_text};
+use crate::session::{DocumentViewState, SessionState, SessionStore};
 use crate::ui;
 use crate::workspace::{Workspace, WorkspaceEntry};
 
@@ -315,6 +316,8 @@ pub struct App {
     pub overlay: Option<Overlay>,
     pub status_message: Option<String>,
     pub preview_scroll: u16,
+    session_store: Option<SessionStore>,
+    last_session_state: Option<SessionState>,
     should_quit: bool,
 }
 
@@ -334,6 +337,15 @@ impl App {
     ///
     /// Returns an error when the initial file cannot be loaded safely.
     pub fn with_config(workspace: Workspace, config: Config) -> anyhow::Result<Self> {
+        let session_store = SessionStore::platform_default().ok();
+        Self::with_config_and_session(workspace, config, session_store)
+    }
+
+    fn with_config_and_session(
+        workspace: Workspace,
+        config: Config,
+        session_store: Option<SessionStore>,
+    ) -> anyhow::Result<Self> {
         let entries = workspace.scan();
         let selected = workspace
             .initial_file
@@ -343,6 +355,7 @@ impl App {
         explorer_state.select(selected.or_else(|| (!entries.is_empty()).then_some(0)));
 
         let initial_file = workspace.initial_file.clone();
+        let restore_open_tabs = initial_file.is_none();
         let startup_mode = config.editor.startup_mode;
         let view_mode = match config.editor.view_mode {
             StartupView::Inline => ViewMode::Inline,
@@ -362,18 +375,96 @@ impl App {
             overlay: None,
             status_message: None,
             preview_scroll: 0,
+            session_store,
+            last_session_state: None,
             should_quit: false,
         };
         if let Some(path) = initial_file {
             app.open_document(&path)?;
-        } else if app.entries.is_empty() {
+        }
+        app.restore_session(restore_open_tabs);
+        if app.tabs.is_empty() && app.entries.is_empty() {
             app.focus = Focus::Explorer;
             app.status_message = Some("Empty workspace · create or add a Markdown file".to_owned());
+        } else if app.tabs.is_empty() {
+            app.focus = Focus::Explorer;
         }
         if startup_mode == StartupMode::Write {
             app.set_mode(Mode::Write);
         }
         Ok(app)
+    }
+
+    fn restore_session(&mut self, restore_open_tabs: bool) {
+        let Some(store) = self.session_store.clone() else {
+            return;
+        };
+        let loaded = store.load(&self.workspace.root);
+        if let Some(warning) = loaded.warning {
+            self.status_message = Some(warning);
+        }
+        let Some(state) = loaded.state else {
+            return;
+        };
+        if restore_open_tabs {
+            for path in &state.open_paths {
+                let _ = self.open_document(path);
+            }
+            if let Some(active) = &state.active_path
+                && let Some(index) = self
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.document.path == *active)
+            {
+                self.active_tab = Some(index);
+            }
+        }
+        for tab in &mut self.tabs {
+            if let Some(view) = state.view_for(&tab.document.path) {
+                tab.editor.move_cursor(CursorMove::Jump(
+                    u16::try_from(view.line).unwrap_or(u16::MAX),
+                    u16::try_from(view.column).unwrap_or(u16::MAX),
+                ));
+            }
+        }
+    }
+
+    fn current_session_state(&self) -> SessionState {
+        SessionState {
+            workspace_root: self.workspace.root.clone(),
+            active_path: self.active_tab().map(|tab| tab.document.path.clone()),
+            documents: self
+                .tabs
+                .iter()
+                .map(|tab| {
+                    let (line, column) = tab.editor.cursor();
+                    DocumentViewState {
+                        path: tab.document.path.clone(),
+                        line,
+                        column,
+                    }
+                })
+                .collect(),
+            open_paths: self
+                .tabs
+                .iter()
+                .map(|tab| tab.document.path.clone())
+                .collect(),
+        }
+    }
+
+    fn persist_session_if_changed(&mut self) {
+        let Some(store) = self.session_store.clone() else {
+            return;
+        };
+        let state = self.current_session_state();
+        if self.last_session_state.as_ref() == Some(&state) {
+            return;
+        }
+        match store.save(&state) {
+            Ok(()) => self.last_session_state = Some(state),
+            Err(error) => self.status_message = Some(format!("Session not saved · {error}")),
+        }
     }
 
     #[must_use]
@@ -1287,9 +1378,11 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
                 }
                 if Instant::now() >= next_disk_poll {
                     needs_draw |= app.poll_external_state();
+                    app.persist_session_if_changed();
                     next_disk_poll = Instant::now() + Duration::from_secs(2);
                 }
             }
+            app.persist_session_if_changed();
             Ok(())
         })();
         terminal_extras
@@ -1597,5 +1690,61 @@ mod tests {
                 .iter()
                 .any(|entry| entry.relative == Path::new("two.md"))
         );
+    }
+
+    #[test]
+    fn directory_launch_restores_content_free_tabs_and_cursor() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let first = root.join("first.md");
+        let second = root.join("second.md");
+        fs::write(&first, "first\nline").unwrap();
+        fs::write(&second, "second\nline").unwrap();
+        let store = SessionStore::new(root.join("state"));
+        store
+            .save(&SessionState {
+                workspace_root: root.clone(),
+                active_path: Some(second.clone()),
+                documents: vec![
+                    DocumentViewState {
+                        path: first.clone(),
+                        line: 1,
+                        column: 2,
+                    },
+                    DocumentViewState {
+                        path: second.clone(),
+                        line: 1,
+                        column: 3,
+                    },
+                ],
+                open_paths: vec![first.clone(), second.clone()],
+            })
+            .unwrap();
+        let workspace = Workspace::from_target(&root).unwrap();
+
+        let app = App::with_config_and_session(workspace, Config::default(), Some(store)).unwrap();
+
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active_tab().unwrap().document.path, second);
+        assert_eq!(app.active_tab().unwrap().editor.cursor(), (1, 3));
+    }
+
+    #[test]
+    fn session_persistence_never_contains_markdown_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("note.md");
+        fs::write(&path, "private source").unwrap();
+        let store = SessionStore::new(root.join("state"));
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app =
+            App::with_config_and_session(workspace, Config::default(), Some(store.clone()))
+                .unwrap();
+
+        app.persist_session_if_changed();
+        let bytes = fs::read(store.path_for(&root)).unwrap();
+
+        assert!(!String::from_utf8_lossy(&bytes).contains("private source"));
+        assert_eq!(store.load(&root).state.unwrap().open_paths, vec![path]);
     }
 }
