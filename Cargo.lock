@@ -1787,6 +1787,7 @@ dependencies = [
  "ignore",
  "libc",
  "pretty_assertions",
+ "pulldown-cmark",
  "ratatui",
  "regex",
  "rustix",
