@@ -352,7 +352,7 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
         .style(Style::new().bg(BACKGROUND))
         .padding(Padding::horizontal(2));
     match overlay {
-        Overlay::Help => draw_help(frame, area, block),
+        Overlay::Help => draw_help(frame, app, area, block),
         Overlay::Palette { input, selected } => {
             let commands = command_candidates(&input.value);
             let items = commands
@@ -364,7 +364,10 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
                             Style::new().fg(MUTED).bold(),
                         ),
                         Span::styled(command.label, Style::new().fg(TEXT)),
-                        Span::styled(format!("  {}", command.shortcut), Style::new().fg(MUTED)),
+                        Span::styled(
+                            format!("  {}", command_shortcut(app, command.action)),
+                            Style::new().fg(MUTED),
+                        ),
                     ])
                 })
                 .collect();
@@ -528,26 +531,86 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
     }
 }
 
-fn draw_help(frame: &mut Frame, area: Rect, block: Block<'_>) {
+fn draw_help(frame: &mut Frame, app: &App, area: Rect, block: Block<'_>) {
     let lines = vec![
-        help_line("MODE", "i", "Enter WRITE mode"),
+        help_line(
+            "MODE",
+            shortcut(app, &["command_write_mode"]),
+            "Enter WRITE mode",
+        ),
         help_line("MODE", "Esc", "Return to COMMAND mode"),
-        help_line("DOCUMENT", "w / Ctrl+S", "Save safely"),
-        help_line("DOCUMENT", "W", "Save as a new path"),
-        help_line("DOCUMENT", "D", "Duplicate current source"),
-        help_line("DOCUMENT", "q / Ctrl+Q", "Quit safely"),
+        help_line(
+            "DOCUMENT",
+            shortcut(app, &["command_save", "save"]),
+            "Save safely",
+        ),
+        help_line(
+            "DOCUMENT",
+            shortcut(app, &["command_save_as", "save_as"]),
+            "Save as a new path",
+        ),
+        help_line(
+            "DOCUMENT",
+            shortcut(app, &["command_duplicate_document"]),
+            "Duplicate current source",
+        ),
+        help_line(
+            "DOCUMENT",
+            shortcut(app, &["command_quit", "quit"]),
+            "Quit safely",
+        ),
         help_line("NAVIGATE", "h j k l", "Move cursor"),
-        help_line("NAVIGATE", "[ / ]", "Previous / next tab"),
-        help_line("NAVIGATE", "f / Ctrl+P", "Find a file"),
-        help_line("NAVIGATE", "o / Ctrl+O", "Recent documents"),
-        help_line("NAVIGATE", "/", "Search workspace text"),
-        help_line("NAVIGATE", "s / Ctrl+F", "Find in document"),
-        help_line("NAVIGATE", "S", "Document outline"),
-        help_line("VIEW", "e / Ctrl+B", "Show or hide Files"),
+        help_line(
+            "NAVIGATE",
+            shortcut(app, &["command_previous_tab", "command_next_tab"]),
+            "Previous / next tab",
+        ),
+        help_line(
+            "NAVIGATE",
+            shortcut(app, &["command_find_file", "find_file"]),
+            "Find a file",
+        ),
+        help_line(
+            "NAVIGATE",
+            shortcut(app, &["command_recent_documents", "recent_documents"]),
+            "Recent documents",
+        ),
+        help_line(
+            "NAVIGATE",
+            shortcut(app, &["command_search_text", "search_text"]),
+            "Search workspace text",
+        ),
+        help_line(
+            "NAVIGATE",
+            shortcut(app, &["command_find_replace", "find_replace"]),
+            "Find in document",
+        ),
+        help_line(
+            "NAVIGATE",
+            shortcut(app, &["command_document_outline", "document_outline"]),
+            "Document outline",
+        ),
+        help_line(
+            "VIEW",
+            shortcut(app, &["command_toggle_explorer", "toggle_explorer"]),
+            "Show or hide Files",
+        ),
         help_line("FILES", "a", "Create a Markdown file"),
-        help_line("VIEW", "v / Ctrl+E", "Show / hide preview"),
-        help_line("EDIT", "u / U", "Undo / redo"),
-        help_line("MENU", ":", "Open grouped command menu"),
+        help_line(
+            "VIEW",
+            shortcut(app, &["command_toggle_preview", "toggle_preview"]),
+            "Show / hide preview",
+        ),
+        help_line(
+            "EDIT",
+            shortcut(app, &["command_undo", "command_redo"]),
+            "Undo / redo",
+        ),
+        help_line(
+            "MENU",
+            shortcut(app, &["command_open_palette", "command_palette"]),
+            "Open grouped command menu",
+        ),
     ];
     frame.render_widget(
         Paragraph::new(lines)
@@ -557,11 +620,46 @@ fn draw_help(frame: &mut Frame, area: Rect, block: Block<'_>) {
     );
 }
 
-fn help_line(group: &'static str, key: &'static str, label: &'static str) -> Line<'static> {
+fn shortcut(app: &App, ids: &[&str]) -> String {
+    ids.iter()
+        .filter_map(|id| app.config.keybindings.binding(id))
+        .map(|binding| binding.text.replace(',', " / "))
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+fn command_shortcut(app: &App, action: crate::app::CommandAction) -> String {
+    use crate::app::CommandAction;
+
+    let ids: &[&str] = match action {
+        CommandAction::Save => &["command_save", "save"],
+        CommandAction::SaveAs => &["command_save_as", "save_as"],
+        CommandAction::Duplicate => &["command_duplicate_document"],
+        CommandAction::Create => return "a".to_owned(),
+        CommandAction::CloseTab => &["command_close_tab", "close_tab"],
+        CommandAction::Quit => &["command_quit", "quit"],
+        CommandAction::FileFinder => &["command_find_file", "find_file"],
+        CommandAction::RecentDocuments => &["command_recent_documents", "recent_documents"],
+        CommandAction::WorkspaceSearch => &["command_search_text", "search_text"],
+        CommandAction::Find => &["command_find_replace", "find_replace"],
+        CommandAction::Outline => &["command_document_outline", "document_outline"],
+        CommandAction::ToggleExplorer => &["command_toggle_explorer", "toggle_explorer"],
+        CommandAction::TogglePreview => &["command_toggle_preview", "toggle_preview"],
+        CommandAction::WriteMode => &["command_write_mode"],
+        CommandAction::CommandMode => return "Esc".to_owned(),
+        CommandAction::Undo => &["command_undo", "undo"],
+        CommandAction::Redo => &["command_redo", "redo"],
+        CommandAction::Help => &["command_show_help", "show_help"],
+    };
+    shortcut(app, ids)
+}
+
+fn help_line(group: &str, key: impl Into<String>, label: &str) -> Line<'static> {
+    let key = key.into();
     Line::from(vec![
         Span::styled(format!("{group:<10}"), Style::new().fg(MUTED).bold()),
         Span::styled(format!("{key:<16}"), Style::new().fg(BRIGHT).bold()),
-        Span::styled(label, Style::new().fg(TEXT)),
+        Span::styled(label.to_owned(), Style::new().fg(TEXT)),
     ])
 }
 

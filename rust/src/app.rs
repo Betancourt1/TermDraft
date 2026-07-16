@@ -17,7 +17,8 @@ use ratatui::layout::Rect;
 use ratatui::widgets::ListState;
 use tui_textarea::{CursorMove, TextArea};
 
-use crate::config::{Config, EditorConfig, StartupMode, StartupView};
+use crate::bindings::{Action as BindingAction, BindingScope};
+use crate::config::{self, Config, EditorConfig, StartupMode, StartupView};
 use crate::continuation::{EnterAction, action_for};
 use crate::document::{Document, Encoding, LineEnding};
 use crate::editor::{
@@ -988,6 +989,127 @@ impl App {
         }
     }
 
+    fn execute_binding_action(&mut self, action: BindingAction) {
+        match action {
+            BindingAction::Save => self.execute_command(CommandAction::Save),
+            BindingAction::SaveAs => self.execute_command(CommandAction::SaveAs),
+            BindingAction::Quit => self.execute_command(CommandAction::Quit),
+            BindingAction::ToggleExplorer => {
+                self.execute_command(CommandAction::ToggleExplorer);
+            }
+            BindingAction::FindFile => self.execute_command(CommandAction::FileFinder),
+            BindingAction::RecentDocuments => {
+                self.execute_command(CommandAction::RecentDocuments);
+            }
+            BindingAction::NextTab => self.switch_tab(1),
+            BindingAction::PreviousTab => self.switch_tab(-1),
+            BindingAction::CloseTab => self.execute_command(CommandAction::CloseTab),
+            BindingAction::FindReplace => self.execute_command(CommandAction::Find),
+            BindingAction::SearchText => self.execute_command(CommandAction::WorkspaceSearch),
+            BindingAction::DocumentOutline => self.execute_command(CommandAction::Outline),
+            BindingAction::TogglePreview => self.execute_command(CommandAction::TogglePreview),
+            BindingAction::PreviewNextHeading => self.focus_preview_heading(1),
+            BindingAction::PreviewPreviousHeading => self.focus_preview_heading(-1),
+            BindingAction::Undo => self.execute_command(CommandAction::Undo),
+            BindingAction::Redo => self.execute_command(CommandAction::Redo),
+            BindingAction::ShowHelp => self.execute_command(CommandAction::Help),
+            BindingAction::CommandPalette => {
+                self.overlay = Some(Overlay::Palette {
+                    input: TextInput::default(),
+                    selected: 0,
+                });
+            }
+            BindingAction::EnterWriteMode => self.execute_command(CommandAction::WriteMode),
+            BindingAction::DuplicateDocument => self.execute_command(CommandAction::Duplicate),
+            BindingAction::ReloadConfig => self.reload_config(),
+            BindingAction::ManageRecovery => {
+                self.overlay = Some(Overlay::Message(
+                    "Recovery draft management is not ported yet".to_owned(),
+                ));
+            }
+            BindingAction::MarkdownHelp => {
+                self.overlay = Some(Overlay::Message(
+                    "Markdown reference is not ported yet".to_owned(),
+                ));
+            }
+            BindingAction::InspectSemanticBlocks
+            | BindingAction::ReadSemanticBlocks
+            | BindingAction::InspectCursorCoordinates => {
+                self.overlay = Some(Overlay::Message(
+                    "This inspection view is not ported yet".to_owned(),
+                ));
+            }
+            BindingAction::CursorLeft => self.move_editor(CursorMove::Back),
+            BindingAction::CursorDown => self.move_editor(CursorMove::Down),
+            BindingAction::CursorUp => self.move_editor(CursorMove::Up),
+            BindingAction::CursorRight => self.move_editor(CursorMove::Forward),
+            BindingAction::LineStart => self.move_editor(CursorMove::Head),
+            BindingAction::LineEnd => self.move_editor(CursorMove::End),
+            BindingAction::DocumentStart => self.move_editor(CursorMove::Top),
+            BindingAction::DocumentEnd => self.move_editor(CursorMove::Bottom),
+        }
+    }
+
+    fn focus_preview_heading(&mut self, direction: isize) {
+        let Some(tab) = self.active_tab() else {
+            return;
+        };
+        let headings = heading_outline(&tab.document.text);
+        if headings.is_empty() {
+            self.status_message = Some("No headings in this document".to_owned());
+            return;
+        }
+        let current = headings
+            .iter()
+            .enumerate()
+            .filter(|(_, (line, _, _))| *line <= usize::from(self.preview_scroll))
+            .map(|(index, _)| index)
+            .next_back();
+        let selected = if direction < 0 {
+            current.unwrap_or(headings.len()).saturating_sub(1)
+        } else {
+            current.map_or(0, |index| (index + 1).min(headings.len() - 1))
+        };
+        let (line, level, title) = &headings[selected];
+        self.preview_scroll = u16::try_from(*line)
+            .unwrap_or(u16::MAX)
+            .min(self.preview_max_scroll);
+        self.status_message = Some(format!(
+            "H{level} {}/{} · {title}",
+            selected + 1,
+            headings.len()
+        ));
+    }
+
+    fn reload_config(&mut self) {
+        if self.config.root.as_os_str().is_empty() {
+            self.status_message = Some("No user configuration was loaded".to_owned());
+            return;
+        }
+        match config::load(self.config.root.clone()) {
+            Ok(config) => {
+                for tab in &mut self.tabs {
+                    apply_editor_config(&mut tab.editor, &config.editor);
+                    style_cursor(&mut tab.editor, self.mode);
+                }
+                self.view_mode = match config.editor.view_mode {
+                    StartupView::Inline => ViewMode::Inline,
+                    StartupView::Split => ViewMode::Split,
+                };
+                if self.view_mode == ViewMode::Inline && self.narrow_pane == Focus::Preview {
+                    self.narrow_pane = Focus::Editor;
+                    self.focus = Focus::Editor;
+                }
+                self.config = config;
+                self.status_message =
+                    Some("Reloaded config.toml · theme changes still require Python".to_owned());
+            }
+            Err(error) => {
+                self.status_message = Some(format!("Configuration not reloaded · {error}"));
+            }
+        }
+    }
+
     fn execute_command(&mut self, action: CommandAction) {
         self.overlay = None;
         match action {
@@ -1120,6 +1242,12 @@ impl App {
     }
 
     fn handle_preview_key(&mut self, key: KeyEvent) -> bool {
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+        {
+            return false;
+        }
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.scroll_preview_by(-1),
             KeyCode::Down | KeyCode::Char('j') => self.scroll_preview_by(1),
@@ -1266,6 +1394,10 @@ impl App {
             self.handle_overlay_key(key);
             return;
         }
+        if key.code == KeyCode::Esc {
+            self.set_mode(Mode::Command);
+            return;
+        }
         if self.handle_global_key(key) {
             return;
         }
@@ -1275,8 +1407,12 @@ impl App {
             return;
         }
         if self.focus == Focus::Preview {
-            if key.code == KeyCode::Esc && self.mode == Mode::Write {
-                self.set_mode(Mode::Command);
+            if let Some(action) = self
+                .config
+                .keybindings
+                .action_for(BindingScope::Preview, key)
+            {
+                self.execute_binding_action(action);
                 return;
             }
             if self.handle_preview_key(key) || self.mode == Mode::Write {
@@ -1290,27 +1426,25 @@ impl App {
     }
 
     fn handle_global_key(&mut self, key: KeyEvent) -> bool {
-        if !key.modifiers.contains(KeyModifiers::CONTROL) {
+        let Some(action) = self
+            .config
+            .keybindings
+            .action_for(BindingScope::Global, key)
+        else {
             return false;
-        }
-        match key.code {
-            KeyCode::Char('s') => self.save_active(),
-            KeyCode::Char('q') => self.request_quit(),
-            KeyCode::Char('b') => self.execute_command(CommandAction::ToggleExplorer),
-            KeyCode::Char('p') => self.execute_command(CommandAction::FileFinder),
-            KeyCode::Char('o') => self.execute_command(CommandAction::RecentDocuments),
-            KeyCode::Char('f') => self.execute_command(CommandAction::Find),
-            KeyCode::Char('e') => self.execute_command(CommandAction::TogglePreview),
-            KeyCode::PageDown => self.switch_tab(1),
-            KeyCode::PageUp => self.switch_tab(-1),
-            _ => return false,
-        }
+        };
+        self.execute_binding_action(action);
         true
     }
 
     fn handle_write_key(&mut self, key: KeyEvent) {
-        if key.code == KeyCode::Esc {
-            self.set_mode(Mode::Command);
+        if self.focus == Focus::Editor
+            && let Some(action) = self
+                .config
+                .keybindings
+                .action_for(BindingScope::Editor, key)
+        {
+            self.execute_binding_action(action);
             return;
         }
         if self
@@ -1351,47 +1485,29 @@ impl App {
     }
 
     fn handle_command_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Char('i') => self.set_mode(Mode::Write),
-            KeyCode::Char('w') => self.save_active(),
-            KeyCode::Char('W') => self.open_path_input(PathAction::SaveAs),
-            KeyCode::Char('D') => self.open_path_input(PathAction::Duplicate),
-            KeyCode::Char('q') => self.request_quit(),
-            KeyCode::Char('e') => self.execute_command(CommandAction::ToggleExplorer),
-            KeyCode::Char('f') => self.execute_command(CommandAction::FileFinder),
-            KeyCode::Char('o') => self.execute_command(CommandAction::RecentDocuments),
-            KeyCode::Char('/') => self.execute_command(CommandAction::WorkspaceSearch),
-            KeyCode::Char('s') => self.execute_command(CommandAction::Find),
-            KeyCode::Char('S') => self.execute_command(CommandAction::Outline),
-            KeyCode::Char('v') => self.execute_command(CommandAction::TogglePreview),
-            KeyCode::Char('u') => self.execute_command(CommandAction::Undo),
-            KeyCode::Char('U') => self.execute_command(CommandAction::Redo),
-            KeyCode::Char(':') => {
-                self.overlay = Some(Overlay::Palette {
-                    input: TextInput::default(),
-                    selected: 0,
-                });
+        if self.focus == Focus::Editor
+            && let Some(action) = self
+                .config
+                .keybindings
+                .action_for(BindingScope::Editor, key)
+        {
+            self.execute_binding_action(action);
+            return;
+        }
+        if let Some(action) = self
+            .config
+            .keybindings
+            .action_for(BindingScope::Command, key)
+        {
+            if self.focus == Focus::Editor || !is_navigation_action(action) {
+                self.execute_binding_action(action);
             }
-            KeyCode::Char('?') => self.overlay = Some(Overlay::Help),
-            KeyCode::Char('[') => self.switch_tab(-1),
-            KeyCode::Char(']') => self.switch_tab(1),
-            KeyCode::Char('C') => self.close_active(),
-            KeyCode::Char('h') | KeyCode::Left => self.move_editor(CursorMove::Back),
-            KeyCode::Char('j') | KeyCode::Down => self.move_editor(CursorMove::Down),
-            KeyCode::Char('k') | KeyCode::Up => self.move_editor(CursorMove::Up),
-            KeyCode::Char('l') | KeyCode::Right => self.move_editor(CursorMove::Forward),
-            KeyCode::Char('0') | KeyCode::Home => self.move_editor(CursorMove::Head),
-            KeyCode::Char('$') | KeyCode::End => self.move_editor(CursorMove::End),
-            KeyCode::Char('g') => self.move_editor(CursorMove::Top),
-            KeyCode::Char('G') => self.move_editor(CursorMove::Bottom),
-            KeyCode::Tab if self.show_explorer => {
-                self.focus = if self.focus == Focus::Explorer {
-                    Focus::Editor
-                } else {
-                    Focus::Explorer
-                };
-            }
-            _ => {}
+        } else if key.code == KeyCode::Tab && self.show_explorer {
+            self.focus = if self.focus == Focus::Explorer {
+                Focus::Editor
+            } else {
+                Focus::Explorer
+            };
         }
     }
 
@@ -1952,6 +2068,20 @@ fn edit_text_input(input: &mut TextInput, key: KeyEvent) -> bool {
     true
 }
 
+const fn is_navigation_action(action: BindingAction) -> bool {
+    matches!(
+        action,
+        BindingAction::CursorLeft
+            | BindingAction::CursorDown
+            | BindingAction::CursorUp
+            | BindingAction::CursorRight
+            | BindingAction::LineStart
+            | BindingAction::LineEnd
+            | BindingAction::DocumentStart
+            | BindingAction::DocumentEnd
+    )
+}
+
 #[must_use]
 pub fn command_candidates(query: &str) -> Vec<CommandSpec> {
     let mut commands = COMMANDS
@@ -2424,6 +2554,39 @@ mod tests {
         app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 80, 10));
         app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 80, 10));
         assert!(app.split_percent > 50);
+    }
+
+    #[test]
+    fn effective_keymap_drives_exact_global_and_command_shortcuts() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "disk").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let config = Config {
+            keybindings: crate::bindings::Keymap::resolve(
+                &[("command_save".to_owned(), "t".to_owned())]
+                    .into_iter()
+                    .collect(),
+            )
+            .unwrap(),
+            ..Config::default()
+        };
+        let mut app = App::with_config(workspace, config).unwrap();
+        app.active_tab_mut().unwrap().editor.insert_str("local ");
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "disk");
+        app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "local disk");
+
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('f'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+        assert!(matches!(app.overlay, Some(Overlay::WorkspaceSearch { .. })));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        assert!(matches!(app.overlay, Some(Overlay::Find { .. })));
     }
 
     #[test]

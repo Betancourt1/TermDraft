@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
+use termdraft::bindings::BindingScope;
 use termdraft::config::{self, Config};
 use termdraft::{Workspace, app};
 
@@ -84,18 +85,20 @@ fn print_commands(config: &Config) {
         config.editor.auto_continue_lists
     );
     println!();
-    println!("COMMAND shortcuts");
-    for command in termdraft::app::COMMANDS {
-        println!(
-            "  {:<10} {:<8} {}",
-            command.group, command.shortcut, command.label
-        );
-    }
-    if !config.keybindings.is_empty() {
+    for (scope, title) in [
+        (BindingScope::Global, "Configured shortcuts"),
+        (BindingScope::Command, "COMMAND shortcuts"),
+        (BindingScope::Editor, "Editor shortcuts"),
+        (BindingScope::Preview, "Preview shortcuts"),
+    ] {
         println!();
-        println!("Configured Python-frontend overrides (reported, not remapped in this port):");
-        for (action, binding) in &config.keybindings {
-            println!("  {action:<34} {binding}");
+        println!("{title}");
+        for binding in config
+            .keybindings
+            .bindings()
+            .filter(|binding| binding.definition.scope == scope)
+        {
+            println!("  {:<38} {}", binding.definition.id, binding.text);
         }
     }
 }
