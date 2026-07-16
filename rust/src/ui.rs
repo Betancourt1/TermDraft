@@ -268,6 +268,7 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
         Overlay::Find { .. } | Overlay::WorkspaceSearch { .. } | Overlay::PathInput { .. } => {
             popup(frame.area(), 66, 7)
         }
+        Overlay::Recovery { .. } => popup(frame.area(), 70, 9),
         Overlay::Confirm(_) | Overlay::Message(_) => popup(frame.area(), 62, 7),
     };
     frame.render_widget(Clear, area);
@@ -342,6 +343,31 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
             value,
             "Workspace-relative .md, .markdown, or .txt path · Enter confirms",
         ),
+        Overlay::Recovery { entry } => {
+            let relative = app.workspace.relative(&entry.document_path);
+            let conflict = app
+                .tabs
+                .iter()
+                .find(|tab| tab.document.path == entry.document_path)
+                .is_none_or(|tab| !entry.baseline_matches(&tab.document.snapshot));
+            let detail = if conflict {
+                "Disk changed since capture; restoring keeps the draft as a conflict."
+            } else {
+                "The saved disk baseline still matches this unsaved draft."
+            };
+            let text = Text::from(vec![
+                Line::from(format!("Unsaved source found for {}", relative.display()))
+                    .style(Style::new().fg(TEXT)),
+                Line::from(detail).style(Style::new().fg(MUTED)),
+                Line::from(""),
+                Line::from("r  Restore     d  Use disk     Esc  Later")
+                    .style(Style::new().fg(BRIGHT)),
+            ]);
+            frame.render_widget(
+                Paragraph::new(text).block(block.title(" Crash recovery ")),
+                area,
+            );
+        }
         Overlay::SearchResults { results, selected } => {
             let items = results
                 .iter()

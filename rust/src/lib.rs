@@ -6,6 +6,7 @@ pub mod continuation;
 pub mod document;
 pub mod editor;
 pub mod persistence;
+pub mod recovery;
 pub mod search;
 pub mod session;
 pub mod ui;

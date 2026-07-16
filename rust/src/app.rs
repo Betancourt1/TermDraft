@@ -1,7 +1,8 @@
 //! Ratatui event/update coordinator.
 
+use std::collections::HashMap;
 use std::io::{self, stdout};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -24,6 +25,7 @@ use crate::editor::{
     apply_editor_config, source_from_textarea, style_cursor, textarea_from_source,
 };
 use crate::persistence::{LoadedFile, SaveError, load_file, save_atomic};
+use crate::recovery::{RecoveryEntry, RecoveryJournal};
 use crate::search::{TextMatch, fuzzy_score, heading_outline, search_text};
 use crate::session::{DocumentViewState, SessionState, SessionStore};
 use crate::ui;
@@ -111,6 +113,9 @@ pub enum Overlay {
     PathInput {
         action: PathAction,
         value: String,
+    },
+    Recovery {
+        entry: Box<RecoveryEntry>,
     },
     Confirm(ConfirmAction),
     Message(String),
@@ -318,6 +323,8 @@ pub struct App {
     pub preview_scroll: u16,
     session_store: Option<SessionStore>,
     last_session_state: Option<SessionState>,
+    recovery_journal: Option<RecoveryJournal>,
+    published_recovery: HashMap<PathBuf, (String, String)>,
     should_quit: bool,
 }
 
@@ -338,13 +345,15 @@ impl App {
     /// Returns an error when the initial file cannot be loaded safely.
     pub fn with_config(workspace: Workspace, config: Config) -> anyhow::Result<Self> {
         let session_store = SessionStore::platform_default().ok();
-        Self::with_config_and_session(workspace, config, session_store)
+        let recovery_journal = RecoveryJournal::platform_default().ok();
+        Self::with_state_services(workspace, config, session_store, recovery_journal)
     }
 
-    fn with_config_and_session(
+    fn with_state_services(
         workspace: Workspace,
         config: Config,
         session_store: Option<SessionStore>,
+        recovery_journal: Option<RecoveryJournal>,
     ) -> anyhow::Result<Self> {
         let entries = workspace.scan();
         let selected = workspace
@@ -377,6 +386,8 @@ impl App {
             preview_scroll: 0,
             session_store,
             last_session_state: None,
+            recovery_journal,
+            published_recovery: HashMap::new(),
             should_quit: false,
         };
         if let Some(path) = initial_file {
@@ -426,6 +437,143 @@ impl App {
                     u16::try_from(view.column).unwrap_or(u16::MAX),
                 ));
             }
+        }
+    }
+
+    fn offer_recovery(&mut self, path: &Path) {
+        if self.overlay.is_some() {
+            return;
+        }
+        let Some(journal) = self.recovery_journal.clone() else {
+            return;
+        };
+        match journal.load(path) {
+            Ok(Some(entry)) if entry.workspace_root == self.workspace.root => {
+                let disk_text = self
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.document.path == path)
+                    .map(|tab| tab.document.saved_text.as_str());
+                if disk_text == Some(entry.text.as_str()) {
+                    let _ = journal.discard(path, Some(entry.fingerprint()));
+                } else {
+                    self.overlay = Some(Overlay::Recovery {
+                        entry: Box::new(entry),
+                    });
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                self.status_message = Some(format!("Recovery journal ignored · {error}"));
+            }
+        }
+    }
+
+    fn restore_recovery_entry(&mut self, entry: &RecoveryEntry) {
+        let Some(index) = self
+            .tabs
+            .iter()
+            .position(|tab| tab.document.path == entry.document_path)
+        else {
+            self.status_message = Some("Recovery target is not open".to_owned());
+            return;
+        };
+        let conflict = !entry.baseline_matches(&self.tabs[index].document.snapshot);
+        let cursor = self.tabs[index].editor.cursor();
+        let mut editor = textarea_from_source(&entry.text);
+        apply_editor_config(&mut editor, &self.config.editor);
+        style_cursor(&mut editor, self.mode);
+        editor.move_cursor(CursorMove::Jump(
+            u16::try_from(cursor.0).unwrap_or(u16::MAX),
+            u16::try_from(cursor.1).unwrap_or(u16::MAX),
+        ));
+        self.tabs[index].editor = editor;
+        self.tabs[index].document.text.clone_from(&entry.text);
+        self.tabs[index].document.encoding = entry.encoding;
+        self.tabs[index].document.conflict = conflict;
+        self.active_tab = Some(index);
+        self.published_recovery.insert(
+            entry.document_path.clone(),
+            (entry.fingerprint().to_owned(), entry.text.clone()),
+        );
+        self.status_message = Some(if conflict {
+            "Recovered draft · CONFLICT with current disk file".to_owned()
+        } else {
+            "Recovered unsaved draft".to_owned()
+        });
+    }
+
+    fn discard_recovery_for(&mut self, path: &Path) {
+        let Some(journal) = self.recovery_journal.clone() else {
+            return;
+        };
+        let expected = self
+            .published_recovery
+            .get(path)
+            .map(|(fingerprint, _)| fingerprint.clone())
+            .or_else(|| {
+                journal
+                    .load(path)
+                    .ok()
+                    .flatten()
+                    .map(|entry| entry.fingerprint().to_owned())
+            });
+        match journal.discard(path, expected.as_deref()) {
+            Ok(()) => {
+                self.published_recovery.remove(path);
+            }
+            Err(error) => {
+                self.status_message = Some(format!("Recovery cleanup remains · {error}"));
+            }
+        }
+    }
+
+    fn persist_recovery(&mut self) {
+        self.sync_active_document();
+        let Some(journal) = self.recovery_journal.clone() else {
+            return;
+        };
+        let dirty = self
+            .tabs
+            .iter()
+            .filter(|tab| tab.document.is_dirty())
+            .map(|tab| {
+                (
+                    tab.document.path.clone(),
+                    tab.document.text.clone(),
+                    tab.document.encoding,
+                    tab.document.snapshot.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        for (path, text, encoding, snapshot) in dirty {
+            if self
+                .published_recovery
+                .get(&path)
+                .is_some_and(|(_, published)| published == &text)
+            {
+                continue;
+            }
+            match journal.publish(&path, &self.workspace.root, &text, encoding, &snapshot) {
+                Ok(entry) => {
+                    self.published_recovery
+                        .insert(path, (entry.fingerprint().to_owned(), text));
+                }
+                Err(error) => {
+                    self.status_message = Some(format!("Recovery not saved · {error}"));
+                }
+            }
+        }
+    }
+
+    fn discard_all_recovery(&mut self) {
+        let paths = self
+            .tabs
+            .iter()
+            .map(|tab| tab.document.path.clone())
+            .collect::<Vec<_>>();
+        for path in paths {
+            self.discard_recovery_for(&path);
         }
     }
 
@@ -501,6 +649,7 @@ impl App {
             "Mixed line endings · read-only until normalization is implemented".to_owned()
         });
         self.enforce_active_read_only();
+        self.offer_recovery(&path);
         Ok(())
     }
 
@@ -512,6 +661,10 @@ impl App {
         };
         if !tab.document.is_editable() {
             self.status_message = Some("Mixed line endings remain read-only".to_owned());
+            return;
+        }
+        if tab.document.conflict {
+            self.status_message = Some("CONFLICT · use Save As to preserve this draft".to_owned());
             return;
         }
         if !tab.document.is_dirty() {
@@ -527,9 +680,11 @@ impl App {
             Some(&tab.document.snapshot),
             false,
         );
+        let mut saved_path = None;
         match result {
             Ok(snapshot) => {
                 tab.document.mark_saved(snapshot);
+                saved_path = Some(tab.document.path.clone());
                 self.status_message = Some("Saved".to_owned());
             }
             Err(SaveError::Conflict) => {
@@ -537,6 +692,9 @@ impl App {
                 self.status_message = Some("CONFLICT · file changed on disk".to_owned());
             }
             Err(error) => self.status_message = Some(format!("Save failed · {error}")),
+        }
+        if let Some(path) = saved_path {
+            self.discard_recovery_for(&path);
         }
     }
 
@@ -737,6 +895,7 @@ impl App {
         let line_ending = tab.document.line_ending;
         match save_atomic(&target, &text, encoding, line_ending, None, true) {
             Ok(snapshot) if action == PathAction::SaveAs => {
+                let previous = self.active_tab().map(|tab| tab.document.path.clone());
                 if let Some(tab) = self.active_tab_mut() {
                     tab.document.path.clone_from(&target);
                     tab.document.mark_saved(snapshot);
@@ -746,6 +905,9 @@ impl App {
                     "Saved as {}",
                     self.workspace.relative(&target).display()
                 ));
+                if let Some(previous) = previous {
+                    self.discard_recovery_for(&previous);
+                }
             }
             Ok(_) => self.finish_new_document(&target, "Duplicated as"),
             Err(error) => {
@@ -981,8 +1143,22 @@ impl App {
                 },
                 KeyCode::Char('n') => {
                     match action {
-                        ConfirmAction::Quit => self.should_quit = true,
-                        ConfirmAction::CloseTab => self.close_active_discarding(),
+                        ConfirmAction::Quit => {
+                            self.discard_all_recovery();
+                            for tab in &mut self.tabs {
+                                tab.document.saved_text.clone_from(&tab.document.text);
+                                tab.document.conflict = false;
+                            }
+                            self.should_quit = true;
+                        }
+                        ConfirmAction::CloseTab => {
+                            if let Some(path) =
+                                self.active_tab().map(|tab| tab.document.path.clone())
+                            {
+                                self.discard_recovery_for(&path);
+                            }
+                            self.close_active_discarding();
+                        }
                     }
                     false
                 }
@@ -1092,6 +1268,23 @@ impl App {
                 }
                 KeyCode::Enter => {
                     self.apply_path_action(*action, value);
+                    false
+                }
+                _ => true,
+            },
+            Overlay::Recovery { entry } => match key.code {
+                KeyCode::Char('r') => {
+                    self.restore_recovery_entry(entry);
+                    false
+                }
+                KeyCode::Char('d') => {
+                    let path = entry.document_path.clone();
+                    self.published_recovery.insert(
+                        path.clone(),
+                        (entry.fingerprint().to_owned(), entry.text.clone()),
+                    );
+                    self.discard_recovery_for(&path);
+                    self.status_message = Some("Using the saved disk version".to_owned());
                     false
                 }
                 _ => true,
@@ -1342,6 +1535,7 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
             let mut rendered_mode = app.mode;
             let mut needs_draw = true;
             let mut next_disk_poll = Instant::now() + Duration::from_secs(2);
+            let mut next_recovery_flush = Instant::now() + Duration::from_millis(500);
             while !app.should_quit {
                 if needs_draw {
                     terminal.draw(|frame| ui::draw(frame, &mut app))?;
@@ -1381,7 +1575,12 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
                     app.persist_session_if_changed();
                     next_disk_poll = Instant::now() + Duration::from_secs(2);
                 }
+                if Instant::now() >= next_recovery_flush {
+                    app.persist_recovery();
+                    next_recovery_flush = Instant::now() + Duration::from_millis(500);
+                }
             }
+            app.persist_recovery();
             app.persist_session_if_changed();
             Ok(())
         })();
@@ -1722,7 +1921,8 @@ mod tests {
             .unwrap();
         let workspace = Workspace::from_target(&root).unwrap();
 
-        let app = App::with_config_and_session(workspace, Config::default(), Some(store)).unwrap();
+        let app =
+            App::with_state_services(workspace, Config::default(), Some(store), None).unwrap();
 
         assert_eq!(app.tabs.len(), 2);
         assert_eq!(app.active_tab().unwrap().document.path, second);
@@ -1738,7 +1938,7 @@ mod tests {
         let store = SessionStore::new(root.join("state"));
         let workspace = Workspace::from_target(&path).unwrap();
         let mut app =
-            App::with_config_and_session(workspace, Config::default(), Some(store.clone()))
+            App::with_state_services(workspace, Config::default(), Some(store.clone()), None)
                 .unwrap();
 
         app.persist_session_if_changed();
@@ -1746,5 +1946,91 @@ mod tests {
 
         assert!(!String::from_utf8_lossy(&bytes).contains("private source"));
         assert_eq!(store.load(&root).state.unwrap().open_paths, vec![path]);
+    }
+
+    #[test]
+    fn recovery_restore_is_dirty_and_successful_save_removes_the_journal() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("note.md");
+        fs::write(&path, "saved").unwrap();
+        let loaded = load_file(&path).unwrap();
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        journal
+            .publish(
+                &path,
+                &root,
+                "unsaved draft",
+                loaded.encoding,
+                &loaded.snapshot,
+            )
+            .unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app =
+            App::with_state_services(workspace, Config::default(), None, Some(journal.clone()))
+                .unwrap();
+
+        assert!(matches!(app.overlay, Some(Overlay::Recovery { .. })));
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        assert_eq!(app.active_tab().unwrap().document.text, "unsaved draft");
+        assert!(app.active_tab().unwrap().document.is_dirty());
+        assert!(!app.active_tab().unwrap().document.conflict);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "unsaved draft");
+        assert!(!journal.path_for(&path).exists());
+    }
+
+    #[test]
+    fn recovery_from_a_changed_baseline_cannot_overwrite_disk() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("note.md");
+        fs::write(&path, "baseline").unwrap();
+        let loaded = load_file(&path).unwrap();
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        journal
+            .publish(
+                &path,
+                &root,
+                "recovered draft",
+                loaded.encoding,
+                &loaded.snapshot,
+            )
+            .unwrap();
+        fs::write(&path, "new disk").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app =
+            App::with_state_services(workspace, Config::default(), None, Some(journal)).unwrap();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+
+        assert!(app.active_tab().unwrap().document.conflict);
+        assert_eq!(fs::read_to_string(path).unwrap(), "new disk");
+        assert!(app.status_message.as_deref().unwrap().contains("Save As"));
+    }
+
+    #[test]
+    fn dirty_source_is_journaled_and_explicit_quit_discard_removes_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("note.md");
+        fs::write(&path, "saved").unwrap();
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app =
+            App::with_state_services(workspace, Config::default(), None, Some(journal.clone()))
+                .unwrap();
+        app.active_tab_mut().unwrap().editor.insert_str("draft ");
+
+        app.persist_recovery();
+
+        assert_eq!(journal.load(&path).unwrap().unwrap().text, "draft saved");
+        app.request_quit();
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        app.persist_recovery();
+        assert!(!journal.path_for(&path).exists());
+        assert_eq!(fs::read_to_string(path).unwrap(), "saved");
     }
 }
