@@ -877,6 +877,46 @@ class TermDraftApp(App[None]):
         self._recent_paths = [candidate for candidate in self._recent_paths if candidate != path]
         self._session_views.pop(path, None)
 
+    def _retarget_session_paths_within(self, source: Path, target: Path) -> None:
+        """Move cached recent-document views along with a workspace entry."""
+        retargeted_views: dict[Path, DocumentViewState] = {}
+        for path, view in self._session_views.items():
+            new_path = (
+                self._retargeted_path(path, source, target)
+                if self._path_is_within(path, source)
+                else path
+            )
+            retargeted_views[new_path] = DocumentViewState(
+                new_path,
+                line=view.line,
+                column=view.column,
+                scroll_x=view.scroll_x,
+                scroll_y=view.scroll_y,
+            )
+        self._session_views = retargeted_views
+
+        recent_paths: list[Path] = []
+        for path in self._recent_paths:
+            new_path = (
+                self._retargeted_path(path, source, target)
+                if self._path_is_within(path, source)
+                else path
+            )
+            if new_path not in recent_paths:
+                recent_paths.append(new_path)
+        self._recent_paths = recent_paths
+
+    def _forget_session_paths_within(self, source: Path) -> None:
+        """Forget cached recent-document views below a removed workspace entry."""
+        self._recent_paths = [
+            path for path in self._recent_paths if not self._path_is_within(path, source)
+        ]
+        self._session_views = {
+            path: view
+            for path, view in self._session_views.items()
+            if not self._path_is_within(path, source)
+        }
+
     def _recent_document_paths(self, *, prune_missing: bool = False) -> tuple[Path, ...]:
         """Return valid MRU entries and optionally forget confirmed missing paths."""
         available: list[Path] = []
@@ -4021,6 +4061,7 @@ class TermDraftApp(App[None]):
                         scroll_x=previous_view.scroll_x,
                         scroll_y=previous_view.scroll_y,
                     )
+            self._retarget_session_paths_within(result.source, target)
             self._document_generation += 1
             if self.document is not None:
                 self.explorer.set_active(self.document.path)
@@ -4028,8 +4069,8 @@ class TermDraftApp(App[None]):
             self._persist_session()
         elif operation is WorkspaceEntryOperation.TRASH:
             for path in affected_paths:
-                self._forget_session_path(path)
                 self._clear_recovery(path)
+            self._forget_session_paths_within(result.source)
             self._persist_session()
 
         created = operation in {

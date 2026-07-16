@@ -545,6 +545,102 @@ async def test_rename_retargets_a_deferred_restored_tab(tmp_path: Path) -> None:
         assert len(app._materialized_open_documents()) == 2
 
 
+async def test_rename_and_move_retarget_closed_recent_paths_inside_a_folder(
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    active = workspace_root / "active.md"
+    active.write_text("active", encoding="utf-8")
+    folder = workspace_root / "notes"
+    folder.mkdir()
+    closed = folder / "closed.md"
+    closed.write_text("closed", encoding="utf-8")
+    archive = workspace_root / "archive"
+    archive.mkdir()
+    state_root = tmp_path / "state"
+    store = SessionStore(state_root / "sessions")
+    store.save(
+        SessionState(
+            workspace_root,
+            active,
+            (
+                DocumentViewState(active),
+                DocumentViewState(closed, line=4, column=2, scroll_y=3.0),
+            ),
+            (active,),
+        )
+    )
+    app = _app(active, state_root)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        for _ in range(200):
+            if app.document is not None and not app._restoring_session_tabs:
+                break
+            await pilot.pause(0.01)
+
+        app.push_screen(
+            WorkspaceEntryDialog(
+                WorkspaceEntryOperation.RENAME,
+                workspace_root,
+                source=folder,
+            )
+        )
+        await pilot.pause()
+        rename_dialog = app.screen
+        assert isinstance(rename_dialog, WorkspaceEntryDialog)
+        rename_dialog.query_one("#workspace-entry-input", Input).value = "renamed"
+        await pilot.press("enter")
+
+        renamed = workspace_root / "renamed"
+        renamed_closed = renamed / closed.name
+        for _ in range(200):
+            if renamed.exists() and not app._critical_io:
+                break
+            await pilot.pause(0.01)
+
+        assert closed not in app._recent_paths
+        assert renamed_closed in app._recent_paths
+        renamed_view = app._session_views[renamed_closed]
+        assert (renamed_view.line, renamed_view.column, renamed_view.scroll_y) == (4, 2, 3.0)
+
+        app.push_screen(
+            WorkspaceEntryDialog(
+                WorkspaceEntryOperation.MOVE,
+                workspace_root,
+                source=renamed,
+            )
+        )
+        await pilot.pause()
+        move_dialog = app.screen
+        assert isinstance(move_dialog, WorkspaceEntryDialog)
+        move_dialog.query_one("#workspace-entry-input", Input).value = "archive/renamed"
+        await pilot.press("enter")
+
+        moved_closed = archive / "renamed" / closed.name
+        for _ in range(200):
+            if moved_closed.exists() and not app._critical_io:
+                break
+            await pilot.pause(0.01)
+
+        assert renamed_closed not in app._recent_paths
+        assert moved_closed in app._recent_paths
+        moved_view = app._session_views[moved_closed]
+        assert (moved_view.line, moved_view.column, moved_view.scroll_y) == (4, 2, 3.0)
+
+        for _ in range(200):
+            state = store.load(workspace_root).state
+            if state is not None and state.view_for(moved_closed) is not None:
+                break
+            await pilot.pause(0.01)
+        else:
+            raise AssertionError("retargeted closed recent path was not persisted")
+
+        assert state is not None
+        assert state.view_for(closed) is None
+        assert state.view_for(renamed_closed) is None
+
+
 async def test_rename_refuses_an_open_document_changed_on_disk(tmp_path: Path) -> None:
     path = tmp_path / "note.md"
     path.write_text("base", encoding="utf-8")
@@ -712,6 +808,59 @@ async def test_trash_folder_warns_about_hidden_contents_and_moves_after_confirma
 
         assert not folder.exists()
         assert (fake_trash / "notes" / "note.md").read_text(encoding="utf-8") == "note"
+
+
+async def test_trash_forgets_all_cached_recent_paths_inside_a_folder(
+    tmp_path: Path,
+    fake_trash: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    active = workspace_root / "active.md"
+    active.write_text("active", encoding="utf-8")
+    folder = workspace_root / "notes"
+    folder.mkdir()
+    closed = folder / "closed.md"
+    closed.write_text("closed", encoding="utf-8")
+    missing = folder / "missing.md"
+    state_root = tmp_path / "state"
+    store = SessionStore(state_root / "sessions")
+    store.save(
+        SessionState(
+            workspace_root,
+            active,
+            (
+                DocumentViewState(active),
+                DocumentViewState(closed, line=4),
+                DocumentViewState(missing, line=8),
+            ),
+            (active,),
+        )
+    )
+    app = _app(active, state_root)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        for _ in range(200):
+            if app.document is not None and not app._restoring_session_tabs:
+                break
+            await pilot.pause(0.01)
+
+        app._handle_trash_entry_confirmation(folder, True)
+        for _ in range(200):
+            if not folder.exists() and not app._critical_io:
+                break
+            await pilot.pause(0.01)
+
+        assert app._recent_paths == [active]
+        assert set(app._session_views) == {active}
+
+        for _ in range(200):
+            state = store.load(workspace_root).state
+            if state is not None and tuple(view.path for view in state.documents) == (active,):
+                break
+            await pilot.pause(0.01)
+        else:
+            raise AssertionError("removed closed recent paths were not pruned from the session")
 
 
 async def test_trash_refuses_to_move_an_open_document(tmp_path: Path) -> None:
