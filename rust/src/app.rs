@@ -1,6 +1,7 @@
 //! Ratatui event/update coordinator.
 
 use std::collections::HashMap;
+use std::fs;
 use std::io::{self, stdout};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -15,9 +16,6 @@ use ratatui::crossterm::execute;
 use ratatui::widgets::ListState;
 use tui_textarea::{CursorMove, TextArea};
 
-#[cfg(test)]
-use std::fs;
-
 use crate::config::{Config, EditorConfig, StartupMode, StartupView};
 use crate::continuation::{EnterAction, action_for};
 use crate::document::{Document, Encoding, LineEnding};
@@ -27,7 +25,7 @@ use crate::editor::{
 use crate::persistence::{LoadedFile, SaveError, load_file, save_atomic};
 use crate::recovery::{RecoveryEntry, RecoveryJournal};
 use crate::search::{TextMatch, fuzzy_score, heading_outline, search_text};
-use crate::session::{DocumentViewState, SessionState, SessionStore};
+use crate::session::{DocumentViewState, MAX_SESSION_DOCUMENTS, SessionState, SessionStore};
 use crate::ui;
 use crate::workspace::{Workspace, WorkspaceEntry};
 
@@ -94,6 +92,10 @@ pub enum Overlay {
     },
     FileFinder {
         input: TextInput,
+        selected: usize,
+    },
+    RecentDocuments {
+        paths: Vec<PathBuf>,
         selected: usize,
     },
     Find {
@@ -221,6 +223,7 @@ pub enum CommandAction {
     CloseTab,
     Quit,
     FileFinder,
+    RecentDocuments,
     WorkspaceSearch,
     Find,
     Outline,
@@ -253,6 +256,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         label: "Duplicate document",
         shortcut: "D",
         action: CommandAction::Duplicate,
+    },
+    CommandSpec {
+        group: "DOCUMENT",
+        label: "Recent documents",
+        shortcut: "o",
+        action: CommandAction::RecentDocuments,
     },
     CommandSpec {
         group: "DOCUMENT",
@@ -389,6 +398,8 @@ pub struct App {
     last_session_state: Option<SessionState>,
     recovery_journal: Option<RecoveryJournal>,
     published_recovery: HashMap<PathBuf, (String, String)>,
+    recent_paths: Vec<PathBuf>,
+    session_views: HashMap<PathBuf, DocumentViewState>,
     should_quit: bool,
 }
 
@@ -452,6 +463,8 @@ impl App {
             last_session_state: None,
             recovery_journal,
             published_recovery: HashMap::new(),
+            recent_paths: Vec::new(),
+            session_views: HashMap::new(),
             should_quit: false,
         };
         if let Some(path) = initial_file {
@@ -481,6 +494,16 @@ impl App {
         let Some(state) = loaded.state else {
             return;
         };
+        let stored_recent = state
+            .documents
+            .iter()
+            .map(|view| view.path.clone())
+            .collect::<Vec<_>>();
+        let stored_views = state
+            .documents
+            .iter()
+            .map(|view| (view.path.clone(), view.clone()))
+            .collect::<HashMap<_, _>>();
         if restore_open_tabs {
             for path in &state.open_paths {
                 let _ = self.open_document(path);
@@ -501,6 +524,11 @@ impl App {
                     u16::try_from(view.column).unwrap_or(u16::MAX),
                 ));
             }
+        }
+        self.recent_paths = stored_recent;
+        self.session_views = stored_views;
+        if let Some(active) = self.active_tab().map(|tab| tab.document.path.clone()) {
+            self.mark_recent(&active);
         }
     }
 
@@ -642,20 +670,25 @@ impl App {
     }
 
     fn current_session_state(&self) -> SessionState {
+        let mut views = self.session_views.clone();
+        for tab in &self.tabs {
+            let (line, column) = tab.editor.cursor();
+            views.insert(
+                tab.document.path.clone(),
+                DocumentViewState {
+                    path: tab.document.path.clone(),
+                    line,
+                    column,
+                },
+            );
+        }
         SessionState {
             workspace_root: self.workspace.root.clone(),
             active_path: self.active_tab().map(|tab| tab.document.path.clone()),
             documents: self
-                .tabs
+                .recent_paths
                 .iter()
-                .map(|tab| {
-                    let (line, column) = tab.editor.cursor();
-                    DocumentViewState {
-                        path: tab.document.path.clone(),
-                        line,
-                        column,
-                    }
-                })
+                .filter_map(|path| views.get(path).cloned())
                 .collect(),
             open_paths: self
                 .tabs
@@ -695,15 +728,66 @@ impl App {
         }
     }
 
+    fn cache_active_view(&mut self) {
+        let Some(tab) = self.active_tab() else {
+            return;
+        };
+        let (line, column) = tab.editor.cursor();
+        let view = DocumentViewState {
+            path: tab.document.path.clone(),
+            line,
+            column,
+        };
+        self.session_views.insert(view.path.clone(), view);
+    }
+
+    fn mark_recent(&mut self, path: &Path) {
+        self.recent_paths.retain(|recent| recent != path);
+        self.recent_paths.insert(0, path.to_path_buf());
+        if self.recent_paths.len() > MAX_SESSION_DOCUMENTS
+            && let Some(evicted) = self.recent_paths.pop()
+            && !self.tabs.iter().any(|tab| tab.document.path == evicted)
+        {
+            self.session_views.remove(&evicted);
+        }
+    }
+
+    fn retarget_recent(&mut self, source: &Path, target: &Path) {
+        for recent in &mut self.recent_paths {
+            if recent == source {
+                *recent = target.to_path_buf();
+            }
+        }
+        if let Some(view) = self.session_views.remove(source) {
+            self.session_views.insert(
+                target.to_path_buf(),
+                DocumentViewState {
+                    path: target.to_path_buf(),
+                    ..view
+                },
+            );
+        }
+        self.mark_recent(target);
+    }
+
     fn open_document(&mut self, path: &Path) -> anyhow::Result<()> {
         let path = self.workspace.validate_document_path(path)?;
         if let Some(index) = self.tabs.iter().position(|tab| tab.document.path == path) {
+            self.cache_active_view();
             self.active_tab = Some(index);
             self.focus = Focus::Editor;
+            self.mark_recent(&path);
             return Ok(());
         }
+        self.cache_active_view();
         let mut tab = EditorTab::from_path(&path, &self.config.editor)?;
         style_cursor(&mut tab.editor, self.mode);
+        if let Some(view) = self.session_views.get(&path) {
+            tab.editor.move_cursor(CursorMove::Jump(
+                u16::try_from(view.line).unwrap_or(u16::MAX),
+                u16::try_from(view.column).unwrap_or(u16::MAX),
+            ));
+        }
         let mixed = !tab.document.is_editable();
         self.tabs.push(tab);
         self.active_tab = Some(self.tabs.len() - 1);
@@ -712,6 +796,7 @@ impl App {
         self.status_message = mixed.then(|| {
             "Mixed line endings · read-only until normalization is implemented".to_owned()
         });
+        self.mark_recent(&path);
         self.enforce_active_read_only();
         self.offer_recovery(&path);
         Ok(())
@@ -818,12 +903,16 @@ impl App {
         let Some(index) = self.active_tab else {
             return;
         };
+        self.cache_active_view();
         self.tabs.remove(index);
         self.active_tab = if self.tabs.is_empty() {
             None
         } else {
             Some(index.min(self.tabs.len() - 1))
         };
+        if let Some(path) = self.active_tab().map(|tab| tab.document.path.clone()) {
+            self.mark_recent(&path);
+        }
     }
 
     fn switch_tab(&mut self, direction: isize) {
@@ -836,7 +925,11 @@ impl App {
         }
         let len = isize::try_from(self.tabs.len()).unwrap_or(isize::MAX);
         let next = (isize::try_from(current).unwrap_or_default() + direction).rem_euclid(len);
+        self.cache_active_view();
         self.active_tab = usize::try_from(next).ok();
+        if let Some(path) = self.active_tab().map(|tab| tab.document.path.clone()) {
+            self.mark_recent(&path);
+        }
         self.preview_scroll = 0;
         self.enforce_active_read_only();
     }
@@ -862,6 +955,7 @@ impl App {
                     selected: 0,
                 });
             }
+            CommandAction::RecentDocuments => self.open_recent_documents(),
             CommandAction::WorkspaceSearch => {
                 self.overlay = Some(Overlay::WorkspaceSearch {
                     input: TextInput::default(),
@@ -917,6 +1011,29 @@ impl App {
         }
     }
 
+    fn open_recent_documents(&mut self) {
+        self.cache_active_view();
+        let previous_len = self.recent_paths.len();
+        self.recent_paths
+            .retain(|path| match fs::symlink_metadata(path) {
+                Ok(metadata) => metadata.is_file() && !metadata.file_type().is_symlink(),
+                Err(error) => error.kind() != io::ErrorKind::NotFound,
+            });
+        if self.recent_paths.len() != previous_len {
+            self.session_views
+                .retain(|path, _| self.recent_paths.contains(path));
+            self.persist_session_if_changed();
+        }
+        if self.recent_paths.is_empty() {
+            self.status_message = Some("No recent Markdown documents are available".to_owned());
+            return;
+        }
+        self.overlay = Some(Overlay::RecentDocuments {
+            paths: self.recent_paths.clone(),
+            selected: 0,
+        });
+    }
+
     fn open_path_input(&mut self, action: PathAction) {
         if action != PathAction::Create && self.active_tab().is_none() {
             self.status_message = Some("No document open".to_owned());
@@ -969,6 +1086,9 @@ impl App {
                     tab.document.path.clone_from(&target);
                     tab.document.mark_saved(snapshot);
                 }
+                if let Some(previous) = previous.as_deref() {
+                    self.retarget_recent(previous, &target);
+                }
                 self.refresh_entries(Some(&target));
                 self.status_message = Some(format!(
                     "Saved as {}",
@@ -980,7 +1100,11 @@ impl App {
                 true
             }
             Ok(_) => {
-                self.finish_new_document(&target, "Duplicated as");
+                self.refresh_entries(Some(&target));
+                self.status_message = Some(format!(
+                    "Duplicated as {}",
+                    self.workspace.relative(&target).display()
+                ));
                 true
             }
             Err(error) => {
@@ -1034,6 +1158,7 @@ impl App {
             KeyCode::Char('q') => self.request_quit(),
             KeyCode::Char('b') => self.execute_command(CommandAction::ToggleExplorer),
             KeyCode::Char('p') => self.execute_command(CommandAction::FileFinder),
+            KeyCode::Char('o') => self.execute_command(CommandAction::RecentDocuments),
             KeyCode::Char('f') => self.execute_command(CommandAction::Find),
             KeyCode::Char('e') => self.execute_command(CommandAction::CycleView),
             KeyCode::PageDown => self.switch_tab(1),
@@ -1119,6 +1244,7 @@ impl App {
             KeyCode::Char('q') => self.request_quit(),
             KeyCode::Char('e') => self.execute_command(CommandAction::ToggleExplorer),
             KeyCode::Char('f') => self.execute_command(CommandAction::FileFinder),
+            KeyCode::Char('o') => self.execute_command(CommandAction::RecentDocuments),
             KeyCode::Char('/') => self.execute_command(CommandAction::WorkspaceSearch),
             KeyCode::Char('s') => self.execute_command(CommandAction::Find),
             KeyCode::Char('S') => self.execute_command(CommandAction::Outline),
@@ -1289,6 +1415,26 @@ impl App {
                     _ => true,
                 }
             }
+            Overlay::RecentDocuments { paths, selected } => match key.code {
+                KeyCode::Up => {
+                    *selected = selected.saturating_sub(1);
+                    true
+                }
+                KeyCode::Down => {
+                    *selected = (*selected + 1).min(paths.len().saturating_sub(1));
+                    true
+                }
+                KeyCode::Enter => {
+                    if let Some(path) = paths.get(*selected).cloned()
+                        && let Err(error) = self.open_document(&path)
+                    {
+                        self.status_message =
+                            Some(format!("Cannot open recent document · {error}"));
+                    }
+                    false
+                }
+                _ => true,
+            },
             Overlay::Find { input } => match key.code {
                 KeyCode::Enter => {
                     self.find_in_document(&input.value);
@@ -1986,7 +2132,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_keeps_the_dirty_original_and_opens_a_saved_copy() {
+    fn duplicate_keeps_the_dirty_original_active() {
         let directory = tempfile::tempdir().unwrap();
         let original = directory.path().join("original.md");
         fs::write(&original, "draft").unwrap();
@@ -2000,9 +2146,17 @@ mod tests {
             fs::read_to_string(directory.path().join("copy.md")).unwrap(),
             " changeddraft"
         );
-        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(
+            app.active_tab().unwrap().document.path,
+            original.canonicalize().unwrap()
+        );
         assert!(app.tabs[0].document.is_dirty());
-        assert!(!app.tabs[1].document.is_dirty());
+        assert!(
+            app.entries
+                .iter()
+                .any(|entry| entry.relative == Path::new("copy.md"))
+        );
     }
 
     #[test]
@@ -2085,6 +2239,95 @@ mod tests {
         assert_eq!(app.tabs.len(), 2);
         assert_eq!(app.active_tab().unwrap().document.path, second);
         assert_eq!(app.active_tab().unwrap().editor.cursor(), (1, 3));
+    }
+
+    #[test]
+    fn recent_order_is_persisted_independently_from_open_tab_order() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let first = root.join("first.md");
+        let second = root.join("second.md");
+        let third = root.join("third.md");
+        for path in [&first, &second, &third] {
+            fs::write(path, path.file_stem().unwrap().as_encoded_bytes()).unwrap();
+        }
+        let store = SessionStore::new(root.join("state"));
+        let workspace = Workspace::from_target(&root).unwrap();
+        let mut app =
+            App::with_state_services(workspace, Config::default(), Some(store.clone()), None)
+                .unwrap();
+
+        app.open_document(&first).unwrap();
+        app.open_document(&second).unwrap();
+        app.open_document(&third).unwrap();
+        app.persist_session_if_changed();
+
+        let state = store.load(&root).state.unwrap();
+        assert_eq!(
+            state.open_paths,
+            vec![first.clone(), second.clone(), third.clone()]
+        );
+        assert_eq!(
+            state
+                .documents
+                .iter()
+                .map(|view| view.path.clone())
+                .collect::<Vec<_>>(),
+            vec![third, second, first]
+        );
+    }
+
+    #[test]
+    fn recent_picker_prunes_missing_paths_but_keeps_closed_documents() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let current = root.join("current.md");
+        let closed = root.join("closed.md");
+        let missing = root.join("missing.md");
+        fs::write(&current, "current").unwrap();
+        fs::write(&closed, "closed").unwrap();
+        let store = SessionStore::new(root.join("state"));
+        store
+            .save(&SessionState {
+                workspace_root: root.clone(),
+                active_path: Some(current.clone()),
+                documents: vec![
+                    DocumentViewState {
+                        path: missing,
+                        line: 0,
+                        column: 0,
+                    },
+                    DocumentViewState {
+                        path: closed.clone(),
+                        line: 0,
+                        column: 0,
+                    },
+                    DocumentViewState {
+                        path: current.clone(),
+                        line: 0,
+                        column: 0,
+                    },
+                ],
+                open_paths: vec![current],
+            })
+            .unwrap();
+        let workspace = Workspace::from_target(&root).unwrap();
+        let mut app =
+            App::with_state_services(workspace, Config::default(), Some(store), None).unwrap();
+
+        app.open_recent_documents();
+
+        let Some(Overlay::RecentDocuments { paths, .. }) = &app.overlay else {
+            panic!("recent documents did not open");
+        };
+        assert_eq!(
+            paths,
+            &vec![
+                app.active_tab().unwrap().document.path.clone(),
+                closed.clone()
+            ]
+        );
+        assert!(!app.tabs.iter().any(|tab| tab.document.path == closed));
     }
 
     #[test]

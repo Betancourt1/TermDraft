@@ -264,9 +264,10 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
     let area = match overlay {
         Overlay::Help => popup(frame.area(), 78, 24),
         Overlay::Palette { .. } => popup(frame.area(), 76, 22),
-        Overlay::FileFinder { .. } | Overlay::SearchResults { .. } | Overlay::Outline { .. } => {
-            popup(frame.area(), 76, 20)
-        }
+        Overlay::FileFinder { .. }
+        | Overlay::RecentDocuments { .. }
+        | Overlay::SearchResults { .. }
+        | Overlay::Outline { .. } => popup(frame.area(), 76, 20),
         Overlay::Find { .. } | Overlay::WorkspaceSearch { .. } | Overlay::PathInput { .. } => {
             popup(frame.area(), 66, 7)
         }
@@ -320,6 +321,28 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
                 area,
                 block.title(" Find file "),
                 Some(input),
+                items,
+                *selected,
+            );
+        }
+        Overlay::RecentDocuments { paths, selected } => {
+            let active = app.active_tab().map(|tab| tab.document.path.as_path());
+            let items = paths
+                .iter()
+                .map(|path| {
+                    let mut line = Line::from(app.workspace.relative(path).display().to_string())
+                        .style(Style::new().fg(TEXT));
+                    if active == Some(path.as_path()) {
+                        line.push_span(Span::styled("  · current", Style::new().fg(MUTED)));
+                    }
+                    line
+                })
+                .collect();
+            draw_picker(
+                frame,
+                area,
+                block.title(" Recent documents "),
+                None,
                 items,
                 *selected,
             );
@@ -445,6 +468,7 @@ fn draw_help(frame: &mut Frame, area: Rect, block: Block<'_>) {
         help_line("NAVIGATE", "h j k l", "Move cursor"),
         help_line("NAVIGATE", "[ / ]", "Previous / next tab"),
         help_line("NAVIGATE", "f / Ctrl+P", "Find a file"),
+        help_line("NAVIGATE", "o / Ctrl+O", "Recent documents"),
         help_line("NAVIGATE", "/", "Search workspace text"),
         help_line("NAVIGATE", "s / Ctrl+F", "Find in document"),
         help_line("NAVIGATE", "S", "Document outline"),
