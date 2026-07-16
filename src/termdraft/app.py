@@ -265,6 +265,7 @@ class _SaveAsWorkerResult:
 @dataclass(frozen=True, slots=True)
 class _WorkspaceIndexResult:
     revision: int
+    reload_tree: bool = True
     scan: ScanResult | None = None
     error: str | None = None
 
@@ -737,11 +738,16 @@ class TermDraftApp(App[None]):
         self._critical_previous_status = None
         self._refresh_status()
 
-    def _refresh_workspace_index(self, *, open_search: bool = False) -> Worker[None]:
+    def _refresh_workspace_index(
+        self,
+        *,
+        open_search: bool = False,
+        reload_tree: bool = True,
+    ) -> Worker[None]:
         self._workspace_index_revision += 1
         if open_search:
             self._file_search_requested = True
-        worker = self._workspace_index_worker(self._workspace_index_revision)
+        worker = self._workspace_index_worker(self._workspace_index_revision, reload_tree)
         self._workspace_index_task = worker
         self._refresh_status()
         return worker
@@ -753,13 +759,13 @@ class TermDraftApp(App[None]):
         self._refresh_workspace_index()
 
     @work(group="workspace-index", exclusive=True, thread=True, exit_on_error=False)
-    def _workspace_index_worker(self, revision: int) -> None:
+    def _workspace_index_worker(self, revision: int, reload_tree: bool) -> None:
         worker = get_current_worker()
         try:
             scan = self.workspace.scan(should_cancel=lambda: worker.is_cancelled)
-            result = _WorkspaceIndexResult(revision, scan=scan)
+            result = _WorkspaceIndexResult(revision, reload_tree, scan=scan)
         except Exception as error:
-            result = _WorkspaceIndexResult(revision, error=str(error))
+            result = _WorkspaceIndexResult(revision, reload_tree, error=str(error))
         if not worker.is_cancelled:
             self.call_from_thread(self._apply_workspace_index, result)
 
@@ -783,7 +789,7 @@ class TermDraftApp(App[None]):
         self.workspace_files = result.scan.files
         self.workspace_directories = result.scan.directories
         self._workspace_scan_applied = True
-        if structure_changed:
+        if structure_changed and result.reload_tree:
             self.explorer.directory_tree.reload()
         if result.scan.warnings and result.scan.warnings != self._workspace_warnings:
             self.notify(
@@ -4067,7 +4073,7 @@ class TermDraftApp(App[None]):
         operation: WorkspaceEntryOperation,
     ) -> None:
         await self.explorer.directory_tree.reload_and_reveal(target)
-        self._refresh_workspace_index()
+        self._refresh_workspace_index(reload_tree=False)
         if (
             operation is WorkspaceEntryOperation.CREATE_FILE
             and target.suffix.casefold() in EDITABLE_SUFFIXES

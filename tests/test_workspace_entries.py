@@ -280,16 +280,37 @@ async def test_create_entry_keeps_parent_expanded_and_reveals_new_file(tmp_path:
         await pilot.press("enter")
 
         target = parent / "new-note.md"
-        for _ in range(200):
-            if app.document is not None and app.document.path == target:
+        refreshed_parent = None
+        for _ in range(300):
+            refreshed_parent = next(
+                (
+                    child
+                    for child in tree.root.children
+                    if child.data is not None and child.data.path == parent
+                ),
+                None,
+            )
+            cursor_path = (
+                tree.cursor_node.data.path
+                if tree.cursor_node is not None and tree.cursor_node.data is not None
+                else None
+            )
+            if (
+                app.document is not None
+                and app.document.path == target
+                and app._workspace_index_task is None
+                and refreshed_parent is not None
+                and refreshed_parent.is_expanded
+                and any(
+                    child.data is not None and child.data.path == target
+                    for child in refreshed_parent.children
+                )
+                and cursor_path == target
+            ):
                 break
             await pilot.pause(0.01)
 
-        refreshed_parent = next(
-            child
-            for child in tree.root.children
-            if child.data is not None and child.data.path == parent
-        )
+        assert refreshed_parent is not None
         assert refreshed_parent.is_expanded
         assert any(
             child.data is not None and child.data.path == target
