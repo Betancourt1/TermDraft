@@ -1,163 +1,113 @@
-# Future semantic block editing
+# Future semantic block editing in Rust
 
-This document describes deeper block-aware WYSIWYM editing beyond TermDraft's default inline view.
-The inline view is deliberately presentation-only: inactive logical lines hide common Markdown
-markers without changing their character positions, and the cursor line stays exact source. It does
-not mount semantic blocks or splice rendered output back into the file. The stages below remain the
-direction for that richer model.
+This document describes work beyond the `rust-port` branch's current inline presentation. The Rust
+frontend does not yet contain the Python semantic-block inspector, coordinate diagnostic, or
+experimental block reader.
+
+Today, one full-source `tui-textarea-2` editor remains authoritative. Inactive lines can hide or
+style common Markdown markers, but those styles do not change character positions or write rendered
+content back to the file. The cursor line always exposes exact source.
 
 ## Goal
 
-The Markdown file remains the only authoritative document. An inactive block may be displayed as a
-semantic rendering; the block containing the logical cursor exposes its original Markdown source.
-Switching modes must never reconstruct the whole file from rendered output.
+A future semantic mode could render inactive Markdown blocks while exposing the active block as its
+exact source. The file, not the rendered widgets, must remain authoritative:
 
 ```text
 Markdown source
-      │ parse with source ranges
+      │ parse with verified source ranges
       ▼
 AST + block index
       │
-      ├── inactive block ──► rendered block
-      └── active block ────► source editor ──► source-range splice
+      ├── inactive block ──► terminal rendering
+      └── active block ────► source editor ──► checked range splice
 ```
 
-## Source and AST
+Switching blocks must never reconstruct the whole document from rendered output. Unsupported or
+ambiguous syntax must fall back to the existing full-source editor without modifying the file.
 
-A parser must produce an AST whose block nodes retain trustworthy source ranges. Each block record
-would need at least:
+## Required source model
 
-- semantic kind;
-- start and end offsets in the Markdown source;
-- start and end logical lines;
-- original source slice;
-- parent/child relationships for nested structures;
-- a short-lived identity that can survive nearby edits where practical.
+An editing-grade parser would need every block to retain:
 
-Source offsets must be defined explicitly. Python string indexes count Unicode code points, UTF-8
-uses bytes, Textual cursor columns are logical positions, and terminal cells vary by grapheme width.
-Mixing these units is a direct route to corrupt splices or misplaced cursors.
+- semantic kind and parent/child relationship;
+- exact start and end offsets in the original UTF-8 source;
+- logical line range;
+- exact source slice, including separators;
+- a short-lived identity for mapping nearby edits where practical.
 
-The `I` **Inspect cursor coordinates** command reports one immutable cursor
-snapshot as an exact Python source offset, UTF-8 byte offset, Textual logical location, wrapped row
-and cell, and live terminal-screen offset. It recognizes extended grapheme boundaries and warns
-when Textual's current narrow wrapping divides one. Tests cover LF, CRLF, CR, mixed endings, tabs,
-combining marks, CJK, emoji, and ZWJ sequences. This validates the coordinate units but deliberately
-does not expose a reverse mapping or permit source edits.
+The implementation must keep these units distinct:
 
-The diagnostic prototype uses `markdown-it-py` public block tokens and `Token.map` line ranges. It
-converts logical lines to Python-string offsets without normalizing LF, CRLF, or CR and retains every
-uncovered source slice. Valid top-level link-reference definitions use defensively validated line
-maps from the parser environment and are covered by the same lossless corpus. This is not yet an
-editing-grade parser choice: the exact reference metadata shape, inline delimiters, nested
-identities, and extension-specific exact ranges are not stable source-splicing contracts.
+1. UTF-8 byte offsets in the complete source;
+2. logical textarea `(row, column)` positions;
+3. grapheme boundaries for user-visible cursor movement;
+4. terminal-cell positions after wrapping and wide-character layout;
+5. parser block ranges.
 
-## Active and inactive blocks
+Rust string indexes are UTF-8 byte offsets, while textarea and terminal coordinates are not. A
+conversion layer must validate boundaries rather than cast between these units. Tests need LF,
+CRLF, CR, Unicode combining marks, CJK, emoji sequences, tabs, missing final newlines, and malformed
+Markdown before range splicing can be safe.
 
-Only the active block would be editable as source. Inactive blocks would be rendered views derived
-from their exact source slices. Changing the active block would:
+## Incremental route
 
-1. commit the old block's current source as a range replacement in the full Markdown string;
-2. parse enough of the document to refresh affected ranges;
-3. map the logical cursor into the new active source editor;
-4. replace the prior active editor with a rendering;
-5. preserve viewport position as closely as possible.
+### 1. Read-only block map
 
-The full `Document.text` remains the value saved to disk. Rendered widgets never emit Markdown.
+Parse the current `Document.text` and display non-overlapping block ranges in a developer-only
+overlay. Joining every mapped block and uncovered gap must reproduce the original source exactly.
+The first implementation should not edit or save anything.
 
-## Position mapping
+Status: not ported. The Python application remains the reference prototype for this diagnostic,
+but its Python string offsets and Textual coordinates cannot be reused directly.
 
-At least four coordinate systems are involved:
+### 2. Independent rendered blocks
 
-1. source offsets in the full Python string;
-2. `(line, column)` positions in the active source block;
-3. AST block/range positions;
-4. terminal `(row, cell)` positions after wrapping and rendering.
+Render headings and paragraphs from their exact slices while retaining Source view as an immediate
+fallback. Keep links inert and leave lists, fences, tables, references, and ambiguous containers as
+exact source until each family has verified ranges.
 
-Mappings must account for:
+Status: not ported. The current split view renders one derived preview for the complete document;
+it does not mount independently addressable semantic blocks.
 
-- soft wrapping changing when a pane is resized;
-- wide CJK characters, combining marks, emoji sequences, and tabs;
-- Markdown markers that occupy source columns but not rendered cells;
-- rendered prefixes for lists, quotes, tasks, and headings;
-- blocks whose rendered height differs substantially from source height.
+### 3. One active source block
 
-A pixel-style “same vertical coordinate” switch is insufficient. The design likely needs semantic
-anchors such as block identity plus an offset inside the block, followed by a best-effort visual
-scroll correction after layout.
+Allow keyboard selection of a supported block. The selected block receives a small source editor;
+all other supported blocks remain rendered. Activation must preserve a semantic anchor plus the
+best available viewport position.
 
-## Incremental implementation strategy
+### 4. Checked range splice
 
-### Stage 1: read-only block diagnostics
+Commit an edited block only against the exact source revision and range from which it was opened.
+After the splice, reparse the document. If the revision changed or ranges cannot be reconciled,
+return to the full-source editor with the user's edited text intact and do not save automatically.
 
-Parse a document and display block boundaries/ranges in a developer-only view. Validate that joining
-all untouched source slices reproduces the original bytes after encoding. Test Unicode, LF, CRLF,
-missing final newlines, nested lists, block quotes, fences, tables, references, and malformed input.
+### 5. Expand syntax deliberately
 
-Status: implemented as the `b` **Inspect semantic blocks** command. The worker-backed mapper
-lists non-overlapping top-level ranges and explicit separator/unmapped gaps, rejects stale results,
-and can move the full-source editor cursor. Nested containers deliberately remain one outer block;
-valid top-level link-reference definitions are mapped from parser metadata, while malformed source
-remains a normal block or explicit gap. A 26-case corpus independently verifies contiguous offsets,
-source and UTF-8 reconstruction, LF/CRLF/CR, Unicode, nested containers, references, extensions, and
-malformed input. The inspector never splices, saves, or renders source.
-
-### Stage 2: rendered blocks without editing
-
-Render independent top-level blocks while keeping the existing full-source editor available as a
-fallback. Measure scroll stability and parser performance. Do not hide source syntax yet.
-
-Status: the experimental `B` reader renders top-level headings and paragraphs in a modal
-snapshot. Lists, quotes, code, tables, definitions, gaps, and other unsupported constructs remain
-exact source fallbacks; links are inert and Escape returns to the untouched full editor. This proves
-safe independent mounting, not scroll stability, nonlocal reference resolution, or editing.
-
-### Stage 3: one active source block
-
-Allow clicking or keyboard navigation to select one block. Show that block's exact source while the
-rest remain rendered. The first version should support simple paragraphs and headings only; fenced
-code, nested containers, and ambiguous ranges stay in full-source mode.
-
-### Stage 4: range-splice editing
-
-Apply edits only to the active block's known source interval, then reparse. If the new parse cannot
-reconcile ranges, fall back immediately to the full-source editor with the edited source intact.
-
-### Stage 5: broader constructs and performance
-
-Add lists, quotes, code fences, tables, and extension syntax one verified family at a time. Introduce
-incremental parsing only after correctness is established with full reparsing.
-
-Status: `termdraft-benchmark` now provides a repeatable full-map throughput workload plus real
-mounted-tab heap and active/inactive watcher measurements. The first large-workload baseline makes
-mounted editor cost the clearest constraint; it does not justify incremental parsing or hybrid
-editing by itself.
+Add nested lists, quotes, code fences, tables, definitions, and references one verified family at a
+time. Full reparsing is the simplest correct baseline; incremental parsing should be considered only
+after measurement shows it is necessary.
 
 ## Undo, conflicts, and persistence
 
-Undo must operate on source transformations, not widget replacement. Current full-source tabs each
-own a Textual undo history and preserve it across runtime tab switching, but a future hybrid mode
-would still need one coherent history for block activation and full-document source transformations.
+Undo must describe source transformations, not widget replacement. The current Rust tabs each own
+an independent textarea history. A semantic editor would need one coherent history that can cross
+block activation and full-source fallback without losing changes.
 
-External-change detection and atomic persistence do not change: the complete Markdown source and its
-disk fingerprint remain the conflict boundary. If a conflict appears, semantic editing must stop and
-use the same explicit Save As / reload / cancel flow as full-source editing.
+The existing persistence boundary remains unchanged: complete source plus `FileSnapshot` is the
+unit of conflict detection. External changes must disable semantic splicing and use the existing
+conflict/Save As path. Encoding, BOM, and original line endings remain properties of the whole
+document, not individual blocks.
 
-## Unresolved risks
+## Risks that remain open
 
-- Exact source ranges for every Markdown extension may require parser changes or a custom source map.
-- Nested blocks do not always have visually independent boundaries.
-- Editing delimiters can change the semantic type and extent of neighboring blocks.
-- Reference-style links and definitions create nonlocal rendering dependencies.
-- List renumbering must never rewrite source unless the user edits it.
-- Mixed line endings need an explicit policy before source splicing can be called lossless.
-- IME composition, bidirectional text, grapheme clusters, and terminal-width disagreement need real
-  interaction tests.
-- The diagnostic can expose grapheme-splitting wraps, but terminal/font width rules can still differ
-  from Textual and IME or bidirectional cursor behavior remains unmodeled.
-- Widget replacement can disrupt selection, accessibility, scroll position, and undo grouping.
-- Large documents may make full reparsing or mounting many rendered widgets too slow.
+- Markdown extensions do not all expose exact, stable source ranges.
+- Editing a delimiter can change the kind or extent of neighboring blocks.
+- Reference links and definitions create nonlocal rendering dependencies.
+- Rendered block height can change sharply after a resize.
+- Selection, IME composition, bidirectional text, and terminal width need real interaction tests.
+- Large documents may make full parsing or mounting many rendered widgets too expensive.
+- Mixed line endings remain read-only and cannot participate in range editing.
 
-The safe fallback is always the current full-source `TextArea`. Semantic mode should ship only for
-constructs whose source mapping is demonstrably reversible, with unsupported cases falling back
-without modifying the file.
+The 20/80 boundary for this port is to keep the proven full-source editor and presentation-only
+inline view. Semantic editing should begin only with the read-only block map; jumping directly to
+editable widgets would weaken the source-safety contract for a feature the branch does not yet need.

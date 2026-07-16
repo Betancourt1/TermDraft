@@ -1,18 +1,31 @@
 # TermDraft Markdown gallery
 
-Open this file in TermDraft to compare its source and rendered preview side by side:
+Open this file in the Rust port and press `v` to cycle through Inline, Split, and Source views:
 
 ```bash
-termdraft docs/markdown-gallery.md
+cargo run --release --locked -- docs/markdown-gallery.md
 ```
 
-The Markdown source is always the document. The preview only presents it; it never rewrites this
-file.
+If `termdraft-rs` is installed, use `termdraft-rs docs/markdown-gallery.md` instead. The Markdown
+source is always the document. Inline styles and the split preview only present it; neither rewrites
+this file.
+
+The current Rust inline view styles headings, emphasis, strong text, strikeout, inline code, links,
+tasks, bullets, and table separators. The split view uses `tui-markdown` for a broader best-effort
+preview. Links, images, footnotes, and raw HTML are not interactive.
+
+| Construct | Inline view | Split preview |
+| --- | --- | --- |
+| Headings and common inline markers | Presentation-only styling | Rendered terminal text |
+| Lists, tasks, quotes, and code | Exact source with selected marker styling | Best-effort rendering |
+| Tables | Pipes are styled; source remains exact | Table extension is not enabled |
+| GFM alerts, footnotes, definitions | Exact Markdown source | No dedicated interactive behavior |
+| Raw HTML | Exact Markdown source | Omitted rather than executed |
 
 ## Headings
 
-With the preview focused, use Alt+Down and Alt+Up to move through these headings. TermDraft shows
-the selected level and position in the status bar and a normal terminal notification.
+Press `S` in COMMAND mode to open the current heading outline. Choose a heading with the arrow keys
+and `Enter`; the source cursor moves to that line.
 
 ### Third-level heading
 
@@ -25,7 +38,8 @@ the selected level and position in the status bar and a normal terminal notifica
 ## Inline text
 
 Plain text can contain *emphasis*, **strong emphasis**, ~~strikethrough~~, `inline code`, and an
-[ordinary link](https://example.com). An image remains a safe terminal placeholder:
+[ordinary link](https://example.com). The Rust frontend does not open links or load images; Inline
+and Source retain image syntax, while Split can present only terminal text:
 
 ![Mountain silhouette](mountain.png)
 
@@ -64,13 +78,16 @@ line break.
 > [!CAUTION]
 > A possible negative outcome.
 
-Only `NOTE`, `TIP`, `IMPORTANT`, `WARNING`, and `CAUTION` receive an alert title. Unknown markers
-remain ordinary quoted text:
+The Rust port does not add special alert controls or actions. These remain Markdown blockquote
+source, and an unknown marker is treated no differently:
 
 > [!DANGER]
 > This is a normal blockquote, not a sixth alert type.
 
 ## Table
+
+This remains a useful source-fidelity fixture. The Rust inline view styles the pipe separators, but
+the split renderer is not configured with a table extension and does not reconstruct bordered rows.
 
 | Syntax | Preview behavior |
 | --- | --- |
@@ -90,22 +107,23 @@ def greeting(name: str) -> str:
 
 ## Footnotes
 
-A statement can refer to a named footnote.[^source] Click its rendered number to reach the
-definition, then use `↩` to return. With the preview focused, Tab/Shift+Tab selects links and Enter
-activates the selected reference or backlink.
+A statement can refer to a named footnote.[^source] This syntax remains a parsing fixture; footnote
+navigation and backlinks are not ported.
 
-[^source]: Footnote definitions render at the end with a visible number.
+[^source]: A named footnote definition remains part of the exact source.
 
     They may contain additional paragraphs and nested Markdown.
 
-An inline footnote is supported too.^[This definition lives beside its reference in the source.]
+An inline-footnote-shaped fixture remains source.^[This definition lives beside its reference.]
 
 ## Definition list
 
-TermDraft
-: A local-first Markdown editor for the terminal.
+Definition-list rendering is not ported. These lines verify that unsupported syntax remains intact:
 
-: Its definition body is visually separated from the bold term.
+TermDraft Rust port
+: A local-first Markdown editor for the terminal using Ratatui.
+
+: This definition remains ordinary source in the current Rust editor.
 
 Source of truth
 : The exact Markdown text on disk and in the active document model.
@@ -118,8 +136,10 @@ Text after the rule.
 
 ## Safe raw HTML fallback
 
-Raw HTML is not interpreted by TermDraft. For example, this remains literal preview text:
+Raw HTML is never executed by the Rust frontend. Inline/Source retain the literal text, while the
+split renderer omits the tag rather than executing it:
 
 <kbd>Ctrl+S</kbd>
 
-Math, underline, subscript, and superscript extensions are not rendered in the current preview.
+Math and underline extensions are not enabled. The split renderer supports its own subscript and
+superscript presentation, while Inline and Source keep their exact Markdown syntax.

@@ -3,12 +3,29 @@
 Notable changes to TermDraft are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use semantic versioning.
 
-## [Unreleased]
+The numbered 1.x releases below describe the Python application on `main`. The Rust comparison is a
+branch checkpoint, not a published TermDraft release.
+
+## [Rust port 0.1.0][Rust port comparison] - 2026-07-16
+
+### Added
+
+- Added the standalone `termdraft-rs` Ratatui/Crossterm workbench with preserved COMMAND/WRITE
+  modes, tabs, Files, Inline/Split/Source views, search, outline, and keyboard overlays.
+- Ported UTF-8/BOM and line-ending preservation, conflict-checked atomic saves, external-change
+  handling, no-clobber Create/Save As/Duplicate paths, compatible sessions, and crash journals.
+- Added strict compatible editor configuration, Markdown continuation, 39 Rust tests, and the
+  Python/Rust comparison in [RUST_PORT.md](RUST_PORT.md).
+- Updated all branch-facing documentation to use the Rust binary, implemented shortcuts, Cargo
+  gates, Ratatui architecture, and the actual release boundary.
+
+## [Unreleased] — Python reference
 
 ### Added
 
 - Render GFM table rows with terminal borders in the default inline editor while keeping the active
-  row as exact Markdown source.
+  row as exact Markdown source. This change belongs to the Python frontend; the Rust inline view
+  currently styles table separators without reconstructing bordered rows.
 
 ## [1.2.0] - 2026-07-16
 
@@ -100,6 +117,7 @@ Notable changes to TermDraft are recorded here. The format follows
   rendered preview, protected saves, and crash-recovery journals.
 
 [Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v1.2.0...HEAD
+[Rust port comparison]: https://github.com/Betancourt1/TermDraft/compare/main...rust-port
 [1.2.0]: https://github.com/Betancourt1/TermDraft/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/Betancourt1/TermDraft/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Betancourt1/TermDraft/compare/v1.0.0...v1.1.0

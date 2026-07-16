@@ -1,170 +1,167 @@
-# TermDraft
+# TermDraft Rust port
 
-**A local-first Markdown editor for the terminal.**
+**A local-first Markdown editor for the terminal, ported from Python/Textual to Rust.**
 
-TermDraft gives you a file explorer and an inline Markdown editor in one keyboard-first interface.
-Every line is presented as a preview until the cursor reaches it, when its exact Markdown source is
-shown for editing. It works directly with ordinary `.md`, `.markdown`, and `.txt` files—no database,
-proprietary project format, or import step.
+This README describes the `rust-port` branch. The Rust binary is `termdraft-rs`; it edits the same
+ordinary `.md`, `.markdown`, and `.txt` files as the released Python application and preserves its
+keyboard-first workbench without requiring Python or Textual at runtime.
 
 ```text
-┌ TermDraft · ~/notes ─────────────────────────────────────────────────────────┐
-│ journal/2026-07-11.md │ ● projects/termdraft.md                             │
-│ Files                    │ Friday                                            │
-│  journal/                │                                                   │
-│   2026-07-11.md          │ Today I learned…                                  │
-│  projects/               │                                                   │
-│   termdraft.md           │ # Current line is exact Markdown source           │
-├──────────────────────────┴───────────────────────────────────────────────────┤
-│ COMMAND | journal/2026-07-11.md ● modified | 36 words                      │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌ TermDraft · ~/notes                                      RUST PORT ┐
+│ journal/2026-07-11.md │ ● projects/termdraft.md                    │
+│ Files                    │ Friday                                   │
+│  journal/                │                                          │
+│   2026-07-11.md          │ Today I learned…                         │
+│  projects/               │                                          │
+│   termdraft.md           │ # Current line is exact Markdown source  │
+├──────────────────────────┴──────────────────────────────────────────┤
+│ COMMAND INLINE │ journal/2026-07-11.md ● modified │ 36 words      │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-## Why TermDraft?
-
-- **Your files stay yours.** Edit the Markdown already on your disk with any other tool at any
-  time.
-- **Writing stays in the terminal.** Browse, edit, preview, search, and manage files without
-  switching applications.
-- **The keyboard comes first.** COMMAND and WRITE modes keep navigation fast while protecting text
-  from accidental edits.
-- **Markdown is visible as you write.** Inactive lines show headings, emphasis, links, tasks,
-  tables, and other common syntax without their source markers; the cursor line always shows exact
-  source.
-- **Unsaved work is treated carefully.** Atomic saves, external-change detection, guarded exits,
-  and crash-recovery drafts reduce the chance of losing work.
+The published `termdraft` command and Homebrew formula still install the Python 1.2 application.
+See [RUST_PORT.md](RUST_PORT.md) for the measured comparison and the exact parity boundary.
 
 ## Quick start
 
-Install with Homebrew on macOS or Linux:
+Rust 1.88 or newer is required.
 
 ```bash
-brew install Betancourt1/tap/termdraft
-```
-
-Open a folder of notes:
-
-```bash
-termdraft ~/Documents/notes
-```
-
-Or open one file directly:
-
-```bash
-termdraft essay.md
-```
-
-TermDraft requires Python 3.12 or newer and a terminal supported by
-[Textual](https://textual.textualize.io/). Its file icons require a Nerd Font or Symbols Nerd Font
-fallback.
-
-### Install from source
-
-```bash
-git clone https://github.com/Betancourt1/TermDraft.git
+git clone --branch rust-port --single-branch https://github.com/Betancourt1/TermDraft.git
 cd TermDraft
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install .
-termdraft .
+cargo run --release --locked -- ~/Documents/notes
 ```
 
-### Experimental Rust comparison
-
-The `rust-port` branch also contains a standalone Rust implementation that preserves the main
-terminal workbench while replacing the Python/Textual runtime. Build and launch it with:
+Open one file directly:
 
 ```bash
-cargo run --release -- ~/Documents/notes
+cargo run --release --locked -- essay.md
 ```
 
-See [RUST_PORT.md](RUST_PORT.md) for the architecture, parity boundary, safety differences, and
-measured Python/Rust comparison.
+Or install the branch-local binary in your Cargo bin directory:
 
-## The basic workflow
+```bash
+cargo install --path . --locked
+termdraft-rs ~/Documents/notes
+```
+
+No Rust package or Homebrew formula is published for this comparison branch. The interface uses
+ordinary Unicode symbols and does not require a Nerd Font.
+
+Useful non-interactive commands:
+
+```bash
+termdraft-rs --version
+termdraft-rs --help
+termdraft-rs --commands
+termdraft-rs --inspect ~/Documents/notes
+```
+
+When running without `cargo install`, replace `termdraft-rs` with
+`cargo run --release --locked --`, keeping the extra `--` before application arguments.
+
+## Basic workflow
 
 TermDraft starts in **COMMAND** mode. Press `i` to enter **WRITE** mode and edit the active file;
 press `Esc` to return to COMMAND mode.
 
 | Key | Action |
 | --- | --- |
-| `i` | Start writing |
-| `Esc` | Return to COMMAND mode |
+| `i` / `Esc` | Enter WRITE / COMMAND mode |
 | `w` | Save |
+| `W` | Save As to a new workspace-relative path |
+| `D` | Duplicate the active document |
+| `a` while Files is focused | Create a Markdown or text file |
 | `f` | Find a file |
-| `/` | Search across the workspace |
-| `v` | Show, hide, or focus the preview |
-| `:` | Open the command palette |
-| `?` | Show the current shortcuts |
+| `/` | Search text across the workspace |
+| `s` | Find the next match in the active document |
+| `S` | Open the document outline |
+| `v` | Cycle Inline, Split, and Source views |
+| `e` | Show or hide the file explorer |
+| `[` / `]` | Switch tabs |
+| `:` / `?` | Open the command palette / shortcut help |
 | `q` | Quit safely |
 
-The file explorer uses familiar Yazi-style keys: `a` creates, `r` renames, `m` moves, `c` copies,
-`x` cuts, `p` pastes, and `d` moves an entry to Trash. These actions are also searchable from the
-command palette. Standard shortcuts such as `Ctrl+S`, `Ctrl+P`,
-`Ctrl+F`, and `Ctrl+Q` also work in both modes.
+In COMMAND mode, `h`, `j`, `k`, and `l` move through the editor. `Tab` moves focus between the
+editor and Files; the same movement keys navigate Files, and `Enter` opens the selected document.
+Global shortcuts include `Ctrl+S`, `Ctrl+Q`, `Ctrl+P`, `Ctrl+F`, `Ctrl+B`, `Ctrl+E`, and
+`Ctrl+PageUp` / `Ctrl+PageDown`.
 
-Run this at any time for the complete, always-current key reference:
-
-```bash
-termdraft --commands
-```
+Run `termdraft-rs --commands` for the effective editor settings and palette actions. Press `?`
+inside the application for the fuller runtime shortcut screen.
 
 ## What is included
 
-- Multiple open documents with independent undo histories and restored sessions
-- File search, workspace text search, find and replace, and document outline
-- Inline preview editing by default, with a configurable resizable split source/preview layout
-- File and folder creation, rename, copy, move, and Trash operations
-- Configurable editor behavior, keybindings, and Textual CSS theme
-- Safe Markdown rendering with raw HTML shown as text instead of executed
-- Recovery-draft management for crashes, conflicts, and missing files
+- A standalone Ratatui/Crossterm frontend with the preserved title, tabs, Files pane, centered
+  editor, compact status line, command palette, and explicit terminal cursor shapes
+- Inline Markdown presentation by default, plus split preview and exact source views; presentation
+  changes appearance only and never reconstructs the document
+- Multiple documents with independent undo histories, restored tabs, active document, and cursor
+  positions
+- Fuzzy file finding, literal workspace search, active-document find, and heading outline
+- File creation, Save As, and duplication through no-clobber workspace-relative paths
+- UTF-8 and UTF-8 BOM support with LF, CRLF, or CR preservation; mixed-ending files open read-only
+- Conflict-checked atomic saves, external-change polling, guarded dirty exits, and crash journals
+- Markdown continuation for bullets, tasks, numbered lists, and quotes
 
-TermDraft remains a source editor: inline presentation only changes how inactive lines look and
-never reconstructs or rewrites the Markdown. Set `editor.view_mode = "split"` in `config.toml` to
-use the traditional source editor and read-only preview side by side.
+The intentionally unported features are listed in [RUST_PORT.md](RUST_PORT.md). The largest gaps are
+file-tree mutations beyond creation/duplication, replace, mouse actions, keybinding remapping, TCSS
+themes, and the full Python recovery manager.
 
 ## Configuration
 
-Generate editable configuration and theme files:
+Create the compatible configuration templates without replacing existing files:
 
 ```bash
-termdraft --init-config
-termdraft --config-path
+termdraft-rs --init-config
+termdraft-rs --config-path
 ```
 
-The defaults live in `~/.termdraft/config.toml` and `~/.termdraft/theme.tcss`. Open `?` inside the
-app or run `termdraft --commands` after remapping keys; both show the effective configuration rather
-than a hard-coded shortcut list.
-
-The default editor view is:
+The default paths are `~/.termdraft/config.toml` and `~/.termdraft/theme.tcss`. The Rust frontend
+currently applies these editor settings:
 
 ```toml
 [editor]
-view_mode = "inline"
+auto_continue_lists = true
+soft_wrap = true
+show_line_numbers = true
+startup_mode = "command" # or "write"
+view_mode = "inline"     # or "split"
 ```
 
-Change it to `"split"` for permanent side-by-side source and preview panes. Reload configuration
-with `R`, or restart TermDraft.
+Configuration is strict and is read at startup. Existing `[keybindings]` entries are displayed by
+`--commands` but are not remapped in the Rust frontend. `theme.tcss` is created for compatibility
+but is not evaluated, the built-in Rust theme is always used, and live reload is not implemented.
+Use `--config-dir PATH` for an isolated configuration directory.
 
-## Learn more
+Sessions remain content-free. Crash-recovery journals contain dirty source and use the existing
+TermDraft state directories so the Python and Rust implementations can understand their v2 data.
+For a fully isolated comparison, set `XDG_STATE_HOME=/tmp/termdraft-rs-state` and pass
+`--config-dir /tmp/termdraft-rs-config`.
 
-- [Markdown syntax gallery](docs/markdown-gallery.md) — preview the supported syntax inside
-  TermDraft
-- [Architecture](docs/architecture.md) — understand the application and data-safety design
-- [Semantic editing notes](docs/semantic-editing.md) — read the direction for future structured
-  editing
-- [Changelog](CHANGELOG.md) — see what changed between releases
-- [Release guide](docs/releasing.md) — publish and verify a new version
+## Documentation
+
+- [Rust comparison](RUST_PORT.md) — parity, omissions, safety differences, and benchmarks
+- [Architecture](docs/architecture.md) — Rust modules, state flow, persistence, and recovery
+- [Markdown gallery](docs/markdown-gallery.md) — exercise the current inline and split renderers
+- [Semantic editing](docs/semantic-editing.md) — future block-aware editing boundary for Rust
+- [Design QA](design-qa.md) — current Ratatui frontend acceptance checks
+- [Release guide](docs/releasing.md) — branch verification and the boundary with Python releases
+- [Changelog](CHANGELOG.md) — released Python history and this branch's additions
 
 ## Development
 
+Run the Rust gates from the repository root:
+
 ```bash
-python -m pip install -e ".[dev]"
-ruff format --check .
-ruff check .
-mypy
-pytest -q
+cargo fmt --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets
+cargo test --locked --release
 ```
 
-[GitHub Releases](https://github.com/Betancourt1/TermDraft/releases) provides tagged source
-artifacts and checksums. TermDraft is released under the [MIT License](LICENSE).
+The unchanged Python implementation remains in `src/termdraft` as a reference and regression
+oracle. Its existing test suite can still be run from a prepared development environment with
+`pytest -q`; the current GitHub workflows continue to package and release only that Python app.
+
+TermDraft is released under the [MIT License](LICENSE).

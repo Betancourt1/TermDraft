@@ -12,20 +12,35 @@ same ordinary Markdown files, and shares compatible configuration, session, and 
 Rust 1.88 or newer is required.
 
 ```bash
-cargo run --release -- ~/Documents/notes
-cargo run --release -- essay.md
+git clone --branch rust-port --single-branch https://github.com/Betancourt1/TermDraft.git
+cd TermDraft
+cargo run --release --locked -- ~/Documents/notes
+cargo run --release --locked -- essay.md
+```
+
+To install the branch-local executable:
+
+```bash
+cargo install --path . --locked
+termdraft-rs ~/Documents/notes
 ```
 
 Useful non-interactive checks:
 
 ```bash
-cargo run --release -- --inspect ~/Documents/notes
-cargo run --release -- --commands
-cargo test --all-targets
-cargo clippy --all-targets --all-features -- -D warnings
+cargo run --release --locked -- --inspect ~/Documents/notes
+cargo run --release --locked -- --commands
+cargo fmt --all -- --check
+cargo test --locked --all-targets
+cargo clippy --locked --all-targets --all-features -- -D warnings
 ```
 
 The original Python app still runs normally with `termdraft` or `.venv/bin/termdraft`.
+
+By default both implementations share compatible configuration, session, and recovery locations.
+Sessions contain no Markdown, but recovery journals contain dirty source. For an isolated
+comparison, set `XDG_STATE_HOME=/tmp/termdraft-rs-state` and pass
+`--config-dir /tmp/termdraft-rs-config`.
 
 ## What moved to Rust
 
@@ -54,10 +69,12 @@ several mature workflows listed below.
 - Tabs keep independent editor and undo histories. `[` and `]` switch tabs.
 - File finder, workspace text search, in-document find, document outline, grouped command palette,
   and help overlays remain keyboard-first.
-- `a`, `W`, and `D` create, Save As, and duplicate through no-clobber workspace-relative paths.
+- `a` while Files is focused, plus `W` and `D`, create, Save As, and duplicate through no-clobber
+  workspace-relative paths.
 - UTF-8 BOM, LF, CRLF, and CR are preserved. Mixed-ending files stay read-only.
-- Clean external edits reload; dirty external edits or deletion become conflicts without replacing
-  the in-memory source.
+- Clean external edits to the active document reload; dirty external edits or deletion become
+  conflicts without replacing the in-memory source. Inactive tabs are checked on the next poll
+  after they become active.
 - Dirty exits use Save / Discard / Cancel. Enter is intentionally inert in destructive prompts.
 - Sessions contain no Markdown. Dirty recovery journals contain source, are private and atomic, and
   are removed only by exact-version save/discard cleanup.
@@ -70,6 +87,10 @@ The Rust build currently favors a small, inspectable comparison over feature-cou
 - Find works; replace, recent-documents UI, semantic-block inspectors, coordinate diagnostics, and
   the Markdown reference screen are not ported.
 - The explorer is an always-expanded index rather than a collapsible watched tree.
+- Workspace discovery is synchronous before the first frame, ignore rules are fixed rather than
+  configurable, and repository `.gitignore` files are not applied.
+- Explorer and split-pane sizes are fixed, and session restoration restores cursors but not scroll
+  offsets.
 - Existing editor configuration is applied, but keybinding overrides are report-only, TCSS is not
   evaluated, and live configuration reload is absent.
 - Recovery covers existing files and the common crash flow. The recovery manager, quarantine,
@@ -97,7 +118,8 @@ At the final code checkpoint (`987cafc`):
   reporting, and cursor shape cleanly on exit.
 
 The benchmark table below uses one machine and fixed local fixtures; it is useful for relative
-shape, not a universal performance guarantee.
+shape, not a universal performance guarantee. The one-off benchmark harness is not included in the
+repository, so the table is evidence from that checkpoint rather than a committed benchmark suite.
 
 Environment: macOS 26.5.2 on arm64, Python 3.12.13 / TermDraft 1.2.0, and Rust
 1.97.0 / `termdraft-rs` 0.1.0. Timings are medians from interleaved warm runs.
@@ -123,15 +145,6 @@ is not directly comparable with a Python wheel plus an external interpreter.
 
 ## Branch history
 
-The port is split into reviewable checkpoints rather than one rewrite commit:
-
-```text
-4385d51  Add Rust core foundation
-e2f1590  Build standalone Rust terminal frontend
-058cc27  Port configuration and writing behavior to Rust
-723efb5  Add Rust file creation and Save As flows
-e62946c  Handle external changes in the Rust frontend
-8b24e73  Harden Rust editing and persistence safety
-7dabf1a  Restore workspace sessions in the Rust port
-987cafc  Add crash recovery to the Rust port
-```
+The port is split into reviewable checkpoints rather than one rewrite commit. The current history is
+available in GitHub's [main-to-rust-port comparison](https://github.com/Betancourt1/TermDraft/compare/main...rust-port)
+without freezing another soon-stale commit list into this document.
