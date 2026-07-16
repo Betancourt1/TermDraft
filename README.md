@@ -69,6 +69,18 @@ python -m pip install .
 termdraft .
 ```
 
+### Experimental Rust comparison
+
+The `rust-port` branch also contains a standalone Rust implementation that preserves the main
+terminal workbench while replacing the Python/Textual runtime. Build and launch it with:
+
+```bash
+cargo run --release -- ~/Documents/notes
+```
+
+See [RUST_PORT.md](RUST_PORT.md) for the architecture, parity boundary, safety differences, and
+measured Python/Rust comparison.
+
 ## The basic workflow
 
 TermDraft starts in **COMMAND** mode. Press `i` to enter **WRITE** mode and edit the active file;
