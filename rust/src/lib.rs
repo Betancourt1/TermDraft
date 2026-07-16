@@ -11,6 +11,7 @@ pub mod search;
 pub mod session;
 pub mod ui;
 pub mod workspace;
+pub mod workspace_entries;
 
 pub use document::{Document, Encoding, FileSnapshot, LineEnding};
 pub use persistence::{LoadedFile, SaveError, load_file, save_atomic};
