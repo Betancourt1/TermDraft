@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-use termdraft::Workspace;
+use termdraft::{Workspace, app};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -32,5 +32,5 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    anyhow::bail!("the Rust frontend is not connected yet; use --inspect for this core build")
+    app::run(workspace)
 }
