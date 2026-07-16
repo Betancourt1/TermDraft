@@ -28,8 +28,9 @@ proprietary project format, or import step.
   switching applications.
 - **The keyboard comes first.** COMMAND and WRITE modes keep navigation fast while protecting text
   from accidental edits.
-- **Markdown is visible as you write.** Inactive lines show headings, emphasis, links, tasks, and
-  other common syntax without their source markers; the cursor line always shows exact source.
+- **Markdown is visible as you write.** Inactive lines show headings, emphasis, links, tasks,
+  tables, and other common syntax without their source markers; the cursor line always shows exact
+  source.
 - **Unsaved work is treated carefully.** Atomic saves, external-change detection, guarded exits,
   and crash-recovery drafts reduce the chance of losing work.
 

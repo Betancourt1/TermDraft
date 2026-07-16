@@ -11,7 +11,7 @@ from textual.widgets import Static, TextArea
 from textual.widgets.text_area import TextAreaTheme
 
 from termdraft.bindings import EDITOR_BINDINGS
-from termdraft.services.inline_preview import render_inline_preview_line
+from termdraft.services.inline_preview import render_inline_preview_line, table_line_kind
 from termdraft.services.markdown_continuation import continuation_edit
 
 _COMMAND_NAVIGATION_KEYS = frozenset({"up", "down", "left", "right"})
@@ -81,7 +81,10 @@ class MarkdownEditor(TextArea):
     def get_line(self, line_index: int) -> Text:
         """Render inactive lines while keeping the cursor line as exact source."""
         if self.inline_preview and line_index != self.cursor_location[0]:
-            return render_inline_preview_line(self.document.get_line(line_index))
+            return render_inline_preview_line(
+                self.document.get_line(line_index),
+                table_line=table_line_kind(self.document.lines, line_index),
+            )
         return super().get_line(line_index)
 
     def set_inline_preview(self, enabled: bool) -> None:

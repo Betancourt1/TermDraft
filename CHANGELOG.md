@@ -5,6 +5,11 @@ Notable changes to TermDraft are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Render GFM table rows with terminal borders in the default inline editor while keeping the active
+  row as exact Markdown source.
+
 ## [1.2.0] - 2026-07-16
 
 ### Added

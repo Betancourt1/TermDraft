@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
+from typing import Literal
 
 from rich.style import Style
 from rich.text import Text
@@ -19,6 +21,9 @@ _CODE = re.compile(r"(`+)(.+?)\1")
 _STRONG = re.compile(r"(\*\*|__)(.+?)\1")
 _STRIKE = re.compile(r"(~~)(.+?)\1")
 _EMPHASIS = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)|(?<!_)_([^_\n]+)_(?!_)")
+_TABLE_SEPARATOR = re.compile(r"^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*$")
+
+TableLineKind = Literal["header", "separator", "body"]
 
 _HEADING_PRESENTATION = (
     ("|", Style(bold=True)),
@@ -30,8 +35,35 @@ _HEADING_PRESENTATION = (
 )
 
 
-def render_inline_preview_line(source: str) -> Text:
+def table_line_kind(lines: Sequence[str], line_index: int) -> TableLineKind | None:
+    """Identify lines that belong to one ordinary GFM table."""
+    source = lines[line_index]
+
+    if _is_table_header(lines, line_index):
+        return "header"
+    if _is_table_separator(source) and _is_table_header(lines, line_index - 1):
+        return "separator"
+    if not _looks_like_table_row(source):
+        return None
+
+    for preceding_index in range(line_index - 1, 0, -1):
+        preceding = lines[preceding_index]
+        if _is_table_separator(preceding):
+            return "body" if _is_table_header(lines, preceding_index - 1) else None
+        if not _looks_like_table_row(preceding):
+            break
+    return None
+
+
+def render_inline_preview_line(
+    source: str,
+    *,
+    table_line: TableLineKind | None = None,
+) -> Text:
     """Render one inactive source line without changing its character positions."""
+    if table_line == "separator":
+        return _render_table_separator(source)
+
     characters = list(source)
     styles: list[tuple[Style, int, int]] = []
 
@@ -100,6 +132,13 @@ def render_inline_preview_line(source: str) -> Text:
         _blank(characters, content_end, match.end(0))
         styles.append((Style(italic=True), content_start, content_end))
 
+    if table_line in {"header", "body"}:
+        for position in _table_pipe_positions(source):
+            characters[position] = "│"
+            styles.append((Style(dim=True), position, position + 1))
+        if table_line == "header":
+            styles.append((Style(bold=True), 0, len(source)))
+
     rendered = Text("".join(characters), end="", no_wrap=True)
     for style, start, end in styles:
         rendered.stylize(style, start, end)
@@ -113,3 +152,55 @@ def _blank(characters: list[str], start: int, end: int) -> None:
 def _overlaps(candidate: tuple[int, int], ranges: list[tuple[int, int]]) -> bool:
     start, end = candidate
     return any(start < other_end and other_start < end for other_start, other_end in ranges)
+
+
+def _is_table_header(lines: Sequence[str], line_index: int) -> bool:
+    if not 0 <= line_index < len(lines) - 1:
+        return False
+    header = lines[line_index]
+    separator = lines[line_index + 1]
+    return (
+        _looks_like_table_row(header)
+        and _is_table_separator(separator)
+        and _table_cell_count(header) == _table_cell_count(separator)
+    )
+
+
+def _is_table_separator(source: str) -> bool:
+    return _TABLE_SEPARATOR.fullmatch(source) is not None
+
+
+def _looks_like_table_row(source: str) -> bool:
+    return not source.startswith("    ") and bool(_table_pipe_positions(source))
+
+
+def _table_cell_count(source: str) -> int:
+    positions = _table_pipe_positions(source)
+    stripped = source.strip()
+    return len(positions) + 1 - stripped.startswith("|") - stripped.endswith("|")
+
+
+def _table_pipe_positions(source: str) -> tuple[int, ...]:
+    return tuple(
+        index
+        for index, character in enumerate(source)
+        if character == "|" and (index == 0 or source[index - 1] != "\\")
+    )
+
+
+def _render_table_separator(source: str) -> Text:
+    characters = list(source)
+    positions = _table_pipe_positions(source)
+    non_space = [index for index, character in enumerate(source) if not character.isspace()]
+    if not non_space:
+        return Text(source, end="", no_wrap=True)
+
+    start, end = non_space[0], non_space[-1]
+    pipes = set(positions)
+    for index in range(start, end + 1):
+        characters[index] = "┼" if index in pipes else "─"
+    if positions and positions[0] == start:
+        characters[start] = "├"
+    if positions and positions[-1] == end:
+        characters[end] = "┤"
+    return Text("".join(characters), style="dim", end="", no_wrap=True)

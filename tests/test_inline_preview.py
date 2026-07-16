@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from rich.color import Color
 
-from termdraft.services.inline_preview import render_inline_preview_line
+from termdraft.services.inline_preview import render_inline_preview_line, table_line_kind
 from termdraft.widgets.editor import MarkdownEditor
 
 
@@ -43,6 +43,37 @@ def test_editor_can_switch_from_split_source_to_inline_preview() -> None:
     editor.set_inline_preview(True)
 
     assert editor.get_line(1).plain == "| Inactive"
+
+
+def test_inline_preview_renders_table_rows_without_moving_source_positions() -> None:
+    lines = [
+        "| Name  | Status |",
+        "| :---- | -----: |",
+        "| Draft | **ready**  |",
+    ]
+    editor = MarkdownEditor("\n".join(["Before", *lines]), inline_preview=True, read_only=False)
+
+    assert table_line_kind(lines, 0) == "header"
+    assert table_line_kind(lines, 1) == "separator"
+    assert table_line_kind(lines, 2) == "body"
+    assert editor.get_line(1).plain == "│ Name  │ Status │"
+    assert editor.get_line(2).plain == "├───────┼────────┤"
+    assert editor.get_line(3).plain == "│ Draft │   ready    │"
+    assert all(len(editor.get_line(index).plain) == len(lines[index - 1]) for index in range(1, 4))
+
+    editor.move_cursor((3, 0))
+
+    assert editor.get_line(3).plain == lines[2]
+
+
+def test_inline_preview_leaves_non_table_pipes_unchanged() -> None:
+    editor = MarkdownEditor(
+        "Active\nThis is prose | with an aside.",
+        inline_preview=True,
+        read_only=False,
+    )
+
+    assert editor.get_line(1).plain == "This is prose | with an aside."
 
 
 @pytest.mark.parametrize(
