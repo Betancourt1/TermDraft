@@ -34,6 +34,8 @@ toml = "1"
 trash = "5"
 tui-markdown = { version = "0.3.8", default-features = false }
 tui-textarea = { package = "tui-textarea-2", version = "0.12.1", features = ["search"] }
+unicode-casefold = "0.2"
+unicode-normalization = "0.1"
 unicode-segmentation = "1"
 unicode-width = "0.2"
 
