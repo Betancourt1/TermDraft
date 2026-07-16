@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap};
 
 use crate::app::{
-    App, ConfirmAction, Focus, Mode, Overlay, TextInput, ViewMode, command_candidates,
+    App, ConfirmAction, Focus, Mode, Overlay, TextInput, UiRegions, ViewMode, command_candidates,
 };
 use crate::editor::apply_inline_preview;
 
@@ -88,20 +88,69 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_workspace(frame: &mut Frame, app: &mut App, area: Rect) {
+    let regions = workspace_regions(app, area);
+    app.ui_regions = regions;
+    if let Some(explorer) = regions.explorer {
+        draw_explorer(frame, app, explorer);
+    }
+    if let Some(divider) = regions.explorer_divider {
+        frame.render_widget(Block::new().style(Style::new().bg(BORDER)), divider);
+    }
+    draw_workbench(frame, app, regions);
+}
+
+#[must_use]
+pub fn workspace_regions(app: &App, area: Rect) -> UiRegions {
+    let mut regions = UiRegions {
+        workspace: area,
+        workbench: area,
+        ..UiRegions::default()
+    };
     if app.show_explorer {
-        let explorer_width = area.width.clamp(20, 34).min(area.width.saturating_sub(20));
+        let maximum = area.width.saturating_sub(20).min(48);
+        let minimum = 20.min(maximum);
+        let explorer_width = app.explorer_width.clamp(minimum, maximum);
         let [explorer, divider, workbench] = Layout::horizontal([
             Constraint::Length(explorer_width),
             Constraint::Length(1),
             Constraint::Min(1),
         ])
         .areas(area);
-        draw_explorer(frame, app, explorer);
-        frame.render_widget(Block::new().style(Style::new().bg(BORDER)), divider);
-        draw_workbench(frame, app, workbench);
-    } else {
-        draw_workbench(frame, app, area);
+        regions.explorer = Some(explorer);
+        regions.explorer_list = Some(Rect {
+            y: explorer.y.saturating_add(1),
+            height: explorer.height.saturating_sub(1),
+            ..explorer
+        });
+        regions.explorer_divider = Some(divider);
+        regions.workbench = workbench;
     }
+    if app.active_tab().is_none() {
+        return regions;
+    }
+    match (app.editor_is_visible(), app.preview_is_visible()) {
+        (true, true) => {
+            let available = regions.workbench.width.saturating_sub(1);
+            let minimum = 20.min(available / 2);
+            let requested =
+                u16::try_from(u32::from(available) * u32::from(app.split_percent) / 100)
+                    .unwrap_or(available / 2);
+            let editor_width = requested.clamp(minimum, available.saturating_sub(minimum));
+            let [editor, divider, preview] = Layout::horizontal([
+                Constraint::Length(editor_width),
+                Constraint::Length(1),
+                Constraint::Min(1),
+            ])
+            .areas(regions.workbench);
+            regions.editor = Some(editor);
+            regions.workbench_divider = Some(divider);
+            regions.preview = Some(preview);
+        }
+        (true, false) => regions.editor = Some(regions.workbench),
+        (false, true) => regions.preview = Some(regions.workbench),
+        (false, false) => {}
+    }
+    regions
 }
 
 fn draw_explorer(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -141,7 +190,7 @@ fn draw_explorer(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut app.explorer_state);
 }
 
-fn draw_workbench(frame: &mut Frame, app: &mut App, area: Rect) {
+fn draw_workbench(frame: &mut Frame, app: &mut App, regions: UiRegions) {
     if app.active_tab().is_none() {
         let text = Text::from(vec![
             Line::from("No document open").style(Style::new().fg(BRIGHT).bold()),
@@ -151,25 +200,19 @@ fn draw_workbench(frame: &mut Frame, app: &mut App, area: Rect) {
         ]);
         frame.render_widget(
             Paragraph::new(text).alignment(Alignment::Center),
-            centered(area, 80),
+            centered(regions.workbench, 80),
         );
         return;
     }
-    match (app.editor_is_visible(), app.preview_is_visible()) {
-        (true, true) => {
-            let [editor, divider, preview] = Layout::horizontal([
-                Constraint::Percentage(50),
-                Constraint::Length(1),
-                Constraint::Percentage(50),
-            ])
-            .areas(area);
-            draw_editor(frame, app, editor, false);
-            frame.render_widget(Block::new().style(Style::new().bg(BORDER)), divider);
-            draw_preview(frame, app, preview);
-        }
-        (true, false) => draw_editor(frame, app, area, app.view_mode == ViewMode::Inline),
-        (false, true) => draw_preview(frame, app, area),
-        (false, false) => {}
+    if let Some(editor) = regions.editor {
+        let inline = app.view_mode == ViewMode::Inline && regions.preview.is_none();
+        draw_editor(frame, app, editor, inline);
+    }
+    if let Some(divider) = regions.workbench_divider {
+        frame.render_widget(Block::new().style(Style::new().bg(BORDER)), divider);
+    }
+    if let Some(preview) = regions.preview {
+        draw_preview(frame, app, preview);
     }
 }
 

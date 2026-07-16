@@ -10,9 +10,10 @@ use anyhow::Context;
 use ratatui::crossterm::cursor::SetCursorStyle;
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::crossterm::execute;
+use ratatui::layout::Rect;
 use ratatui::widgets::ListState;
 use tui_textarea::{CursorMove, TextArea};
 
@@ -66,6 +67,35 @@ pub enum Focus {
     Explorer,
     Editor,
     Preview,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UiRegions {
+    pub workspace: Rect,
+    pub explorer: Option<Rect>,
+    pub explorer_list: Option<Rect>,
+    pub explorer_divider: Option<Rect>,
+    pub workbench: Rect,
+    pub editor: Option<Rect>,
+    pub preview: Option<Rect>,
+    pub workbench_divider: Option<Rect>,
+}
+
+impl UiRegions {
+    fn contains(area: Option<Rect>, column: u16, row: u16) -> bool {
+        area.is_some_and(|area| {
+            column >= area.x
+                && column < area.x.saturating_add(area.width)
+                && row >= area.y
+                && row < area.y.saturating_add(area.height)
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResizeTarget {
+    Explorer,
+    Workbench,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -389,7 +419,12 @@ pub struct App {
     pub preview_max_scroll: u16,
     pub preview_page: u16,
     pub viewport_width: u16,
+    pub explorer_width: u16,
+    pub split_percent: u16,
+    pub ui_regions: UiRegions,
     narrow_pane: Focus,
+    resize_target: Option<ResizeTarget>,
+    last_explorer_click: Option<(usize, Instant)>,
     session_store: Option<SessionStore>,
     last_session_state: Option<SessionState>,
     recovery_journal: Option<RecoveryJournal>,
@@ -459,7 +494,12 @@ impl App {
             preview_max_scroll: 0,
             preview_page: 1,
             viewport_width: 100,
+            explorer_width: 34,
+            split_percent: 50,
+            ui_regions: UiRegions::default(),
             narrow_pane: Focus::Editor,
+            resize_target: None,
+            last_explorer_click: None,
             session_store,
             last_session_state: None,
             recovery_journal,
@@ -1229,6 +1269,11 @@ impl App {
         if self.handle_global_key(key) {
             return;
         }
+        if self.focus == Focus::Explorer
+            && (self.handle_explorer_key(key) || self.mode == Mode::Write)
+        {
+            return;
+        }
         if self.focus == Focus::Preview {
             if key.code == KeyCode::Esc && self.mode == Mode::Write {
                 self.set_mode(Mode::Command);
@@ -1306,31 +1351,6 @@ impl App {
     }
 
     fn handle_command_key(&mut self, key: KeyEvent) {
-        if self.focus == Focus::Explorer {
-            match key.code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.move_explorer(-1);
-                    return;
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.move_explorer(1);
-                    return;
-                }
-                KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
-                    self.open_selected_entry();
-                    return;
-                }
-                KeyCode::Left | KeyCode::Char('h') => {
-                    self.focus = Focus::Editor;
-                    return;
-                }
-                KeyCode::Char('a') => {
-                    self.open_path_input(PathAction::Create);
-                    return;
-                }
-                _ => {}
-            }
-        }
         match key.code {
             KeyCode::Char('i') => self.set_mode(Mode::Write),
             KeyCode::Char('w') => self.save_active(),
@@ -1373,6 +1393,110 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn handle_explorer_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => self.move_explorer(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_explorer(1),
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.open_selected_entry(),
+            KeyCode::Left | KeyCode::Char('h') => self.focus = Focus::Editor,
+            KeyCode::Char('a') => self.open_path_input(PathAction::Create),
+            _ => return false,
+        }
+        true
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if self.overlay.is_some() {
+            return;
+        }
+        let column = mouse.column;
+        let row = mouse.row;
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if UiRegions::contains(self.ui_regions.explorer_divider, column, row) {
+                    self.resize_target = Some(ResizeTarget::Explorer);
+                    return;
+                }
+                if UiRegions::contains(self.ui_regions.workbench_divider, column, row) {
+                    self.resize_target = Some(ResizeTarget::Workbench);
+                    return;
+                }
+                self.resize_target = None;
+                if UiRegions::contains(self.ui_regions.explorer_list, column, row) {
+                    self.focus = Focus::Explorer;
+                    let list = self.ui_regions.explorer_list.unwrap_or_default();
+                    let index = self
+                        .explorer_state
+                        .offset()
+                        .saturating_add(usize::from(row.saturating_sub(list.y)));
+                    if index < self.entries.len() {
+                        self.explorer_state.select(Some(index));
+                        let now = Instant::now();
+                        let double_click =
+                            self.last_explorer_click.is_some_and(|(previous, instant)| {
+                                previous == index
+                                    && now.duration_since(instant) <= Duration::from_millis(400)
+                            });
+                        self.last_explorer_click = Some((index, now));
+                        if double_click {
+                            self.open_selected_entry();
+                        }
+                    }
+                } else if UiRegions::contains(self.ui_regions.preview, column, row) {
+                    self.focus = Focus::Preview;
+                } else if UiRegions::contains(self.ui_regions.editor, column, row) {
+                    self.focus = Focus::Editor;
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => match self.resize_target {
+                Some(ResizeTarget::Explorer) => self.resize_explorer(column),
+                Some(ResizeTarget::Workbench) => self.resize_workbench(column),
+                None => {}
+            },
+            MouseEventKind::Up(MouseButton::Left) => self.resize_target = None,
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let direction = if mouse.kind == MouseEventKind::ScrollUp {
+                    -2
+                } else {
+                    2
+                };
+                if UiRegions::contains(self.ui_regions.preview, column, row) {
+                    self.scroll_preview_by(direction);
+                } else if UiRegions::contains(self.ui_regions.explorer, column, row) {
+                    self.move_explorer(direction as isize);
+                } else if UiRegions::contains(self.ui_regions.editor, column, row)
+                    && let Some(tab) = self.active_tab_mut()
+                {
+                    tab.editor.input(mouse);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn resize_explorer(&mut self, column: u16) {
+        let workspace = self.ui_regions.workspace;
+        let maximum = workspace.width.saturating_sub(20).min(48);
+        let minimum = 20.min(maximum);
+        let requested = column.saturating_sub(workspace.x);
+        self.explorer_width = requested.clamp(minimum, maximum);
+    }
+
+    fn resize_workbench(&mut self, column: u16) {
+        let workbench = self.ui_regions.workbench;
+        let available = workbench.width.saturating_sub(1);
+        if available < 40 {
+            return;
+        }
+        let editor_width = column
+            .saturating_sub(workbench.x)
+            .clamp(20, available.saturating_sub(20));
+        self.split_percent =
+            u16::try_from(u32::from(editor_width) * 100 / u32::from(available.max(1)))
+                .unwrap_or(50)
+                .clamp(1, 99);
     }
 
     fn move_explorer(&mut self, direction: isize) {
@@ -1888,6 +2012,7 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
                                 tab.sync_document();
                             }
                         }
+                        Event::Mouse(mouse) => app.handle_mouse(mouse),
                         _ => {}
                     }
                     needs_draw = true;
@@ -2244,6 +2369,61 @@ mod tests {
         assert_eq!(app.preview_scroll, 20);
         app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
         assert_eq!(app.preview_scroll, 0);
+    }
+
+    #[test]
+    fn mouse_focus_scroll_resize_and_double_click_reach_the_workbench() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.md");
+        let second = directory.path().join("second.md");
+        fs::write(&first, "first").unwrap();
+        fs::write(&second, "second").unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.ui_regions = UiRegions {
+            workspace: Rect::new(0, 2, 120, 20),
+            explorer: Some(Rect::new(0, 2, 34, 20)),
+            explorer_list: Some(Rect::new(0, 3, 34, 19)),
+            explorer_divider: Some(Rect::new(34, 2, 1, 20)),
+            workbench: Rect::new(35, 2, 85, 20),
+            editor: Some(Rect::new(35, 2, 42, 20)),
+            preview: Some(Rect::new(78, 2, 42, 20)),
+            workbench_divider: Some(Rect::new(77, 2, 1, 20)),
+        };
+        let mouse = |kind, column, row| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 4));
+        assert_eq!(app.focus, Focus::Explorer);
+        assert_eq!(app.explorer_state.selected(), Some(1));
+        assert!(app.active_tab().is_none());
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 4));
+        assert_eq!(
+            app.active_tab().unwrap().document.path,
+            second.canonicalize().unwrap()
+        );
+
+        app.preview_max_scroll = 10;
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 90, 10));
+        assert_eq!(app.preview_scroll, 2);
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 90, 10));
+        assert_eq!(app.focus, Focus::Preview);
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 10));
+        assert_eq!(app.focus, Focus::Editor);
+
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 34, 10));
+        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 47, 10));
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 47, 10));
+        assert_eq!(app.explorer_width, 47);
+
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 77, 10));
+        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 80, 10));
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 80, 10));
+        assert!(app.split_percent > 50);
     }
 
     #[test]
