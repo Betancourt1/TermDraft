@@ -2,11 +2,13 @@
 
 from typing import ClassVar
 
+from rich.style import Style
 from rich.text import Text
 from textual import events
 from textual.binding import BindingType
 from textual.widget import Widget
 from textual.widgets import Static, TextArea
+from textual.widgets.text_area import TextAreaTheme
 
 from termdraft.bindings import EDITOR_BINDINGS
 from termdraft.services.inline_preview import render_inline_preview_line
@@ -15,6 +17,20 @@ from termdraft.services.markdown_continuation import continuation_edit
 _COMMAND_NAVIGATION_KEYS = frozenset({"up", "down", "left", "right"})
 MAX_VISUAL_LINE_WIDTH = 100
 WORKBENCH_MIN_PANE_WIDTH = 20
+_EDITOR_THEME_NAME = "termdraft-markdown"
+_HEADING_COLOR = "#f2f2f2"
+
+
+def _editor_theme() -> TextAreaTheme:
+    base_theme = TextAreaTheme.get_builtin_theme("css")
+    assert base_theme is not None
+    return TextAreaTheme(
+        name=_EDITOR_THEME_NAME,
+        syntax_styles={
+            **base_theme.syntax_styles,
+            "heading": Style(color=_HEADING_COLOR, bold=True),
+        },
+    )
 
 
 class MarkdownEditor(TextArea):
@@ -50,6 +66,9 @@ class MarkdownEditor(TextArea):
                 "Ctrl+P opens existing files; ? shows help."
             ),
         )
+        theme = _editor_theme()
+        self.register_theme(theme)
+        self.theme = theme.name
         self.set_write_mode(True)
         self.set_inline_preview(inline_preview)
         self.read_only = read_only
