@@ -26,6 +26,7 @@ use crate::document::{Encoding, FileSnapshot};
 use crate::workspace::has_editable_suffix;
 
 const MAX_RECOVERY_BYTES: u64 = 16 * 1024 * 1024;
+const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecoveryEntry {
@@ -340,6 +341,135 @@ impl RecoveryJournal {
         Ok(records)
     }
 
+    /// Move an unchanged active draft to another document identity without replacing a draft.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the record changed, is quarantined or corrupt, the target is unsafe,
+    /// or another recovery entry already owns the destination.
+    pub fn retarget(
+        &self,
+        record: &RecoveryRecord,
+        document_path: &Path,
+        workspace_root: &Path,
+    ) -> Result<RecoveryEntry, RecoveryError> {
+        if record.quarantined {
+            return Err(RecoveryError::Invalid(
+                "cannot retarget a quarantined recovery entry".to_owned(),
+            ));
+        }
+        self.validate_record_location(record)?;
+        validate_paths(document_path, workspace_root)?;
+        let destination = self.path_for(document_path);
+        let _lock = JournalLock::acquire_many(
+            &self.root,
+            &[record.journal_path.as_path(), destination.as_path()],
+        )?;
+        let current = self.verify_record(record)?;
+        let current_entry = current.entry.ok_or_else(|| {
+            RecoveryError::Invalid("cannot retarget a corrupt recovery entry".to_owned())
+        })?;
+
+        if destination == record.journal_path {
+            if current_entry.document_path == document_path
+                && current_entry.workspace_root == workspace_root
+            {
+                return Ok(current_entry);
+            }
+            return Err(RecoveryError::Invalid(
+                "retarget destination already contains this recovery entry".to_owned(),
+            ));
+        }
+
+        let mut entry = RecoveryEntry {
+            document_path: document_path.to_path_buf(),
+            workspace_root: workspace_root.to_path_buf(),
+            text: current_entry.text,
+            encoding: current_entry.encoding,
+            updated_at: current_entry.updated_at,
+            base_snapshot: current_entry.base_snapshot,
+            fingerprint: String::new(),
+        };
+        let bytes = serialize_entry(&entry)?;
+        entry.fingerprint = data_fingerprint(&bytes);
+        persist_new_bytes(&destination, &bytes, "recovery entry already exists")?;
+        self.verify_record(record)?;
+        remove_and_sync(&record.journal_path)?;
+        Ok(entry)
+    }
+
+    /// Restore an unchanged trusted quarantine entry without replacing an active draft.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the record changed, is active or corrupt, or an active journal
+    /// already exists for the document.
+    pub fn restore_quarantined(
+        &self,
+        record: &RecoveryRecord,
+    ) -> Result<RecoveryEntry, RecoveryError> {
+        if !record.quarantined {
+            return Err(RecoveryError::Invalid(
+                "recovery entry is not quarantined".to_owned(),
+            ));
+        }
+        self.validate_record_location(record)?;
+        let _lock = JournalLock::acquire(&self.root, &record.journal_path)?;
+        let current = self.verify_record(record)?;
+        let current_entry = current.entry.ok_or_else(|| {
+            RecoveryError::Invalid("cannot restore a corrupt recovery entry".to_owned())
+        })?;
+        let destination = self.path_for(&current_entry.document_path);
+
+        fs::hard_link(&record.journal_path, &destination).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                RecoveryError::Invalid(format!(
+                    "an active recovery entry already exists for {}",
+                    destination.display()
+                ))
+            } else {
+                RecoveryError::Io(error)
+            }
+        })?;
+        sync_directory(&self.root)?;
+        self.verify_record(record)?;
+        remove_and_sync(&record.journal_path)?;
+        Ok(current_entry)
+    }
+
+    /// Export an unchanged trusted quarantine entry without replacing a document or deleting the
+    /// archive.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the record changed, is active or corrupt, the destination is unsafe,
+    /// or any entry already exists at the destination.
+    pub fn export_quarantined(
+        &self,
+        record: &RecoveryRecord,
+        destination: &Path,
+    ) -> Result<FileSnapshot, RecoveryError> {
+        if !record.quarantined {
+            return Err(RecoveryError::Invalid(
+                "recovery entry is not quarantined".to_owned(),
+            ));
+        }
+        self.validate_record_location(record)?;
+        let _lock = JournalLock::acquire(&self.root, &record.journal_path)?;
+        let current = self.verify_record(record)?;
+        let entry = current.entry.ok_or_else(|| {
+            RecoveryError::Invalid("cannot export a corrupt recovery entry".to_owned())
+        })?;
+        validate_export_destination(destination, &entry.workspace_root)?;
+        let bytes = encode_entry_text(&entry);
+        self.verify_record(record)?;
+        persist_new_bytes(
+            destination,
+            &bytes,
+            "recovery export destination already exists",
+        )
+    }
+
     /// Move an unchanged active journal into quarantine without changing its bytes.
     ///
     /// # Errors
@@ -649,29 +779,45 @@ impl RecoveryJournal {
 }
 
 struct JournalLock {
-    _file: File,
+    _files: Vec<File>,
 }
 
 impl JournalLock {
     fn acquire(root: &Path, journal_path: &Path) -> Result<Self, RecoveryError> {
+        Self::acquire_many(root, &[journal_path])
+    }
+
+    fn acquire_many(root: &Path, journal_paths: &[&Path]) -> Result<Self, RecoveryError> {
         ensure_directory(root)?;
-        let filename = journal_path
-            .file_name()
-            .ok_or_else(|| RecoveryError::Invalid("journal has no filename".to_owned()))?;
-        let lock_path = root.join(format!(".{}.lock", filename.to_string_lossy()));
-        let mut options = OpenOptions::new();
-        options.create(true).read(true).write(true);
-        #[cfg(unix)]
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-        let file = options.open(&lock_path)?;
-        if !file.metadata()?.is_file() {
-            return Err(RecoveryError::Invalid(
-                "journal lock is not a regular file".to_owned(),
-            ));
+        let mut lock_paths = journal_paths
+            .iter()
+            .map(|journal_path| {
+                let filename = journal_path
+                    .file_name()
+                    .ok_or_else(|| RecoveryError::Invalid("journal has no filename".to_owned()))?;
+                Ok(root.join(format!(".{}.lock", filename.to_string_lossy())))
+            })
+            .collect::<Result<Vec<_>, RecoveryError>>()?;
+        lock_paths.sort();
+        lock_paths.dedup();
+
+        let mut files = Vec::with_capacity(lock_paths.len());
+        for lock_path in lock_paths {
+            let mut options = OpenOptions::new();
+            options.create(true).read(true).write(true);
+            #[cfg(unix)]
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+            let file = options.open(&lock_path)?;
+            if !file.metadata()?.is_file() {
+                return Err(RecoveryError::Invalid(
+                    "journal lock is not a regular file".to_owned(),
+                ));
+            }
+            #[cfg(unix)]
+            flock(&file, FlockOperation::LockExclusive).map_err(std::io::Error::from)?;
+            files.push(file);
         }
-        #[cfg(unix)]
-        flock(&file, FlockOperation::LockExclusive).map_err(std::io::Error::from)?;
-        Ok(Self { _file: file })
+        Ok(Self { _files: files })
     }
 }
 
@@ -714,6 +860,24 @@ fn serialize_file(file: &RecoveryFile) -> Result<Vec<u8>, RecoveryError> {
         return Err(RecoveryError::TooLarge);
     }
     Ok(bytes)
+}
+
+fn serialize_entry(entry: &RecoveryEntry) -> Result<Vec<u8>, RecoveryError> {
+    validate_paths(&entry.document_path, &entry.workspace_root)?;
+    validate_snapshot(&entry.base_snapshot)?;
+    serialize_file(&RecoveryFile {
+        version: 2,
+        document_path: path_string(&entry.document_path)?,
+        workspace_root: path_string(&entry.workspace_root)?,
+        text: entry.text.clone(),
+        encoding: encoding_name(entry.encoding).to_owned(),
+        base_snapshot: Some(entry.base_snapshot.clone()),
+        base_digest: None,
+        updated_at: entry
+            .updated_at
+            .format(&Rfc3339)
+            .map_err(|error| RecoveryError::Invalid(error.to_string()))?,
+    })
 }
 
 fn entry_from_bytes(bytes: &[u8], fingerprint: &str) -> Result<RecoveryEntry, RecoveryError> {
@@ -817,6 +981,42 @@ fn validate_paths(document_path: &Path, workspace_root: &Path) -> Result<(), Rec
     if !resolved_document.starts_with(&resolved_root) {
         return Err(RecoveryError::Invalid(
             "document resolves outside its workspace".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_export_destination(
+    destination: &Path,
+    workspace_root: &Path,
+) -> Result<(), RecoveryError> {
+    validate_paths(destination, workspace_root)?;
+    match fs::symlink_metadata(destination) {
+        Ok(_) => {
+            return Err(RecoveryError::Invalid(format!(
+                "recovery export destination already exists: {}",
+                destination.display()
+            )));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    let parent = destination.parent().ok_or_else(|| {
+        RecoveryError::Invalid("recovery export destination has no parent".to_owned())
+    })?;
+    let metadata = fs::symlink_metadata(parent)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(RecoveryError::Invalid(format!(
+            "recovery export parent is not a real directory: {}",
+            parent.display()
+        )));
+    }
+    let resolved_root = resolve_with_missing(workspace_root)?;
+    let resolved_parent = parent.canonicalize()?;
+    if !resolved_parent.starts_with(&resolved_root) {
+        return Err(RecoveryError::Invalid(
+            "recovery export resolves outside its workspace".to_owned(),
         ));
     }
     Ok(())
@@ -937,6 +1137,34 @@ fn remove_and_sync(path: &Path) -> Result<(), RecoveryError> {
     )
 }
 
+fn persist_new_bytes(
+    destination: &Path,
+    bytes: &[u8],
+    collision_message: &str,
+) -> Result<FileSnapshot, RecoveryError> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| RecoveryError::Invalid("recovery destination has no parent".to_owned()))?;
+    let mut temporary = NamedTempFile::new_in(parent)?;
+    #[cfg(unix)]
+    temporary
+        .as_file()
+        .set_permissions(fs::Permissions::from_mode(0o600))?;
+    temporary.write_all(bytes)?;
+    temporary.flush()?;
+    temporary.as_file().sync_all()?;
+    let persisted = temporary.persist_noclobber(destination).map_err(|error| {
+        if error.error.kind() == std::io::ErrorKind::AlreadyExists {
+            RecoveryError::Invalid(format!("{collision_message}: {}", destination.display()))
+        } else {
+            RecoveryError::Io(error.error)
+        }
+    })?;
+    sync_directory(parent)?;
+    let metadata = persisted.metadata()?;
+    Ok(FileSnapshot::from_bytes_and_metadata(bytes, &metadata))
+}
+
 fn sync_directory(path: &Path) -> Result<(), RecoveryError> {
     File::open(path)?.sync_all()?;
     Ok(())
@@ -947,6 +1175,17 @@ fn encoding_name(encoding: Encoding) -> &'static str {
         Encoding::Utf8 => "utf-8",
         Encoding::Utf8Bom => "utf-8-sig",
     }
+}
+
+fn encode_entry_text(entry: &RecoveryEntry) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(
+        entry.text.len() + usize::from(entry.encoding == Encoding::Utf8Bom) * UTF8_BOM.len(),
+    );
+    if entry.encoding == Encoding::Utf8Bom {
+        bytes.extend_from_slice(UTF8_BOM);
+    }
+    bytes.extend_from_slice(entry.text.as_bytes());
+    bytes
 }
 
 fn hex_digest(bytes: &[u8; 32]) -> String {
@@ -1013,6 +1252,36 @@ mod tests {
         let mut file: RecoveryFile = serde_json::from_slice(&bytes).unwrap();
         file.updated_at = updated_at.format(&Rfc3339).unwrap();
         fs::write(path, serialize_file(&file).unwrap()).unwrap();
+    }
+
+    fn quarantine_document(
+        journal: &RecoveryJournal,
+        workspace_root: &Path,
+        document_path: &Path,
+    ) -> RecoveryRecord {
+        let active = journal
+            .list_entries(Some(workspace_root))
+            .unwrap()
+            .into_iter()
+            .find(|record| {
+                record
+                    .entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.document_path == document_path)
+            })
+            .unwrap();
+        journal.quarantine(&active).unwrap();
+        journal
+            .list_quarantined(Some(workspace_root))
+            .unwrap()
+            .into_iter()
+            .find(|record| {
+                record
+                    .entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.document_path == document_path)
+            })
+            .unwrap()
     }
 
     #[test]
@@ -1219,6 +1488,256 @@ mod tests {
 
         assert!(error.to_string().contains("appeared after cleanup"));
         assert!(journal.load(&document).unwrap().is_some());
+    }
+
+    #[test]
+    fn retarget_preserves_the_draft_baseline_and_timestamp() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let (source, snapshot) = create_document(&root, "old.md", "saved");
+        let target = root.join("renamed.markdown");
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        let original = journal
+            .publish(
+                &source,
+                &root,
+                "# Café\r\nno final newline",
+                Encoding::Utf8Bom,
+                &snapshot,
+            )
+            .unwrap();
+        let record = journal.record_for(&source).unwrap().unwrap();
+
+        let moved = journal.retarget(&record, &target, &root).unwrap();
+
+        assert_eq!(moved.document_path, target);
+        assert_eq!(moved.workspace_root, root);
+        assert_eq!(moved.text, original.text);
+        assert_eq!(moved.encoding, original.encoding);
+        assert_eq!(moved.updated_at, original.updated_at);
+        assert!(moved.baseline_matches(&snapshot));
+        assert!(!journal.path_for(&source).exists());
+        assert_eq!(journal.load(&target).unwrap().unwrap(), moved);
+    }
+
+    #[test]
+    fn retarget_never_replaces_an_existing_recovery_draft() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let (source, source_snapshot) = create_document(&root, "old.md", "saved old");
+        let (target, target_snapshot) = create_document(&root, "occupied.md", "saved destination");
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        journal
+            .publish(
+                &source,
+                &root,
+                "source draft",
+                Encoding::Utf8,
+                &source_snapshot,
+            )
+            .unwrap();
+        journal
+            .publish(
+                &target,
+                &root,
+                "destination draft",
+                Encoding::Utf8,
+                &target_snapshot,
+            )
+            .unwrap();
+        let record = journal.record_for(&source).unwrap().unwrap();
+        let source_bytes = fs::read(journal.path_for(&source)).unwrap();
+        let target_bytes = fs::read(journal.path_for(&target)).unwrap();
+
+        let error = journal.retarget(&record, &target, &root).unwrap_err();
+
+        assert!(error.to_string().contains("already exists"));
+        assert_eq!(fs::read(journal.path_for(&source)).unwrap(), source_bytes);
+        assert_eq!(fs::read(journal.path_for(&target)).unwrap(), target_bytes);
+    }
+
+    #[test]
+    fn retarget_refuses_a_record_that_changed_after_inventory() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let (source, snapshot) = create_document(&root, "old.md", "saved");
+        let target = root.join("renamed.md");
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        journal
+            .publish(&source, &root, "listed", Encoding::Utf8, &snapshot)
+            .unwrap();
+        let record = journal.record_for(&source).unwrap().unwrap();
+        journal
+            .publish(&source, &root, "newer", Encoding::Utf8, &snapshot)
+            .unwrap();
+
+        let error = journal.retarget(&record, &target, &root).unwrap_err();
+
+        assert!(error.to_string().contains("changed after it was listed"));
+        assert!(!journal.path_for(&target).exists());
+        assert_eq!(journal.load(&source).unwrap().unwrap().text, "newer");
+    }
+
+    #[test]
+    fn restore_quarantined_preserves_exact_journal_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let (document, snapshot) = create_document(&root, "café 東京.md", "saved");
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        let original = journal
+            .publish(
+                &document,
+                &root,
+                "# Café\r\n\r\n東京\nno final newline",
+                Encoding::Utf8Bom,
+                &snapshot,
+            )
+            .unwrap();
+        let active_path = journal.path_for(&document);
+        let original_bytes = fs::read(&active_path).unwrap();
+        let quarantined = quarantine_document(&journal, &root, &document);
+
+        let restored = journal.restore_quarantined(&quarantined).unwrap();
+
+        assert_eq!(restored, original);
+        assert_eq!(fs::read(&active_path).unwrap(), original_bytes);
+        assert!(journal.list_quarantined(Some(&root)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn restore_quarantined_never_replaces_an_active_draft() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let (document, snapshot) = create_document(&root, "note.md", "saved");
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        journal
+            .publish(
+                &document,
+                &root,
+                "archived draft",
+                Encoding::Utf8,
+                &snapshot,
+            )
+            .unwrap();
+        let quarantined = quarantine_document(&journal, &root, &document);
+        let archived_bytes = fs::read(&quarantined.journal_path).unwrap();
+        journal
+            .publish(
+                &document,
+                &root,
+                "new active draft",
+                Encoding::Utf8,
+                &snapshot,
+            )
+            .unwrap();
+        let active_path = journal.path_for(&document);
+        let active_bytes = fs::read(&active_path).unwrap();
+
+        let error = journal.restore_quarantined(&quarantined).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("active recovery entry already exists")
+        );
+        assert_eq!(fs::read(active_path).unwrap(), active_bytes);
+        assert_eq!(fs::read(&quarantined.journal_path).unwrap(), archived_bytes);
+    }
+
+    #[test]
+    fn export_quarantined_preserves_text_bytes_and_the_archive() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let (document, snapshot) = create_document(&root, "original.md", "saved");
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        let text = "# Café\r\n\r\n東京\nno final newline";
+        journal
+            .publish(&document, &root, text, Encoding::Utf8Bom, &snapshot)
+            .unwrap();
+        let quarantined = quarantine_document(&journal, &root, &document);
+        let archived_bytes = fs::read(&quarantined.journal_path).unwrap();
+        let export_root = root.join("exports");
+        fs::create_dir(&export_root).unwrap();
+        let destination = export_root.join("recovered.markdown");
+
+        let exported = journal
+            .export_quarantined(&quarantined, &destination)
+            .unwrap();
+
+        let mut expected = UTF8_BOM.to_vec();
+        expected.extend_from_slice(text.as_bytes());
+        assert_eq!(fs::read(&destination).unwrap(), expected);
+        assert_eq!(exported, load_file(&destination).unwrap().snapshot);
+        assert_eq!(fs::read(&quarantined.journal_path).unwrap(), archived_bytes);
+        assert_eq!(journal.list_quarantined(Some(&root)).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn export_quarantined_never_overwrites_or_exports_a_stale_record() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let (document, snapshot) = create_document(&root, "original.md", "saved");
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        journal
+            .publish(&document, &root, "listed draft", Encoding::Utf8, &snapshot)
+            .unwrap();
+        let quarantined = quarantine_document(&journal, &root, &document);
+        let occupied = root.join("occupied.md");
+        fs::write(&occupied, "existing document").unwrap();
+
+        let collision = journal
+            .export_quarantined(&quarantined, &occupied)
+            .unwrap_err();
+
+        assert!(collision.to_string().contains("destination already exists"));
+        assert_eq!(fs::read_to_string(&occupied).unwrap(), "existing document");
+
+        let replacement = fs::read(&quarantined.journal_path)
+            .unwrap()
+            .windows(b"listed draft".len())
+            .position(|window| window == b"listed draft")
+            .unwrap();
+        let mut changed_bytes = fs::read(&quarantined.journal_path).unwrap();
+        changed_bytes[replacement..replacement + b"listed draft".len()]
+            .copy_from_slice(b"newest draft");
+        fs::write(&quarantined.journal_path, &changed_bytes).unwrap();
+        let destination = root.join("recovered.md");
+
+        let stale = journal
+            .export_quarantined(&quarantined, &destination)
+            .unwrap_err();
+
+        assert!(stale.to_string().contains("changed after it was listed"));
+        assert!(!destination.exists());
+        assert_eq!(fs::read(&quarantined.journal_path).unwrap(), changed_bytes);
+    }
+
+    #[test]
+    fn export_quarantined_rejects_a_symlink_escape() {
+        #[cfg(unix)]
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let workspace = directory.path().join("workspace");
+            let outside = directory.path().join("outside");
+            fs::create_dir(&workspace).unwrap();
+            fs::create_dir(&outside).unwrap();
+            let root = workspace.canonicalize().unwrap();
+            let (document, snapshot) = create_document(&root, "original.md", "saved");
+            let journal = RecoveryJournal::new(root.join("recovery"));
+            journal
+                .publish(&document, &root, "archived", Encoding::Utf8, &snapshot)
+                .unwrap();
+            let quarantined = quarantine_document(&journal, &root, &document);
+            std::os::unix::fs::symlink(&outside, root.join("linked")).unwrap();
+
+            let error = journal
+                .export_quarantined(&quarantined, &root.join("linked/escaped.md"))
+                .unwrap_err();
+
+            assert!(error.to_string().contains("resolves outside its workspace"));
+            assert!(!outside.join("escaped.md").exists());
+            assert!(quarantined.journal_path.exists());
+        }
     }
 
     #[test]
