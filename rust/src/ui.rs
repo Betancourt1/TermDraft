@@ -339,10 +339,12 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
         | Overlay::RecentDocuments { .. }
         | Overlay::SearchResults { .. }
         | Overlay::Outline { .. } => popup(frame.area(), 76, 20),
-        Overlay::Find { .. } | Overlay::WorkspaceSearch { .. } | Overlay::PathInput { .. } => {
-            popup(frame.area(), 66, 7)
-        }
+        Overlay::Find { .. }
+        | Overlay::WorkspaceSearch { .. }
+        | Overlay::PathInput { .. }
+        | Overlay::WorkspaceInput { .. } => popup(frame.area(), 66, 7),
         Overlay::Recovery { .. } => popup(frame.area(), 70, 9),
+        Overlay::TrashConfirm { .. } => popup(frame.area(), 70, 8),
         Overlay::Confirm(_) | Overlay::Message(_) => popup(frame.area(), 62, 7),
     };
     frame.render_widget(Clear, area);
@@ -442,6 +444,50 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
             input,
             "Workspace-relative .md, .markdown, or .txt path · Enter confirms",
         ),
+        Overlay::WorkspaceInput {
+            action,
+            source,
+            input,
+        } => {
+            let relative = app.workspace.relative(source);
+            let footer = match action {
+                crate::app::WorkspaceInputAction::Create => {
+                    format!(
+                        "Location: {} · trailing / creates a folder",
+                        relative.display()
+                    )
+                }
+                crate::app::WorkspaceInputAction::Rename => {
+                    "Enter one new basename · no replacement".to_owned()
+                }
+                crate::app::WorkspaceInputAction::Move => {
+                    "Enter a workspace-relative destination · no replacement".to_owned()
+                }
+            };
+            draw_input(frame, area, block.title(action.title()), input, &footer);
+        }
+        Overlay::TrashConfirm {
+            source,
+            is_directory,
+        } => {
+            let relative = app.workspace.relative(source);
+            let detail = if *is_directory {
+                "Everything inside it will move too, including hidden files."
+            } else {
+                "The file can be recovered from the operating system Trash."
+            };
+            let text = Text::from(vec![
+                Line::from(format!("Move {} to Trash?", relative.display()))
+                    .style(Style::new().fg(TEXT)),
+                Line::from(detail).style(Style::new().fg(MUTED)),
+                Line::from(""),
+                Line::from("y  Move to Trash     Esc  Cancel").style(Style::new().fg(BRIGHT)),
+            ]);
+            frame.render_widget(
+                Paragraph::new(text).block(block.title(" Move to Trash ")),
+                area,
+            );
+        }
         Overlay::Recovery { entry } => {
             let relative = app.workspace.relative(&entry.document_path);
             let conflict = app
@@ -595,7 +641,9 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, block: Block<'_>) {
             shortcut(app, &["command_toggle_explorer", "toggle_explorer"]),
             "Show or hide Files",
         ),
-        help_line("FILES", "a", "Create a Markdown file"),
+        help_line("FILES", "a", "Create a file or folder"),
+        help_line("FILES", "c / x / p", "Copy / cut / paste"),
+        help_line("FILES", "r / m / d", "Rename / move / Trash"),
         help_line(
             "VIEW",
             shortcut(app, &["command_toggle_preview", "toggle_preview"]),
@@ -636,6 +684,12 @@ fn command_shortcut(app: &App, action: crate::app::CommandAction) -> String {
         CommandAction::SaveAs => &["command_save_as", "save_as"],
         CommandAction::Duplicate => &["command_duplicate_document"],
         CommandAction::Create => return "a".to_owned(),
+        CommandAction::CopyEntry => return "c".to_owned(),
+        CommandAction::CutEntry => return "x".to_owned(),
+        CommandAction::PasteEntry => return "p".to_owned(),
+        CommandAction::RenameEntry => return "r".to_owned(),
+        CommandAction::MoveEntry => return "m".to_owned(),
+        CommandAction::TrashEntry => return "d".to_owned(),
         CommandAction::CloseTab => &["command_close_tab", "close_tab"],
         CommandAction::Quit => &["command_quit", "quit"],
         CommandAction::FileFinder => &["command_find_file", "find_file"],

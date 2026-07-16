@@ -29,7 +29,10 @@ use crate::recovery::{RecoveryEntry, RecoveryJournal};
 use crate::search::{TextMatch, fuzzy_score, heading_outline, search_text};
 use crate::session::{DocumentViewState, MAX_SESSION_DOCUMENTS, SessionState, SessionStore};
 use crate::ui;
-use crate::workspace::{Workspace, WorkspaceEntry};
+use crate::workspace::{Workspace, WorkspaceEntry, has_editable_suffix};
+use crate::workspace_entries::{
+    copy_entry, create_file, create_folder, move_entry, move_to_trash, rename_entry,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode {
@@ -138,6 +141,15 @@ pub enum Overlay {
         action: PathAction,
         input: TextInput,
     },
+    WorkspaceInput {
+        action: WorkspaceInputAction,
+        source: PathBuf,
+        input: TextInput,
+    },
+    TrashConfirm {
+        source: PathBuf,
+        is_directory: bool,
+    },
     Recovery {
         entry: Box<RecoveryEntry>,
     },
@@ -216,6 +228,30 @@ pub enum PathAction {
     Duplicate,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceInputAction {
+    Create,
+    Rename,
+    Move,
+}
+
+impl WorkspaceInputAction {
+    #[must_use]
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Create => " Create file or folder ",
+            Self::Rename => " Rename file or folder ",
+            Self::Move => " Move file or folder ",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WorkspaceClipboard {
+    source: PathBuf,
+    cut: bool,
+}
+
 impl PathAction {
     #[must_use]
     pub const fn title(self) -> &'static str {
@@ -242,6 +278,12 @@ pub enum CommandAction {
     SaveAs,
     Duplicate,
     Create,
+    CopyEntry,
+    CutEntry,
+    PasteEntry,
+    RenameEntry,
+    MoveEntry,
+    TrashEntry,
     CloseTab,
     Quit,
     FileFinder,
@@ -323,9 +365,45 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         group: "FILES",
-        label: "Create Markdown file",
+        label: "Create file or folder",
         shortcut: "a",
         action: CommandAction::Create,
+    },
+    CommandSpec {
+        group: "FILES",
+        label: "Copy selected entry",
+        shortcut: "c",
+        action: CommandAction::CopyEntry,
+    },
+    CommandSpec {
+        group: "FILES",
+        label: "Cut selected entry",
+        shortcut: "x",
+        action: CommandAction::CutEntry,
+    },
+    CommandSpec {
+        group: "FILES",
+        label: "Paste selected entry",
+        shortcut: "p",
+        action: CommandAction::PasteEntry,
+    },
+    CommandSpec {
+        group: "FILES",
+        label: "Rename selected entry",
+        shortcut: "r",
+        action: CommandAction::RenameEntry,
+    },
+    CommandSpec {
+        group: "FILES",
+        label: "Move selected entry",
+        shortcut: "m",
+        action: CommandAction::MoveEntry,
+    },
+    CommandSpec {
+        group: "FILES",
+        label: "Move selected entry to Trash",
+        shortcut: "d",
+        action: CommandAction::TrashEntry,
     },
     CommandSpec {
         group: "FILES",
@@ -426,6 +504,7 @@ pub struct App {
     narrow_pane: Focus,
     resize_target: Option<ResizeTarget>,
     last_explorer_click: Option<(usize, Instant)>,
+    workspace_clipboard: Option<WorkspaceClipboard>,
     session_store: Option<SessionStore>,
     last_session_state: Option<SessionState>,
     recovery_journal: Option<RecoveryJournal>,
@@ -501,6 +580,7 @@ impl App {
             narrow_pane: Focus::Editor,
             resize_target: None,
             last_explorer_click: None,
+            workspace_clipboard: None,
             session_store,
             last_session_state: None,
             recovery_journal,
@@ -1116,7 +1196,13 @@ impl App {
             CommandAction::Save => self.save_active(),
             CommandAction::SaveAs => self.open_path_input(PathAction::SaveAs),
             CommandAction::Duplicate => self.open_path_input(PathAction::Duplicate),
-            CommandAction::Create => self.open_path_input(PathAction::Create),
+            CommandAction::Create => self.open_workspace_input(WorkspaceInputAction::Create),
+            CommandAction::CopyEntry => self.set_workspace_clipboard(false),
+            CommandAction::CutEntry => self.set_workspace_clipboard(true),
+            CommandAction::PasteEntry => self.paste_workspace_entry(),
+            CommandAction::RenameEntry => self.open_workspace_input(WorkspaceInputAction::Rename),
+            CommandAction::MoveEntry => self.open_workspace_input(WorkspaceInputAction::Move),
+            CommandAction::TrashEntry => self.request_trash_entry(),
             CommandAction::CloseTab => self.close_active(),
             CommandAction::Quit => self.request_quit(),
             CommandAction::FileFinder => {
@@ -1286,6 +1372,388 @@ impl App {
             paths: self.recent_paths.clone(),
             selected: 0,
         });
+    }
+
+    fn selected_workspace_path(&self, fallback_to_document: bool) -> PathBuf {
+        self.explorer_state
+            .selected()
+            .and_then(|index| self.entries.get(index))
+            .map(|entry| entry.path.clone())
+            .or_else(|| {
+                fallback_to_document
+                    .then(|| self.active_tab().map(|tab| tab.document.path.clone()))
+                    .flatten()
+            })
+            .unwrap_or_else(|| self.workspace.root.clone())
+    }
+
+    fn open_workspace_input(&mut self, action: WorkspaceInputAction) {
+        self.sync_active_document();
+        let selected = self.selected_workspace_path(true);
+        let (source, suggested) = match action {
+            WorkspaceInputAction::Create => {
+                let parent = if selected.is_dir() {
+                    selected
+                } else {
+                    selected
+                        .parent()
+                        .unwrap_or(&self.workspace.root)
+                        .to_path_buf()
+                };
+                (parent, String::new())
+            }
+            WorkspaceInputAction::Rename => {
+                if selected == self.workspace.root {
+                    self.status_message = Some("Select a file or folder first".to_owned());
+                    return;
+                }
+                let name = selected
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                (selected, name)
+            }
+            WorkspaceInputAction::Move => {
+                if selected == self.workspace.root {
+                    self.status_message = Some("Select a file or folder first".to_owned());
+                    return;
+                }
+                let relative = self.workspace.relative(&selected).display().to_string();
+                (selected, relative)
+            }
+        };
+        let mut input = TextInput::default();
+        input.insert(&suggested);
+        self.overlay = Some(Overlay::WorkspaceInput {
+            action,
+            source,
+            input,
+        });
+    }
+
+    fn set_workspace_clipboard(&mut self, cut: bool) {
+        let source = self.selected_workspace_path(false);
+        if source == self.workspace.root {
+            self.status_message = Some("Select a file or folder first".to_owned());
+            return;
+        }
+        self.workspace_clipboard = Some(WorkspaceClipboard {
+            source: source.clone(),
+            cut,
+        });
+        let verb = if cut { "Cut" } else { "Copied" };
+        self.status_message = Some(format!(
+            "{verb} {} · select a destination and press p",
+            self.workspace.relative(&source).display()
+        ));
+    }
+
+    fn paste_workspace_entry(&mut self) {
+        let Some(clipboard) = self.workspace_clipboard.clone() else {
+            self.status_message = Some("Copy or cut a file or folder first".to_owned());
+            return;
+        };
+        if !clipboard.source.exists() {
+            self.workspace_clipboard = None;
+            self.status_message = Some("Cannot paste · source no longer exists".to_owned());
+            return;
+        }
+        let selected = self.selected_workspace_path(false);
+        let parent = if selected.is_dir() {
+            selected
+        } else {
+            selected
+                .parent()
+                .unwrap_or(&self.workspace.root)
+                .to_path_buf()
+        };
+        let Some(name) = clipboard.source.file_name() else {
+            self.status_message = Some("Cannot paste the workspace root".to_owned());
+            return;
+        };
+        let target = parent.join(name);
+        self.sync_active_document();
+        if clipboard.cut {
+            if let Err(error) = self.check_path_change(&clipboard.source, &target) {
+                self.status_message = Some(error);
+                return;
+            }
+            match move_entry(&self.workspace, &clipboard.source, &target) {
+                Ok(target) => {
+                    self.retarget_workspace_paths(&clipboard.source, &target);
+                    self.workspace_clipboard = None;
+                    self.status_message = Some(format!(
+                        "Moved to {}",
+                        self.workspace.relative(&target).display()
+                    ));
+                    self.refresh_entries(Some(&target));
+                }
+                Err(error) => self.status_message = Some(format!("Cannot paste · {error}")),
+            }
+        } else {
+            match copy_entry(&self.workspace, &clipboard.source, &target) {
+                Ok(target) => {
+                    self.status_message = Some(format!(
+                        "Copied to {}",
+                        self.workspace.relative(&target).display()
+                    ));
+                    self.refresh_entries(Some(&target));
+                }
+                Err(error) => self.status_message = Some(format!("Cannot paste · {error}")),
+            }
+        }
+    }
+
+    fn apply_workspace_input(
+        &mut self,
+        action: WorkspaceInputAction,
+        source: &Path,
+        value: &str,
+    ) -> bool {
+        let value = value.trim();
+        if value.is_empty() {
+            self.status_message = Some("Enter a file or folder path".to_owned());
+            return false;
+        }
+        match action {
+            WorkspaceInputAction::Create => {
+                let folder = value.ends_with('/');
+                let relative = value.trim_end_matches('/');
+                if relative.is_empty() {
+                    self.status_message = Some("Enter a file or folder path".to_owned());
+                    return false;
+                }
+                let result = if folder {
+                    create_folder(&self.workspace, source, Path::new(relative))
+                } else {
+                    create_file(&self.workspace, source, Path::new(relative))
+                };
+                match result {
+                    Ok(target) => {
+                        self.refresh_entries(Some(&target));
+                        if !folder && has_editable_suffix(&target) {
+                            if let Err(error) = self.open_document(&target) {
+                                self.status_message =
+                                    Some(format!("Created but cannot open · {error}"));
+                                return true;
+                            }
+                        } else {
+                            self.focus = Focus::Explorer;
+                        }
+                        self.status_message = Some(if folder {
+                            format!(
+                                "Created folder {}",
+                                self.workspace.relative(&target).display()
+                            )
+                        } else {
+                            format!("Created {}", self.workspace.relative(&target).display())
+                        });
+                        true
+                    }
+                    Err(error) => {
+                        self.status_message = Some(format!("Cannot create · {error}"));
+                        false
+                    }
+                }
+            }
+            WorkspaceInputAction::Rename => {
+                let Some(parent) = source.parent() else {
+                    self.status_message = Some("Cannot rename the workspace root".to_owned());
+                    return false;
+                };
+                let target = parent.join(value);
+                if let Err(error) = self.check_path_change(source, &target) {
+                    self.status_message = Some(error);
+                    return false;
+                }
+                match rename_entry(&self.workspace, source, Path::new(value).as_os_str()) {
+                    Ok(target) => {
+                        self.retarget_workspace_paths(source, &target);
+                        self.refresh_entries(Some(&target));
+                        self.status_message = Some(format!(
+                            "Renamed to {}",
+                            self.workspace.relative(&target).display()
+                        ));
+                        true
+                    }
+                    Err(error) => {
+                        self.status_message = Some(format!("Cannot rename · {error}"));
+                        false
+                    }
+                }
+            }
+            WorkspaceInputAction::Move => {
+                let requested = PathBuf::from(value);
+                let target = if requested.is_absolute() {
+                    requested
+                } else {
+                    self.workspace.root.join(requested)
+                };
+                if let Err(error) = self.check_path_change(source, &target) {
+                    self.status_message = Some(error);
+                    return false;
+                }
+                match move_entry(&self.workspace, source, &target) {
+                    Ok(target) => {
+                        self.retarget_workspace_paths(source, &target);
+                        self.refresh_entries(Some(&target));
+                        self.status_message = Some(format!(
+                            "Moved to {}",
+                            self.workspace.relative(&target).display()
+                        ));
+                        true
+                    }
+                    Err(error) => {
+                        self.status_message = Some(format!("Cannot move · {error}"));
+                        false
+                    }
+                }
+            }
+        }
+    }
+
+    fn check_path_change(&self, source: &Path, target: &Path) -> Result<(), String> {
+        let affected = self
+            .tabs
+            .iter()
+            .filter(|tab| path_is_within(&tab.document.path, source))
+            .collect::<Vec<_>>();
+        if affected.iter().any(|tab| tab.document.is_dirty()) {
+            return Err(
+                "Save or close open documents inside this path before changing it".to_owned(),
+            );
+        }
+        for tab in &affected {
+            let loaded = load_file(&tab.document.path).map_err(|error| {
+                format!("Cannot verify {} · {error}", tab.document.path.display())
+            })?;
+            if loaded.snapshot.sha256 != tab.document.snapshot.sha256
+                || !loaded.snapshot.same_origin(&tab.document.snapshot)
+            {
+                return Err(format!(
+                    "{} changed on disk; reload or close it before changing its path",
+                    tab.document.path.display()
+                ));
+            }
+        }
+        let moved_paths = affected
+            .iter()
+            .map(|tab| retargeted_path(&tab.document.path, source, target))
+            .collect::<Vec<_>>();
+        if self.tabs.iter().any(|tab| {
+            !path_is_within(&tab.document.path, source) && moved_paths.contains(&tab.document.path)
+        }) {
+            return Err("The destination is already reserved by an open document".to_owned());
+        }
+        Ok(())
+    }
+
+    fn retarget_workspace_paths(&mut self, source: &Path, target: &Path) {
+        let previous_paths = self
+            .tabs
+            .iter()
+            .filter(|tab| path_is_within(&tab.document.path, source))
+            .map(|tab| tab.document.path.clone())
+            .collect::<Vec<_>>();
+        for previous in &previous_paths {
+            self.discard_recovery_for(previous);
+        }
+        for tab in &mut self.tabs {
+            if !path_is_within(&tab.document.path, source) {
+                continue;
+            }
+            let moved = retargeted_path(&tab.document.path, source, target);
+            match load_file(&moved) {
+                Ok(loaded)
+                    if loaded.text == tab.document.saved_text
+                        && loaded.snapshot.same_origin(&tab.document.snapshot) =>
+                {
+                    tab.document.path = moved;
+                    tab.document.snapshot = loaded.snapshot;
+                    tab.document.conflict = false;
+                }
+                _ => {
+                    tab.document.path = moved;
+                    tab.document.conflict = true;
+                }
+            }
+        }
+        let mut retargeted_recent = Vec::with_capacity(self.recent_paths.len());
+        for path in &self.recent_paths {
+            let path = retargeted_path(path, source, target);
+            if !retargeted_recent.contains(&path) {
+                retargeted_recent.push(path);
+            }
+        }
+        self.recent_paths = retargeted_recent;
+        self.session_views = std::mem::take(&mut self.session_views)
+            .into_values()
+            .map(|mut view| {
+                view.path = retargeted_path(&view.path, source, target);
+                (view.path.clone(), view)
+            })
+            .collect();
+        if let Some(path) = self.active_tab().map(|tab| tab.document.path.clone()) {
+            self.mark_recent(&path);
+        }
+        self.persist_session_if_changed();
+    }
+
+    fn request_trash_entry(&mut self) {
+        self.sync_active_document();
+        let source = self.selected_workspace_path(true);
+        if source == self.workspace.root {
+            self.status_message = Some("Select a file or folder first".to_owned());
+            return;
+        }
+        let open_count = self
+            .tabs
+            .iter()
+            .filter(|tab| path_is_within(&tab.document.path, &source))
+            .count();
+        if open_count > 0 {
+            self.status_message = Some(format!(
+                "Close {open_count} open document(s) before removing this path"
+            ));
+            return;
+        }
+        let is_directory = source.is_dir();
+        self.overlay = Some(Overlay::TrashConfirm {
+            source,
+            is_directory,
+        });
+    }
+
+    fn trash_workspace_entry(&mut self, source: &Path) -> bool {
+        let cached = self
+            .recent_paths
+            .iter()
+            .filter(|path| path_is_within(path, source))
+            .cloned()
+            .collect::<Vec<_>>();
+        match move_to_trash(&self.workspace, source) {
+            Ok(removed) => {
+                for path in cached {
+                    self.discard_recovery_for(&path);
+                }
+                self.recent_paths
+                    .retain(|path| !path_is_within(path, &removed));
+                self.session_views
+                    .retain(|path, _| !path_is_within(path, &removed));
+                self.refresh_entries(removed.parent());
+                self.persist_session_if_changed();
+                self.status_message = Some(format!(
+                    "Moved {} to Trash",
+                    self.workspace.relative(&removed).display()
+                ));
+                true
+            }
+            Err(error) => {
+                self.status_message = Some(format!("Cannot move to Trash · {error}"));
+                false
+            }
+        }
     }
 
     fn open_path_input(&mut self, action: PathAction) {
@@ -1517,7 +1985,13 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.move_explorer(1),
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.open_selected_entry(),
             KeyCode::Left | KeyCode::Char('h') => self.focus = Focus::Editor,
-            KeyCode::Char('a') => self.open_path_input(PathAction::Create),
+            KeyCode::Char('a') => self.open_workspace_input(WorkspaceInputAction::Create),
+            KeyCode::Char('c') => self.set_workspace_clipboard(false),
+            KeyCode::Char('x') => self.set_workspace_clipboard(true),
+            KeyCode::Char('p') => self.paste_workspace_entry(),
+            KeyCode::Char('r') => self.open_workspace_input(WorkspaceInputAction::Rename),
+            KeyCode::Char('m') => self.open_workspace_input(WorkspaceInputAction::Move),
+            KeyCode::Char('d') => self.request_trash_entry(),
             _ => return false,
         }
         true
@@ -1791,6 +2265,22 @@ impl App {
                 _ if edit_text_input(input, key) => true,
                 _ => true,
             },
+            Overlay::WorkspaceInput {
+                action,
+                source,
+                input,
+            } => match key.code {
+                KeyCode::Enter => !self.apply_workspace_input(*action, source, &input.value),
+                _ if edit_text_input(input, key) => true,
+                _ => true,
+            },
+            Overlay::TrashConfirm { source, .. } => match key.code {
+                KeyCode::Char('y') => {
+                    self.trash_workspace_entry(source);
+                    false
+                }
+                _ => true,
+            },
             Overlay::Recovery { entry } => match key.code {
                 KeyCode::Char('r') => {
                     self.restore_recovery_entry(entry);
@@ -1863,7 +2353,8 @@ impl App {
             }
             Overlay::Find { input }
             | Overlay::WorkspaceSearch { input }
-            | Overlay::PathInput { input, .. } => {
+            | Overlay::PathInput { input, .. }
+            | Overlay::WorkspaceInput { input, .. } => {
                 input.insert(text);
                 true
             }
@@ -2080,6 +2571,15 @@ const fn is_navigation_action(action: BindingAction) -> bool {
             | BindingAction::DocumentStart
             | BindingAction::DocumentEnd
     )
+}
+
+fn path_is_within(path: &Path, parent: &Path) -> bool {
+    path == parent || path.starts_with(parent)
+}
+
+fn retargeted_path(path: &Path, source: &Path, target: &Path) -> PathBuf {
+    path.strip_prefix(source)
+        .map_or_else(|_| path.to_path_buf(), |relative| target.join(relative))
 }
 
 #[must_use]
@@ -2587,6 +3087,95 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
         assert!(matches!(app.overlay, Some(Overlay::Find { .. })));
+    }
+
+    #[test]
+    fn files_workflow_creates_copies_moves_and_retargets_clean_tabs() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir(directory.path().join("a")).unwrap();
+        fs::create_dir(directory.path().join("b")).unwrap();
+        let note = directory.path().join("a/note.md");
+        fs::write(&note, "note").unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let root = workspace.root.clone();
+        let mut app = App::new(workspace).unwrap();
+        app.open_document(&note).unwrap();
+
+        assert!(app.apply_workspace_input(WorkspaceInputAction::Create, &root, "drafts/"));
+        assert!(app.apply_workspace_input(WorkspaceInputAction::Create, &root, "drafts/new.md"));
+        assert_eq!(
+            app.active_tab().unwrap().document.path,
+            root.join("drafts/new.md")
+        );
+        app.close_active_discarding();
+
+        let note = root.join("a/note.md");
+        let note_index = app
+            .entries
+            .iter()
+            .position(|entry| entry.path == note)
+            .unwrap();
+        app.explorer_state.select(Some(note_index));
+        app.set_workspace_clipboard(false);
+        let b = root.join("b");
+        let b_index = app
+            .entries
+            .iter()
+            .position(|entry| entry.path == b)
+            .unwrap();
+        app.explorer_state.select(Some(b_index));
+        app.paste_workspace_entry();
+        assert_eq!(fs::read_to_string(root.join("b/note.md")).unwrap(), "note");
+        assert!(app.workspace_clipboard.is_some());
+
+        app.open_document(&note).unwrap();
+        let a = root.join("a");
+        let a_index = app
+            .entries
+            .iter()
+            .position(|entry| entry.path == a)
+            .unwrap();
+        app.explorer_state.select(Some(a_index));
+        app.set_workspace_clipboard(true);
+        let b_index = app
+            .entries
+            .iter()
+            .position(|entry| entry.path == b)
+            .unwrap();
+        app.explorer_state.select(Some(b_index));
+        app.paste_workspace_entry();
+
+        let moved_folder = root.join("b/a");
+        let moved_note = moved_folder.join("note.md");
+        assert!(!a.exists());
+        assert_eq!(app.active_tab().unwrap().document.path, moved_note);
+        assert!(app.workspace_clipboard.is_none());
+        assert!(app.recent_paths.contains(&moved_note));
+
+        app.active_tab_mut().unwrap().editor.insert_str("local ");
+        app.sync_active_document();
+        assert!(!app.apply_workspace_input(WorkspaceInputAction::Rename, &moved_folder, "renamed"));
+        assert!(moved_folder.exists());
+
+        app.save_active();
+        assert!(app.apply_workspace_input(WorkspaceInputAction::Rename, &moved_folder, "renamed"));
+        let renamed = root.join("b/renamed");
+        assert_eq!(
+            app.active_tab().unwrap().document.path,
+            renamed.join("note.md")
+        );
+
+        let renamed_index = app
+            .entries
+            .iter()
+            .position(|entry| entry.path == renamed)
+            .unwrap();
+        app.explorer_state.select(Some(renamed_index));
+        app.request_trash_entry();
+        assert!(app.overlay.is_none());
+        app.close_active_discarding();
+        app.request_trash_entry();
+        assert!(matches!(app.overlay, Some(Overlay::TrashConfirm { .. })));
     }
 
     #[test]
