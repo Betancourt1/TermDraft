@@ -49,7 +49,6 @@ impl Mode {
 pub enum ViewMode {
     Inline,
     Split,
-    Source,
 }
 
 impl ViewMode {
@@ -58,15 +57,6 @@ impl ViewMode {
         match self {
             Self::Inline => "INLINE",
             Self::Split => "SPLIT",
-            Self::Source => "SOURCE",
-        }
-    }
-
-    const fn next(self) -> Self {
-        match self {
-            Self::Inline => Self::Split,
-            Self::Split => Self::Source,
-            Self::Source => Self::Inline,
         }
     }
 }
@@ -75,6 +65,7 @@ impl ViewMode {
 pub enum Focus {
     Explorer,
     Editor,
+    Preview,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -228,7 +219,7 @@ pub enum CommandAction {
     Find,
     Outline,
     ToggleExplorer,
-    CycleView,
+    TogglePreview,
     WriteMode,
     CommandMode,
     Undo,
@@ -343,9 +334,9 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         group: "VIEW",
-        label: "Cycle preview mode",
+        label: "Show or hide preview",
         shortcut: "v",
-        action: CommandAction::CycleView,
+        action: CommandAction::TogglePreview,
     },
     CommandSpec {
         group: "VIEW",
@@ -391,9 +382,14 @@ pub struct App {
     pub view_mode: ViewMode,
     pub focus: Focus,
     pub show_explorer: bool,
+    pub preview_visible: bool,
     pub overlay: Option<Overlay>,
     pub status_message: Option<String>,
     pub preview_scroll: u16,
+    pub preview_max_scroll: u16,
+    pub preview_page: u16,
+    pub viewport_width: u16,
+    narrow_pane: Focus,
     session_store: Option<SessionStore>,
     last_session_state: Option<SessionState>,
     recovery_journal: Option<RecoveryJournal>,
@@ -456,9 +452,14 @@ impl App {
             view_mode,
             focus: Focus::Editor,
             show_explorer: true,
+            preview_visible: true,
             overlay: None,
             status_message: None,
             preview_scroll: 0,
+            preview_max_scroll: 0,
+            preview_page: 1,
+            viewport_width: 100,
+            narrow_pane: Focus::Editor,
             session_store,
             last_session_state: None,
             recovery_journal,
@@ -776,6 +777,8 @@ impl App {
             self.cache_active_view();
             self.active_tab = Some(index);
             self.focus = Focus::Editor;
+            self.preview_scroll = 0;
+            self.narrow_pane = Focus::Editor;
             self.mark_recent(&path);
             return Ok(());
         }
@@ -793,6 +796,7 @@ impl App {
         self.active_tab = Some(self.tabs.len() - 1);
         self.focus = Focus::Editor;
         self.preview_scroll = 0;
+        self.narrow_pane = Focus::Editor;
         self.status_message = mixed.then(|| {
             "Mixed line endings · read-only until normalization is implemented".to_owned()
         });
@@ -857,7 +861,10 @@ impl App {
             return;
         }
         self.mode = mode;
-        self.focus = Focus::Editor;
+        if mode == Mode::Write {
+            self.focus = Focus::Editor;
+            self.narrow_pane = Focus::Editor;
+        }
         if let Some(tab) = self.active_tab_mut() {
             style_cursor(&mut tab.editor, mode);
         }
@@ -931,6 +938,7 @@ impl App {
             self.mark_recent(&path);
         }
         self.preview_scroll = 0;
+        self.narrow_pane = Focus::Editor;
         self.enforce_active_read_only();
     }
 
@@ -975,10 +983,7 @@ impl App {
                     Focus::Editor
                 };
             }
-            CommandAction::CycleView => {
-                self.view_mode = self.view_mode.next();
-                self.preview_scroll = 0;
-            }
+            CommandAction::TogglePreview => self.toggle_preview(),
             CommandAction::WriteMode => self.set_mode(Mode::Write),
             CommandAction::CommandMode => self.set_mode(Mode::Command),
             CommandAction::Undo => {
@@ -1009,6 +1014,87 @@ impl App {
         } else {
             self.overlay = Some(Overlay::Outline { items, selected: 0 });
         }
+    }
+
+    #[must_use]
+    pub fn is_narrow(&self) -> bool {
+        self.viewport_width < 100
+    }
+
+    #[must_use]
+    pub fn editor_is_visible(&self) -> bool {
+        !(self.preview_visible
+            && (self.view_mode == ViewMode::Inline || self.is_narrow())
+            && self.narrow_pane == Focus::Preview)
+    }
+
+    #[must_use]
+    pub fn preview_is_visible(&self) -> bool {
+        if !self.preview_visible {
+            return false;
+        }
+        if self.view_mode == ViewMode::Inline || self.is_narrow() {
+            self.narrow_pane == Focus::Preview
+        } else {
+            true
+        }
+    }
+
+    pub fn update_viewport_width(&mut self, width: u16) {
+        let was_narrow = self.is_narrow();
+        self.viewport_width = width;
+        if self.is_narrow() && !was_narrow {
+            self.narrow_pane = Focus::Editor;
+            if self.focus == Focus::Preview {
+                self.focus = Focus::Editor;
+            }
+        }
+    }
+
+    fn toggle_preview(&mut self) {
+        if self.active_tab().is_none() {
+            self.status_message = Some("No document open".to_owned());
+            return;
+        }
+        if self.view_mode == ViewMode::Inline || self.is_narrow() {
+            self.preview_visible = true;
+            self.narrow_pane = if self.narrow_pane == Focus::Preview {
+                Focus::Editor
+            } else {
+                Focus::Preview
+            };
+        } else {
+            self.preview_visible = !self.preview_visible;
+        }
+        self.focus = if self.preview_is_visible() {
+            Focus::Preview
+        } else {
+            Focus::Editor
+        };
+    }
+
+    fn scroll_preview_by(&mut self, amount: i32) {
+        let next = i32::from(self.preview_scroll).saturating_add(amount);
+        self.preview_scroll = u16::try_from(next.clamp(0, i32::from(self.preview_max_scroll)))
+            .unwrap_or(self.preview_max_scroll);
+    }
+
+    fn handle_preview_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => self.scroll_preview_by(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.scroll_preview_by(1),
+            KeyCode::PageUp => self.scroll_preview_by(-i32::from(self.preview_page)),
+            KeyCode::PageDown => self.scroll_preview_by(i32::from(self.preview_page)),
+            KeyCode::Home | KeyCode::Char('g') => self.preview_scroll = 0,
+            KeyCode::End | KeyCode::Char('G') => self.preview_scroll = self.preview_max_scroll,
+            KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Char('h' | 'l' | '0' | '$')
+            | KeyCode::Tab
+            | KeyCode::Enter => {}
+            _ => return false,
+        }
+        true
     }
 
     fn open_recent_documents(&mut self) {
@@ -1143,6 +1229,15 @@ impl App {
         if self.handle_global_key(key) {
             return;
         }
+        if self.focus == Focus::Preview {
+            if key.code == KeyCode::Esc && self.mode == Mode::Write {
+                self.set_mode(Mode::Command);
+                return;
+            }
+            if self.handle_preview_key(key) || self.mode == Mode::Write {
+                return;
+            }
+        }
         match self.mode {
             Mode::Write => self.handle_write_key(key),
             Mode::Command => self.handle_command_key(key),
@@ -1160,7 +1255,7 @@ impl App {
             KeyCode::Char('p') => self.execute_command(CommandAction::FileFinder),
             KeyCode::Char('o') => self.execute_command(CommandAction::RecentDocuments),
             KeyCode::Char('f') => self.execute_command(CommandAction::Find),
-            KeyCode::Char('e') => self.execute_command(CommandAction::CycleView),
+            KeyCode::Char('e') => self.execute_command(CommandAction::TogglePreview),
             KeyCode::PageDown => self.switch_tab(1),
             KeyCode::PageUp => self.switch_tab(-1),
             _ => return false,
@@ -1248,7 +1343,7 @@ impl App {
             KeyCode::Char('/') => self.execute_command(CommandAction::WorkspaceSearch),
             KeyCode::Char('s') => self.execute_command(CommandAction::Find),
             KeyCode::Char('S') => self.execute_command(CommandAction::Outline),
-            KeyCode::Char('v') => self.execute_command(CommandAction::CycleView),
+            KeyCode::Char('v') => self.execute_command(CommandAction::TogglePreview),
             KeyCode::Char('u') => self.execute_command(CommandAction::Undo),
             KeyCode::Char('U') => self.execute_command(CommandAction::Redo),
             KeyCode::Char(':') => {
@@ -2086,6 +2181,69 @@ mod tests {
             source_from_textarea(&app.active_tab().unwrap().editor),
             "- item\n- "
         );
+    }
+
+    #[test]
+    fn preview_toggle_matches_official_wide_and_narrow_layouts() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "# Preview\n\nbody").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.update_viewport_width(120);
+
+        assert!(app.editor_is_visible());
+        assert!(!app.preview_is_visible());
+        app.toggle_preview();
+        assert!(!app.editor_is_visible());
+        assert!(app.preview_is_visible());
+        assert_eq!(app.focus, Focus::Preview);
+        app.toggle_preview();
+        assert!(app.editor_is_visible());
+        assert_eq!(app.focus, Focus::Editor);
+
+        app.view_mode = ViewMode::Split;
+        assert!(app.editor_is_visible());
+        assert!(app.preview_is_visible());
+        app.toggle_preview();
+        assert!(app.editor_is_visible());
+        assert!(!app.preview_is_visible());
+        app.toggle_preview();
+        assert!(app.editor_is_visible());
+        assert!(app.preview_is_visible());
+        assert_eq!(app.focus, Focus::Preview);
+
+        app.update_viewport_width(99);
+        assert!(app.editor_is_visible());
+        assert!(!app.preview_is_visible());
+        assert_eq!(app.focus, Focus::Editor);
+        app.toggle_preview();
+        assert!(!app.editor_is_visible());
+        assert!(app.preview_is_visible());
+        assert_eq!(app.focus, Focus::Preview);
+    }
+
+    #[test]
+    fn focused_preview_navigation_clamps_to_rendered_bounds() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "preview").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.focus = Focus::Preview;
+        app.preview_max_scroll = 30;
+        app.preview_page = 10;
+
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        assert_eq!(app.preview_scroll, 11);
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.preview_scroll, 30);
+        app.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+        assert_eq!(app.preview_scroll, 20);
+        app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        assert_eq!(app.preview_scroll, 0);
     }
 
     #[test]

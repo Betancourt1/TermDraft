@@ -20,6 +20,7 @@ const MUTED: Color = Color::Rgb(118, 118, 118);
 const BRIGHT: Color = Color::Rgb(242, 242, 242);
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    app.update_viewport_width(frame.area().width);
     frame.render_widget(
         Block::new().style(Style::new().bg(BACKGROUND)),
         frame.area(),
@@ -154,8 +155,8 @@ fn draw_workbench(frame: &mut Frame, app: &mut App, area: Rect) {
         );
         return;
     }
-    match app.view_mode {
-        ViewMode::Split if area.width >= 42 => {
+    match (app.editor_is_visible(), app.preview_is_visible()) {
+        (true, true) => {
             let [editor, divider, preview] = Layout::horizontal([
                 Constraint::Percentage(50),
                 Constraint::Length(1),
@@ -166,8 +167,9 @@ fn draw_workbench(frame: &mut Frame, app: &mut App, area: Rect) {
             frame.render_widget(Block::new().style(Style::new().bg(BORDER)), divider);
             draw_preview(frame, app, preview);
         }
-        ViewMode::Inline => draw_editor(frame, app, area, true),
-        ViewMode::Split | ViewMode::Source => draw_editor(frame, app, area, false),
+        (true, false) => draw_editor(frame, app, area, app.view_mode == ViewMode::Inline),
+        (false, true) => draw_preview(frame, app, area),
+        (false, false) => {}
     }
 }
 
@@ -193,34 +195,55 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
     tab.editor.set_cursor_line_style(Style::new());
 }
 
-fn draw_preview(frame: &mut Frame, app: &App, area: Rect) {
-    let Some(tab) = app.active_tab() else {
+fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
+    let Some(source) = app.active_tab().map(|tab| tab.document.text.clone()) else {
         return;
     };
-    let text = tui_markdown::from_str(&tab.document.text);
+    let text = tui_markdown::from_str(&source);
+    let title_style = if app.focus == Focus::Preview {
+        Style::new().fg(BRIGHT).bold()
+    } else {
+        Style::new().fg(TEXT).bold()
+    };
     let block = Block::new()
-        .title(Line::from(" Preview ").style(Style::new().fg(TEXT).bold()))
+        .title(Line::from(" Preview ").style(title_style))
         .borders(Borders::TOP)
-        .border_style(Style::new().fg(BORDER));
+        .border_style(Style::new().fg(if app.focus == Focus::Preview {
+            MUTED
+        } else {
+            BORDER
+        }))
+        .padding(Padding::horizontal(2));
+    let area = centered(area, 104);
+    let inner = block.inner(area);
+    let content_width = usize::from(inner.width.max(1));
+    let line_count = text
+        .lines
+        .iter()
+        .map(|line| line.width().max(1).div_ceil(content_width))
+        .sum::<usize>();
     let preview = Paragraph::new(text)
         .block(block)
         .style(Style::new().fg(TEXT))
-        .wrap(Wrap { trim: false })
-        .scroll((app.preview_scroll, 0));
-    frame.render_widget(preview, centered(area, 104));
+        .wrap(Wrap { trim: false });
+    app.preview_page = inner.height.max(1);
+    app.preview_max_scroll =
+        u16::try_from(line_count.saturating_sub(usize::from(inner.height))).unwrap_or(u16::MAX);
+    app.preview_scroll = app.preview_scroll.min(app.preview_max_scroll);
+    let preview = preview.scroll((app.preview_scroll, 0));
+    frame.render_widget(preview, area);
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
-    let mut spans = vec![
-        Span::styled(
-            format!(" {} ", app.mode.label()),
-            Style::new().fg(BRIGHT).bold(),
-        ),
-        Span::styled(
-            format!("{} ", app.view_mode.label()),
-            Style::new().fg(MUTED),
-        ),
-    ];
+    let focus = match app.focus {
+        Focus::Explorer => " · FILES",
+        Focus::Editor => "",
+        Focus::Preview => " · PREVIEW",
+    };
+    let mut spans = vec![Span::styled(
+        format!(" {}{focus} ", app.mode.label()),
+        Style::new().fg(BRIGHT).bold(),
+    )];
     if let Some(tab) = app.active_tab() {
         let relative = app.workspace.relative(&tab.document.path);
         let dirty = if tab.document.conflict {
@@ -231,18 +254,23 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             ""
         };
         let (row, column) = tab.editor.cursor();
+        let location = if app.focus == Focus::Preview {
+            let percentage = if app.preview_max_scroll == 0 {
+                100
+            } else {
+                u32::from(app.preview_scroll) * 100 / u32::from(app.preview_max_scroll)
+            };
+            format!("Preview {percentage}%")
+        } else {
+            format!("{}:{}", row + 1, column + 1)
+        };
         spans.extend([
             Span::styled(
                 format!("│ {}{dirty}", relative.display()),
                 Style::new().fg(TEXT),
             ),
             Span::styled(
-                format!(
-                    " │ {} words │ {}:{}",
-                    tab.document.word_count(),
-                    row + 1,
-                    column + 1
-                ),
+                format!(" │ {} words │ {location}", tab.document.word_count()),
                 Style::new().fg(MUTED),
             ),
         ]);
@@ -474,7 +502,7 @@ fn draw_help(frame: &mut Frame, area: Rect, block: Block<'_>) {
         help_line("NAVIGATE", "S", "Document outline"),
         help_line("VIEW", "e / Ctrl+B", "Show or hide Files"),
         help_line("FILES", "a", "Create a Markdown file"),
-        help_line("VIEW", "v / Ctrl+E", "Inline / split / source"),
+        help_line("VIEW", "v / Ctrl+E", "Show / hide preview"),
         help_line("EDIT", "u / U", "Undo / redo"),
         help_line("MENU", ":", "Open grouped command menu"),
     ];
@@ -573,6 +601,7 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use super::*;
+    use crate::config::{Config, StartupView};
     use crate::workspace::Workspace;
 
     #[test]
@@ -607,5 +636,33 @@ mod tests {
                 .rendered_cursor_position()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn split_preview_uses_the_preserved_shell_and_focus_status() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "# Note\nbody").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut config = Config::default();
+        config.editor.view_mode = StartupView::Split;
+        let mut app = App::with_config(workspace, config).unwrap();
+        app.focus = Focus::Preview;
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Preview"));
+        assert!(rendered.contains("COMMAND · PREVIEW"));
+        assert!(rendered.contains("Preview 100%"));
     }
 }
