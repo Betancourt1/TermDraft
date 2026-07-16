@@ -20,6 +20,15 @@ _STRONG = re.compile(r"(\*\*|__)(.+?)\1")
 _STRIKE = re.compile(r"(~~)(.+?)\1")
 _EMPHASIS = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)|(?<!_)_([^_\n]+)_(?!_)")
 
+_HEADING_PRESENTATION = (
+    ("▌", Style(bold=True)),
+    ("▌", Style(bold=True)),
+    ("│", Style()),
+    ("·", Style()),
+    ("·", Style(italic=True)),
+    ("·", Style(italic=True)),
+)
+
 
 def render_inline_preview_line(source: str) -> Text:
     """Render one inactive source line without changing its character positions."""
@@ -34,8 +43,11 @@ def render_inline_preview_line(source: str) -> Text:
         return Text("".join(characters), style="dim", end="", no_wrap=True)
 
     if match := _HEADING.match(source):
+        marker, style = _HEADING_PRESENTATION[len(match.group(2)) - 1]
         _blank(characters, match.start(2), match.end(3))
-        styles.append((Style(bold=True), match.end(3), len(source)))
+        marker_position = match.end(2) - 1
+        characters[marker_position] = marker
+        styles.append((style, marker_position, len(source)))
     elif match := _QUOTE.match(source):
         characters[match.start(0) + len(match.group(1))] = "│"
         styles.append((Style(italic=True, dim=True), match.end(0), len(source)))

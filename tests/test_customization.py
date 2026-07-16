@@ -80,6 +80,9 @@ def test_preview_headings_have_readable_monochrome_colors(tmp_path: Path) -> Non
     assert variables["markdown-h1-color"] == "#e6e6e6"
     assert variables["markdown-h2-color"] == "#d0d0d0"
     assert variables["markdown-h3-color"] == "#b8b8b8"
+    assert variables["markdown-h4-color"] == "#a0a0a0"
+    assert variables["markdown-h5-color"] == "#909090"
+    assert variables["markdown-h6-color"] == "#808080"
 
 
 async def test_enter_continues_task_list_and_undo_reverts_the_whole_edit(tmp_path: Path) -> None:

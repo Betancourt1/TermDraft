@@ -104,6 +104,37 @@ Screen {
     outline: tall $accent;
 }
 
+#markdown-preview MarkdownH1 {
+    content-align: left middle;
+    border-bottom: solid $border;
+    text-style: bold;
+}
+
+#markdown-preview MarkdownH2 {
+    margin: 2 0 0 0;
+    text-style: bold;
+}
+
+#markdown-preview MarkdownH3 {
+    margin: 1 0 0 0;
+    text-style: none;
+}
+
+#markdown-preview MarkdownH4 {
+    margin: 1 0 0 1;
+    text-style: none;
+}
+
+#markdown-preview MarkdownH5 {
+    margin: 1 0 0 2;
+    text-style: italic;
+}
+
+#markdown-preview MarkdownH6 {
+    margin: 1 0 0 3;
+    text-style: italic;
+}
+
 #status-bar {
     height: 1;
     padding: 0 1;
