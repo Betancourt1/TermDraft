@@ -1,9 +1,8 @@
 //! Ratatui event/update coordinator.
 
-use std::fs;
 use std::io::stdout;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use ratatui::crossterm::cursor::SetCursorStyle;
@@ -15,13 +14,16 @@ use ratatui::crossterm::execute;
 use ratatui::widgets::ListState;
 use tui_textarea::{CursorMove, TextArea};
 
+#[cfg(test)]
+use std::fs;
+
 use crate::config::{Config, EditorConfig, StartupMode, StartupView};
 use crate::continuation::{EnterAction, action_for};
 use crate::document::{Document, Encoding, LineEnding};
 use crate::editor::{
     apply_editor_config, source_from_textarea, style_cursor, textarea_from_source,
 };
-use crate::persistence::{SaveError, load_file, save_atomic};
+use crate::persistence::{LoadedFile, SaveError, load_file, save_atomic};
 use crate::search::{TextMatch, fuzzy_score, heading_outline, search_text};
 use crate::ui;
 use crate::workspace::{Workspace, WorkspaceEntry};
@@ -282,12 +284,16 @@ pub struct EditorTab {
 impl EditorTab {
     fn from_path(path: &Path, config: &EditorConfig) -> anyhow::Result<Self> {
         let loaded = load_file(path)?;
+        Ok(Self::from_loaded(loaded, config))
+    }
+
+    fn from_loaded(loaded: LoadedFile, config: &EditorConfig) -> Self {
         let mut editor = textarea_from_source(&loaded.text);
         apply_editor_config(&mut editor, config);
-        Ok(Self {
+        Self {
             document: loaded.into_document(),
             editor,
-        })
+        }
     }
 
     pub fn sync_document(&mut self) {
@@ -1055,7 +1061,7 @@ impl App {
                 .iter()
                 .find(|tab| tab.document.path == entry.path)
                 .map_or_else(
-                    || fs::read_to_string(&entry.path).unwrap_or_default(),
+                    || load_file(&entry.path).map_or_else(|_| String::new(), |file| file.text),
                     |tab| tab.document.text.clone(),
                 );
             results.extend(search_text(&entry.path, &text, query, 100 - results.len()));
@@ -1082,6 +1088,76 @@ impl App {
             u16::try_from(result.line).unwrap_or(u16::MAX),
             u16::try_from(result.column).unwrap_or(u16::MAX),
         ));
+    }
+
+    fn poll_external_state(&mut self) -> bool {
+        self.sync_active_document();
+        let mut changed = self.poll_active_document();
+        let selected_path = self
+            .explorer_state
+            .selected()
+            .and_then(|index| self.entries.get(index))
+            .map(|entry| entry.path.clone());
+        let entries = self.workspace.scan();
+        if entries != self.entries {
+            self.entries = entries;
+            let selection = selected_path
+                .as_ref()
+                .and_then(|path| self.entries.iter().position(|entry| entry.path == *path))
+                .or_else(|| (!self.entries.is_empty()).then_some(0));
+            self.explorer_state.select(selection);
+            changed = true;
+        }
+        changed
+    }
+
+    fn poll_active_document(&mut self) -> bool {
+        let Some(index) = self.active_tab else {
+            return false;
+        };
+        let path = self.tabs[index].document.path.clone();
+        let baseline = self.tabs[index].document.snapshot.clone();
+        match load_file(&path) {
+            Ok(loaded) if loaded.snapshot == baseline => false,
+            Ok(loaded) => {
+                let same_content = loaded.snapshot.sha256 == baseline.sha256;
+                let same_origin = loaded.snapshot.same_origin(&baseline);
+                let dirty = self.tabs[index].document.text != self.tabs[index].document.saved_text;
+                if dirty && (!same_content || !same_origin) {
+                    if !self.tabs[index].document.conflict {
+                        self.tabs[index].document.conflict = true;
+                        self.status_message =
+                            Some("CONFLICT · file changed outside TermDraft".to_owned());
+                        return true;
+                    }
+                    return false;
+                }
+                if same_content {
+                    self.tabs[index].document.snapshot = loaded.snapshot;
+                    return false;
+                }
+
+                let cursor = self.tabs[index].editor.cursor();
+                let mut tab = EditorTab::from_loaded(loaded, &self.config.editor);
+                style_cursor(&mut tab.editor, self.mode);
+                tab.editor.move_cursor(CursorMove::Jump(
+                    u16::try_from(cursor.0).unwrap_or(u16::MAX),
+                    u16::try_from(cursor.1).unwrap_or(u16::MAX),
+                ));
+                self.tabs[index] = tab;
+                self.status_message = Some("Reloaded external changes".to_owned());
+                true
+            }
+            Err(error) => {
+                if self.tabs[index].document.conflict {
+                    false
+                } else {
+                    self.tabs[index].document.conflict = true;
+                    self.status_message = Some(format!("CONFLICT · file unavailable · {error}"));
+                    true
+                }
+            }
+        }
     }
 }
 
@@ -1120,6 +1196,7 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
         let result = (|| {
             let mut rendered_mode = app.mode;
             let mut needs_draw = true;
+            let mut next_disk_poll = Instant::now() + Duration::from_secs(2);
             while !app.should_quit {
                 if needs_draw {
                     terminal.draw(|frame| ui::draw(frame, &mut app))?;
@@ -1150,6 +1227,10 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
                     };
                     execute!(stdout(), shape)?;
                     rendered_mode = app.mode;
+                }
+                if Instant::now() >= next_disk_poll {
+                    needs_draw |= app.poll_external_state();
+                    next_disk_poll = Instant::now() + Duration::from_secs(2);
                 }
             }
             Ok(())
@@ -1321,5 +1402,49 @@ mod tests {
         assert_eq!(app.tabs.len(), 2);
         assert!(app.tabs[0].document.is_dirty());
         assert!(!app.tabs[1].document.is_dirty());
+    }
+
+    #[test]
+    fn clean_external_change_reloads_but_dirty_change_conflicts() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "first").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+
+        fs::write(&path, "external").unwrap();
+        assert!(app.poll_external_state());
+        assert_eq!(
+            source_from_textarea(&app.active_tab().unwrap().editor),
+            "external"
+        );
+        assert!(!app.active_tab().unwrap().document.conflict);
+
+        app.active_tab_mut().unwrap().editor.insert_str("local ");
+        fs::write(&path, "second external").unwrap();
+        assert!(app.poll_external_state());
+        assert!(app.active_tab().unwrap().document.conflict);
+        assert_eq!(
+            source_from_textarea(&app.active_tab().unwrap().editor),
+            "local external"
+        );
+    }
+
+    #[test]
+    fn external_poll_refreshes_the_workspace_tree() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("one.md");
+        fs::write(&path, "one").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+
+        fs::write(directory.path().join("two.md"), "two").unwrap();
+
+        assert!(app.poll_external_state());
+        assert!(
+            app.entries
+                .iter()
+                .any(|entry| entry.relative == Path::new("two.md"))
+        );
     }
 }

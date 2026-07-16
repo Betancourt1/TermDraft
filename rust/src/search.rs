@@ -71,20 +71,23 @@ pub fn search_text(path: &Path, text: &str, query: &str, limit: usize) -> Vec<Te
     let query_lower = query.to_lowercase();
     let mut matches = Vec::new();
     for (line_index, line) in text.lines().enumerate() {
-        let lower = line.to_lowercase();
-        let mut start = 0;
-        while let Some(offset) = lower[start..].find(&query_lower) {
-            let column = start + offset;
-            matches.push(TextMatch {
-                path: path.to_path_buf(),
-                line: line_index,
-                column,
-                preview: line.trim().to_owned(),
-            });
-            if matches.len() == limit {
-                return matches;
+        for byte in line
+            .char_indices()
+            .map(|(byte, _)| byte)
+            .chain(std::iter::once(line.len()))
+        {
+            if line[byte..].to_lowercase().starts_with(&query_lower) {
+                let column = line[..byte].chars().count();
+                matches.push(TextMatch {
+                    path: path.to_path_buf(),
+                    line: line_index,
+                    column,
+                    preview: line.trim().to_owned(),
+                });
+                if matches.len() == limit {
+                    return matches;
+                }
             }
-            start = column + query_lower.len();
         }
     }
     matches
@@ -124,5 +127,11 @@ mod tests {
             heading_outline("# One\ntext\n### Three\n####### no"),
             vec![(0, 1, "One".to_owned()), (2, 3, "Three".to_owned())]
         );
+    }
+
+    #[test]
+    fn text_search_reports_character_columns() {
+        let matches = search_text(Path::new("note.md"), "Café needle", "needle", 10);
+        assert_eq!(matches[0].column, 5);
     }
 }
