@@ -1,12 +1,15 @@
-//! Minimal crash-recovery journal compatible with `TermDraft`'s v2 JSON shape.
+//! Crash-recovery journal storage compatible with `TermDraft`'s JSON journals.
 
 use std::env;
+use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use directories::BaseDirs;
+#[cfg(unix)]
+use rustix::fs::{FlockOperation, flock};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
@@ -24,12 +27,13 @@ use crate::workspace::has_editable_suffix;
 
 const MAX_RECOVERY_BYTES: u64 = 16 * 1024 * 1024;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecoveryEntry {
     pub document_path: PathBuf,
     pub workspace_root: PathBuf,
     pub text: String,
     pub encoding: Encoding,
+    pub updated_at: OffsetDateTime,
     base_snapshot: SnapshotFile,
     fingerprint: String,
 }
@@ -37,7 +41,8 @@ pub struct RecoveryEntry {
 impl RecoveryEntry {
     #[must_use]
     pub fn baseline_matches(&self, current: &FileSnapshot) -> bool {
-        self.base_snapshot.digest.as_deref() == Some(&hex_digest(&current.sha256))
+        self.base_snapshot.exists
+            && self.base_snapshot.digest.as_deref() == Some(&hex_digest(&current.sha256))
             && self.base_snapshot.device == Some(current.device)
             && self.base_snapshot.inode == Some(current.inode)
     }
@@ -45,6 +50,80 @@ impl RecoveryEntry {
     #[must_use]
     pub fn fingerprint(&self) -> &str {
         &self.fingerprint
+    }
+}
+
+/// The safety state of an inventoried recovery journal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecoveryRecordStatus {
+    /// The journal and its Markdown source are available.
+    Valid,
+    /// The journal is valid, but its Markdown source no longer exists.
+    Missing,
+    /// The journal is valid, but its source is not a safe regular file.
+    Orphan,
+    /// The journal bytes or stored paths could not be trusted.
+    Corrupt,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryRecord {
+    pub journal_path: PathBuf,
+    pub fingerprint: String,
+    pub entry: Option<RecoveryEntry>,
+    pub error: Option<String>,
+    pub quarantined: bool,
+    pub has_content_fingerprint: bool,
+    pub status: RecoveryRecordStatus,
+}
+
+impl RecoveryRecord {
+    #[must_use]
+    pub const fn is_corrupt(&self) -> bool {
+        matches!(self.status, RecoveryRecordStatus::Corrupt)
+    }
+
+    #[must_use]
+    pub const fn is_orphan(&self) -> bool {
+        matches!(
+            self.status,
+            RecoveryRecordStatus::Missing | RecoveryRecordStatus::Orphan
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryRetentionOutcome {
+    pub journal_path: PathBuf,
+    pub document_path: PathBuf,
+    pub updated_at: OffsetDateTime,
+    pub deleted: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryRetentionResult {
+    pub cutoff: OffsetDateTime,
+    pub outcomes: Vec<RecoveryRetentionOutcome>,
+}
+
+impl RecoveryRetentionResult {
+    #[must_use]
+    pub fn selected_count(&self) -> usize {
+        self.outcomes.len()
+    }
+
+    #[must_use]
+    pub fn deleted_count(&self) -> usize {
+        self.outcomes
+            .iter()
+            .filter(|outcome| outcome.deleted)
+            .count()
+    }
+
+    #[must_use]
+    pub fn failed_count(&self) -> usize {
+        self.selected_count() - self.deleted_count()
     }
 }
 
@@ -73,11 +152,14 @@ struct RecoveryFile {
     workspace_root: String,
     text: String,
     encoding: String,
-    base_snapshot: SnapshotFile,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base_snapshot: Option<SnapshotFile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base_digest: Option<String>,
     updated_at: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SnapshotFile {
     exists: bool,
@@ -131,47 +213,34 @@ impl RecoveryJournal {
         snapshot: &FileSnapshot,
     ) -> Result<RecoveryEntry, RecoveryError> {
         validate_paths(document_path, workspace_root)?;
-        let mut entry = RecoveryEntry {
-            document_path: document_path.to_path_buf(),
-            workspace_root: workspace_root.to_path_buf(),
-            text: text.to_owned(),
-            encoding,
-            base_snapshot: snapshot_file(snapshot),
-            fingerprint: String::new(),
-        };
+        let updated_at = OffsetDateTime::now_utc();
+        let base_snapshot = snapshot_file(snapshot);
         let file = RecoveryFile {
             version: 2,
             document_path: path_string(document_path)?,
             workspace_root: path_string(workspace_root)?,
             text: text.to_owned(),
             encoding: encoding_name(encoding).to_owned(),
-            base_snapshot: entry.base_snapshot.clone(),
-            updated_at: OffsetDateTime::now_utc()
+            base_snapshot: Some(base_snapshot.clone()),
+            base_digest: None,
+            updated_at: updated_at
                 .format(&Rfc3339)
                 .map_err(|error| RecoveryError::Invalid(error.to_string()))?,
         };
-        let mut bytes =
-            serde_json::to_vec(&file).map_err(|error| RecoveryError::Invalid(error.to_string()))?;
-        bytes.push(b'\n');
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_RECOVERY_BYTES {
-            return Err(RecoveryError::TooLarge);
-        }
-        entry.fingerprint = data_fingerprint(&bytes);
-        fs::create_dir_all(&self.root)?;
-        secure_directory(&self.root)?;
-        let mut temporary = NamedTempFile::new_in(&self.root)?;
-        #[cfg(unix)]
-        temporary
-            .as_file()
-            .set_permissions(fs::Permissions::from_mode(0o600))?;
-        temporary.write_all(&bytes)?;
-        temporary.flush()?;
-        temporary.as_file().sync_all()?;
-        temporary
-            .persist(self.path_for(document_path))
-            .map_err(|error| RecoveryError::Io(error.error))?;
-        File::open(&self.root)?.sync_all()?;
-        Ok(entry)
+        let bytes = serialize_file(&file)?;
+        let fingerprint = data_fingerprint(&bytes);
+        let destination = self.path_for(document_path);
+        let _lock = JournalLock::acquire(&self.root, &destination)?;
+        self.publish_bytes(&destination, &bytes)?;
+        Ok(RecoveryEntry {
+            document_path: document_path.to_path_buf(),
+            workspace_root: workspace_root.to_path_buf(),
+            text: text.to_owned(),
+            encoding,
+            updated_at,
+            base_snapshot,
+            fingerprint,
+        })
     }
 
     /// Load and validate one exact document journal.
@@ -181,94 +250,428 @@ impl RecoveryJournal {
     /// Returns an error for an unsafe, corrupt, oversized, or mismatched journal.
     pub fn load(&self, document_path: &Path) -> Result<Option<RecoveryEntry>, RecoveryError> {
         let path = self.path_for(document_path);
-        let metadata = match fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
+        if is_missing(&path)? {
+            return Ok(None);
+        }
+        let _lock = JournalLock::acquire(&self.root, &path)?;
+        let Some(record) = self.inspect_if_present(&path, false)? else {
+            return Ok(None);
         };
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err(RecoveryError::Invalid(
-                "journal path is not a regular file".to_owned(),
-            ));
-        }
-        if metadata.len() > MAX_RECOVERY_BYTES {
-            return Err(RecoveryError::TooLarge);
-        }
-        let mut options = OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        options.custom_flags(libc::O_NOFOLLOW);
-        let mut bytes = Vec::with_capacity(metadata.len().try_into().unwrap_or(0));
-        options
-            .open(path)?
-            .take(MAX_RECOVERY_BYTES + 1)
-            .read_to_end(&mut bytes)?;
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_RECOVERY_BYTES {
-            return Err(RecoveryError::TooLarge);
-        }
-        let file: RecoveryFile = serde_json::from_slice(&bytes)
-            .map_err(|error| RecoveryError::Invalid(error.to_string()))?;
-        if file.version != 2 {
-            return Err(RecoveryError::Invalid(
-                "unsupported journal version".to_owned(),
-            ));
-        }
-        let stored_path = PathBuf::from(&file.document_path);
-        let workspace_root = PathBuf::from(&file.workspace_root);
-        if stored_path != document_path {
+        let entry = record.entry.ok_or_else(|| {
+            RecoveryError::Invalid(
+                record
+                    .error
+                    .unwrap_or_else(|| "journal could not be validated".to_owned()),
+            )
+        })?;
+        if entry.document_path != document_path {
             return Err(RecoveryError::Invalid(
                 "journal belongs to another document".to_owned(),
             ));
         }
-        validate_paths(&stored_path, &workspace_root)?;
-        validate_snapshot(&file.base_snapshot)?;
-        let encoding = match file.encoding.as_str() {
-            "utf-8" => Encoding::Utf8,
-            "utf-8-sig" => Encoding::Utf8Bom,
-            _ => {
-                return Err(RecoveryError::Invalid(
-                    "unsupported recovery encoding".to_owned(),
-                ));
-            }
-        };
-        Ok(Some(RecoveryEntry {
-            document_path: stored_path,
-            workspace_root,
-            text: file.text,
-            encoding,
-            base_snapshot: file.base_snapshot,
-            fingerprint: data_fingerprint(&bytes),
-        }))
+        Ok(Some(entry))
     }
 
-    /// Remove one journal after a save or explicit discard.
+    /// Return the exact current record for one document.
     ///
     /// # Errors
     ///
-    /// Returns an error when an existing journal cannot be removed durably.
+    /// Returns an error when an existing journal cannot be trusted.
+    pub fn record_for(
+        &self,
+        document_path: &Path,
+    ) -> Result<Option<RecoveryRecord>, RecoveryError> {
+        let path = self.path_for(document_path);
+        if is_missing(&path)? {
+            return Ok(None);
+        }
+        let _lock = JournalLock::acquire(&self.root, &path)?;
+        let Some(record) = self.inspect_if_present(&path, false)? else {
+            return Ok(None);
+        };
+        if record.entry.is_none() {
+            return Err(RecoveryError::Invalid(
+                record
+                    .error
+                    .unwrap_or_else(|| "journal could not be validated".to_owned()),
+            ));
+        }
+        Ok(Some(record))
+    }
+
+    /// Inventory active journals, retaining corrupt entries when filtering a workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the recovery directory cannot be safely scanned.
+    pub fn list_entries(
+        &self,
+        workspace_root: Option<&Path>,
+    ) -> Result<Vec<RecoveryRecord>, RecoveryError> {
+        self.list_directory(&self.root, workspace_root, false)
+    }
+
+    /// Inventory quarantined journals, retaining corrupt entries when filtering a workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when quarantine cannot be safely scanned.
+    pub fn list_quarantined(
+        &self,
+        workspace_root: Option<&Path>,
+    ) -> Result<Vec<RecoveryRecord>, RecoveryError> {
+        let Some(root) = self.quarantine_root(false)? else {
+            return Ok(Vec::new());
+        };
+        self.list_directory(&root, workspace_root, true)
+    }
+
+    /// Inventory both active and quarantined journals.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either storage directory cannot be safely scanned.
+    pub fn inventory(
+        &self,
+        workspace_root: Option<&Path>,
+    ) -> Result<Vec<RecoveryRecord>, RecoveryError> {
+        let mut records = self.list_entries(workspace_root)?;
+        records.extend(self.list_quarantined(workspace_root)?);
+        Ok(records)
+    }
+
+    /// Move an unchanged active journal into quarantine without changing its bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the record changed, is misplaced, or would replace an archive.
+    pub fn quarantine(&self, record: &RecoveryRecord) -> Result<PathBuf, RecoveryError> {
+        if record.quarantined {
+            return Err(RecoveryError::Invalid(
+                "recovery entry is already quarantined".to_owned(),
+            ));
+        }
+        self.validate_record_location(record)?;
+        let _lock = JournalLock::acquire(&self.root, &record.journal_path)?;
+        self.verify_record(record)?;
+        let quarantine_root = self.quarantine_root(true)?.ok_or_else(|| {
+            RecoveryError::Invalid("recovery quarantine was not created".to_owned())
+        })?;
+        let destination = quarantine_root.join(
+            record
+                .journal_path
+                .file_name()
+                .ok_or_else(|| RecoveryError::Invalid("journal has no filename".to_owned()))?,
+        );
+        fs::hard_link(&record.journal_path, &destination).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                RecoveryError::Invalid(format!(
+                    "recovery quarantine already contains {}",
+                    destination.display()
+                ))
+            } else {
+                RecoveryError::Io(error)
+            }
+        })?;
+        sync_directory(&quarantine_root)?;
+        self.verify_record(record)?;
+        remove_and_sync(&record.journal_path)?;
+        Ok(destination)
+    }
+
+    /// Permanently delete the exact quarantined record that was inventoried.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the record moved, changed, or could not be fingerprinted.
+    pub fn delete_quarantined(&self, record: &RecoveryRecord) -> Result<(), RecoveryError> {
+        if !record.quarantined {
+            return Err(RecoveryError::Invalid(
+                "recovery entry is not quarantined".to_owned(),
+            ));
+        }
+        self.validate_record_location(record)?;
+        let _lock = JournalLock::acquire(&self.root, &record.journal_path)?;
+        let current = self.verify_record(record)?;
+        if !record.has_content_fingerprint || !current.has_content_fingerprint {
+            return Err(RecoveryError::Invalid(
+                "cannot permanently delete recovery bytes that were not fingerprinted".to_owned(),
+            ));
+        }
+        remove_and_sync(&record.journal_path)
+    }
+
+    /// Delete valid old quarantine records, reporting each result independently.
+    ///
+    /// Passing `records` limits deletion to an inventory already confirmed by the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when the initial inventory cannot be read. Individual deletion
+    /// failures are returned as outcomes and do not stop the cleanup.
+    pub fn cleanup_quarantined(
+        &self,
+        before: OffsetDateTime,
+        workspace_root: Option<&Path>,
+        records: Option<&[RecoveryRecord]>,
+    ) -> Result<RecoveryRetentionResult, RecoveryError> {
+        let owned;
+        let inventory = if let Some(records) = records {
+            records
+        } else {
+            owned = self.list_quarantined(workspace_root)?;
+            &owned
+        };
+        let selected = inventory
+            .iter()
+            .filter_map(|record| {
+                record.entry.as_ref().and_then(|entry| {
+                    (record.quarantined
+                        && entry.updated_at < before
+                        && workspace_root.is_none_or(|root| entry.workspace_root.as_path() == root))
+                    .then(|| (record.clone(), entry.clone()))
+                })
+            })
+            .collect::<Vec<_>>();
+        let outcomes = selected
+            .iter()
+            .map(|(record, entry)| match self.delete_quarantined(record) {
+                Ok(()) => RecoveryRetentionOutcome {
+                    journal_path: record.journal_path.clone(),
+                    document_path: entry.document_path.clone(),
+                    updated_at: entry.updated_at,
+                    deleted: true,
+                    error: None,
+                },
+                Err(error) => RecoveryRetentionOutcome {
+                    journal_path: record.journal_path.clone(),
+                    document_path: entry.document_path.clone(),
+                    updated_at: entry.updated_at,
+                    deleted: false,
+                    error: Some(error.to_string()),
+                },
+            })
+            .collect();
+        Ok(RecoveryRetentionResult {
+            cutoff: before,
+            outcomes,
+        })
+    }
+
+    /// Remove one journal only if its exact fingerprint is still current.
+    ///
+    /// `None` confirms expected absence; it never authorizes deleting a journal that appeared
+    /// after the caller checked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a journal appeared or changed before deletion.
     pub fn discard(
         &self,
         document_path: &Path,
         expected_fingerprint: Option<&str>,
     ) -> Result<(), RecoveryError> {
-        if let Some(expected) = expected_fingerprint {
-            let bytes = match fs::read(self.path_for(document_path)) {
-                Ok(bytes) => bytes,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-                Err(error) => return Err(error.into()),
-            };
-            if data_fingerprint(&bytes) != expected {
-                return Err(RecoveryError::Invalid(
-                    "journal changed before it could be removed".to_owned(),
-                ));
+        let path = self.path_for(document_path);
+        let _lock = JournalLock::acquire(&self.root, &path)?;
+        let Some(record) = self.inspect_if_present(&path, false)? else {
+            return Ok(());
+        };
+        let Some(expected) = expected_fingerprint else {
+            return Err(RecoveryError::Invalid(
+                "journal appeared after cleanup was requested".to_owned(),
+            ));
+        };
+        if record.fingerprint != expected {
+            return Err(RecoveryError::Invalid(
+                "journal changed before it could be removed".to_owned(),
+            ));
+        }
+        remove_and_sync(&path)
+    }
+
+    fn list_directory(
+        &self,
+        root: &Path,
+        workspace_root: Option<&Path>,
+        quarantined: bool,
+    ) -> Result<Vec<RecoveryRecord>, RecoveryError> {
+        if root == self.root && is_missing(root)? {
+            return Ok(Vec::new());
+        }
+        validate_real_directory(root)?;
+        let mut paths = Vec::new();
+        for entry in fs::read_dir(root)? {
+            let path = entry?.path();
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "json")
+            {
+                paths.push(path);
             }
         }
-        match fs::remove_file(self.path_for(document_path)) {
-            Ok(()) => File::open(&self.root)?.sync_all()?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+        paths.sort();
+        let records = paths
+            .iter()
+            .map(|path| self.inspect(path, quarantined))
+            .filter(|record| {
+                record.entry.as_ref().is_none_or(|entry| {
+                    workspace_root.is_none_or(|root| entry.workspace_root.as_path() == root)
+                })
+            })
+            .collect();
+        Ok(records)
+    }
+
+    fn inspect_if_present(
+        &self,
+        path: &Path,
+        quarantined: bool,
+    ) -> Result<Option<RecoveryRecord>, RecoveryError> {
+        if is_missing(path)? {
+            return Ok(None);
+        }
+        Ok(Some(self.inspect(path, quarantined)))
+    }
+
+    fn inspect(&self, path: &Path, quarantined: bool) -> RecoveryRecord {
+        let bytes = match read_regular_bytes(path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return RecoveryRecord {
+                    journal_path: path.to_path_buf(),
+                    fingerprint: path_fingerprint(path),
+                    entry: None,
+                    error: Some(error.to_string()),
+                    quarantined,
+                    has_content_fingerprint: false,
+                    status: RecoveryRecordStatus::Corrupt,
+                };
+            }
+        };
+        let fingerprint = data_fingerprint(&bytes);
+        match entry_from_bytes(&bytes, &fingerprint) {
+            Ok(entry) => {
+                let expected = self.path_for(&entry.document_path);
+                let filename_matches = if quarantined {
+                    expected.file_name() == path.file_name()
+                } else {
+                    expected == path
+                };
+                if !filename_matches {
+                    return RecoveryRecord {
+                        journal_path: path.to_path_buf(),
+                        fingerprint,
+                        entry: None,
+                        error: Some(
+                            "recovery journal filename does not match its document".to_owned(),
+                        ),
+                        quarantined,
+                        has_content_fingerprint: true,
+                        status: RecoveryRecordStatus::Corrupt,
+                    };
+                }
+                RecoveryRecord {
+                    journal_path: path.to_path_buf(),
+                    fingerprint,
+                    status: source_status(&entry.document_path),
+                    entry: Some(entry),
+                    error: None,
+                    quarantined,
+                    has_content_fingerprint: true,
+                }
+            }
+            Err(error) => RecoveryRecord {
+                journal_path: path.to_path_buf(),
+                fingerprint,
+                entry: None,
+                error: Some(error.to_string()),
+                quarantined,
+                has_content_fingerprint: true,
+                status: RecoveryRecordStatus::Corrupt,
+            },
+        }
+    }
+
+    fn verify_record(&self, record: &RecoveryRecord) -> Result<RecoveryRecord, RecoveryError> {
+        self.validate_record_location(record)?;
+        let current = self.inspect(&record.journal_path, record.quarantined);
+        if current.fingerprint != record.fingerprint {
+            return Err(RecoveryError::Invalid(
+                "recovery entry changed after it was listed".to_owned(),
+            ));
+        }
+        Ok(current)
+    }
+
+    fn validate_record_location(&self, record: &RecoveryRecord) -> Result<(), RecoveryError> {
+        let expected_parent = if record.quarantined {
+            self.root.join("quarantine")
+        } else {
+            self.root.clone()
+        };
+        if record.journal_path.parent() != Some(expected_parent.as_path()) {
+            return Err(RecoveryError::Invalid(
+                "recovery entry is outside its storage directory".to_owned(),
+            ));
+        }
+        if record.quarantined {
+            self.quarantine_root(false)?;
         }
         Ok(())
+    }
+
+    fn quarantine_root(&self, create: bool) -> Result<Option<PathBuf>, RecoveryError> {
+        let root = self.root.join("quarantine");
+        if create {
+            ensure_directory(&root)?;
+        } else if is_missing(&root)? {
+            return Ok(None);
+        }
+        validate_real_directory(&root)?;
+        Ok(Some(root))
+    }
+
+    fn publish_bytes(&self, destination: &Path, bytes: &[u8]) -> Result<(), RecoveryError> {
+        ensure_directory(&self.root)?;
+        let mut temporary = NamedTempFile::new_in(&self.root)?;
+        #[cfg(unix)]
+        temporary
+            .as_file()
+            .set_permissions(fs::Permissions::from_mode(0o600))?;
+        temporary.write_all(bytes)?;
+        temporary.flush()?;
+        temporary.as_file().sync_all()?;
+        temporary
+            .persist(destination)
+            .map_err(|error| RecoveryError::Io(error.error))?;
+        sync_directory(&self.root)
+    }
+}
+
+struct JournalLock {
+    _file: File,
+}
+
+impl JournalLock {
+    fn acquire(root: &Path, journal_path: &Path) -> Result<Self, RecoveryError> {
+        ensure_directory(root)?;
+        let filename = journal_path
+            .file_name()
+            .ok_or_else(|| RecoveryError::Invalid("journal has no filename".to_owned()))?;
+        let lock_path = root.join(format!(".{}.lock", filename.to_string_lossy()));
+        let mut options = OpenOptions::new();
+        options.create(true).read(true).write(true);
+        #[cfg(unix)]
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        let file = options.open(&lock_path)?;
+        if !file.metadata()?.is_file() {
+            return Err(RecoveryError::Invalid(
+                "journal lock is not a regular file".to_owned(),
+            ));
+        }
+        #[cfg(unix)]
+        flock(&file, FlockOperation::LockExclusive).map_err(std::io::Error::from)?;
+        Ok(Self { _file: file })
     }
 }
 
@@ -303,6 +706,67 @@ pub fn default_recovery_root() -> Result<PathBuf, RecoveryError> {
     }
 }
 
+fn serialize_file(file: &RecoveryFile) -> Result<Vec<u8>, RecoveryError> {
+    let mut bytes =
+        serde_json::to_vec(file).map_err(|error| RecoveryError::Invalid(error.to_string()))?;
+    bytes.push(b'\n');
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_RECOVERY_BYTES {
+        return Err(RecoveryError::TooLarge);
+    }
+    Ok(bytes)
+}
+
+fn entry_from_bytes(bytes: &[u8], fingerprint: &str) -> Result<RecoveryEntry, RecoveryError> {
+    let file: RecoveryFile = serde_json::from_slice(bytes)
+        .map_err(|error| RecoveryError::Invalid(format!("invalid JSON: {error}")))?;
+    let base_snapshot = match file.version {
+        1 => SnapshotFile {
+            exists: file.base_digest.is_some(),
+            digest: file.base_digest,
+            size: None,
+            mtime_ns: None,
+            ctime_ns: None,
+            mode: None,
+            device: None,
+            inode: None,
+            parent_device: None,
+            parent_inode: None,
+        },
+        2 => file.base_snapshot.ok_or_else(|| {
+            RecoveryError::Invalid("missing recovery baseline snapshot".to_owned())
+        })?,
+        _ => {
+            return Err(RecoveryError::Invalid(
+                "unsupported journal version".to_owned(),
+            ));
+        }
+    };
+    validate_snapshot(&base_snapshot)?;
+    let document_path = PathBuf::from(file.document_path);
+    let workspace_root = PathBuf::from(file.workspace_root);
+    validate_paths(&document_path, &workspace_root)?;
+    let encoding = match file.encoding.as_str() {
+        "utf-8" => Encoding::Utf8,
+        "utf-8-sig" => Encoding::Utf8Bom,
+        _ => {
+            return Err(RecoveryError::Invalid(
+                "unsupported recovery encoding".to_owned(),
+            ));
+        }
+    };
+    let updated_at = OffsetDateTime::parse(&file.updated_at, &Rfc3339)
+        .map_err(|error| RecoveryError::Invalid(format!("invalid update timestamp: {error}")))?;
+    Ok(RecoveryEntry {
+        document_path,
+        workspace_root,
+        text: file.text,
+        encoding,
+        updated_at,
+        base_snapshot,
+        fingerprint: fingerprint.to_owned(),
+    })
+}
+
 fn snapshot_file(snapshot: &FileSnapshot) -> SnapshotFile {
     SnapshotFile {
         exists: true,
@@ -319,16 +783,20 @@ fn snapshot_file(snapshot: &FileSnapshot) -> SnapshotFile {
 }
 
 fn validate_snapshot(snapshot: &SnapshotFile) -> Result<(), RecoveryError> {
-    if !snapshot.exists
-        || snapshot.digest.as_ref().is_none_or(|digest| {
+    if snapshot.exists {
+        if snapshot.digest.as_ref().is_none_or(|digest| {
             digest.len() != 64
                 || digest
                     .bytes()
                     .any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(&byte))
-        })
-    {
+        }) {
+            return Err(RecoveryError::Invalid(
+                "invalid recovery baseline digest".to_owned(),
+            ));
+        }
+    } else if snapshot.digest.is_some() {
         return Err(RecoveryError::Invalid(
-            "invalid recovery baseline digest".to_owned(),
+            "missing recovery baseline has a digest".to_owned(),
         ));
     }
     Ok(())
@@ -344,6 +812,133 @@ fn validate_paths(document_path: &Path, workspace_root: &Path) -> Result<(), Rec
             "document is outside its workspace".to_owned(),
         ));
     }
+    let resolved_root = resolve_with_missing(workspace_root)?;
+    let resolved_document = resolve_with_missing(document_path)?;
+    if !resolved_document.starts_with(&resolved_root) {
+        return Err(RecoveryError::Invalid(
+            "document resolves outside its workspace".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_with_missing(path: &Path) -> Result<PathBuf, RecoveryError> {
+    let mut current = path;
+    let mut missing = Vec::<OsString>::new();
+    loop {
+        match current.canonicalize() {
+            Ok(mut resolved) => {
+                for component in missing.iter().rev() {
+                    resolved.push(component);
+                }
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let name = current.file_name().ok_or(RecoveryError::Io(error))?;
+                missing.push(name.to_os_string());
+                current = current.parent().ok_or_else(|| {
+                    RecoveryError::Invalid("path has no resolvable parent".to_owned())
+                })?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn source_status(document_path: &Path) -> RecoveryRecordStatus {
+    let metadata = match fs::symlink_metadata(document_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return RecoveryRecordStatus::Missing;
+        }
+        Err(_) => return RecoveryRecordStatus::Orphan,
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return RecoveryRecordStatus::Orphan;
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    if options.open(document_path).is_ok() {
+        RecoveryRecordStatus::Valid
+    } else {
+        RecoveryRecordStatus::Orphan
+    }
+}
+
+fn read_regular_bytes(path: &Path) -> Result<Vec<u8>, RecoveryError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(RecoveryError::Invalid(
+            "journal path is not a regular file".to_owned(),
+        ));
+    }
+    if metadata.len() > MAX_RECOVERY_BYTES {
+        return Err(RecoveryError::TooLarge);
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    let mut bytes = Vec::with_capacity(metadata.len().try_into().unwrap_or(0));
+    options
+        .open(path)?
+        .take(MAX_RECOVERY_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_RECOVERY_BYTES {
+        return Err(RecoveryError::TooLarge);
+    }
+    Ok(bytes)
+}
+
+fn ensure_directory(path: &Path) -> Result<(), RecoveryError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(RecoveryError::Invalid(format!(
+                    "recovery storage is not a real directory: {}",
+                    path.display()
+                )));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir_all(path)?;
+        }
+        Err(error) => return Err(error.into()),
+    }
+    secure_directory(path)
+}
+
+fn validate_real_directory(path: &Path) -> Result<(), RecoveryError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(RecoveryError::Invalid(format!(
+            "recovery storage is not a real directory: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn is_missing(path: &Path) -> Result<bool, RecoveryError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn remove_and_sync(path: &Path) -> Result<(), RecoveryError> {
+    fs::remove_file(path)?;
+    sync_directory(
+        path.parent()
+            .ok_or_else(|| RecoveryError::Invalid("journal has no parent".to_owned()))?,
+    )
+}
+
+fn sync_directory(path: &Path) -> Result<(), RecoveryError> {
+    File::open(path)?.sync_all()?;
     Ok(())
 }
 
@@ -371,6 +966,23 @@ fn data_fingerprint(bytes: &[u8]) -> String {
     fingerprint
 }
 
+fn path_fingerprint(path: &Path) -> String {
+    let description = match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => fs::read_link(path).map_or_else(
+            |error| format!("unreadable symlink:{error}"),
+            |target| format!("symlink:{}", target.display()),
+        ),
+        Ok(metadata) => format!(
+            "special:{}:{}:{:?}",
+            metadata.len(),
+            metadata.permissions().readonly(),
+            metadata.modified().ok()
+        ),
+        Err(error) => format!("unreadable:{error}"),
+    };
+    data_fingerprint(description.as_bytes())
+}
+
 fn path_string(path: &Path) -> Result<String, RecoveryError> {
     path.to_str()
         .map(ToOwned::to_owned)
@@ -387,31 +999,38 @@ fn secure_directory(path: &Path) -> Result<(), RecoveryError> {
 mod tests {
     use super::*;
     use crate::persistence::load_file;
+    use std::time::Duration;
+
+    fn create_document(root: &Path, name: &str, text: &str) -> (PathBuf, FileSnapshot) {
+        let path = root.join(name);
+        fs::write(&path, text).unwrap();
+        let loaded = load_file(&path).unwrap();
+        (path, loaded.snapshot)
+    }
+
+    fn set_updated_at(path: &Path, updated_at: OffsetDateTime) {
+        let bytes = fs::read(path).unwrap();
+        let mut file: RecoveryFile = serde_json::from_slice(&bytes).unwrap();
+        file.updated_at = updated_at.format(&Rfc3339).unwrap();
+        fs::write(path, serialize_file(&file).unwrap()).unwrap();
+    }
 
     #[test]
     fn round_trip_uses_python_v2_shape_and_private_source() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
-        let document = root.join("note.md");
-        fs::write(&document, "saved").unwrap();
-        let loaded = load_file(&document).unwrap();
+        let (document, snapshot) = create_document(&root, "note.md", "saved");
         let journal = RecoveryJournal::new(root.join("recovery"));
 
         journal
-            .publish(
-                &document,
-                &root,
-                "unsaved",
-                loaded.encoding,
-                &loaded.snapshot,
-            )
+            .publish(&document, &root, "unsaved", Encoding::Utf8, &snapshot)
             .unwrap();
         let entry = journal.load(&document).unwrap().unwrap();
         let payload: serde_json::Value =
             serde_json::from_slice(&fs::read(journal.path_for(&document)).unwrap()).unwrap();
 
         assert_eq!(entry.text, "unsaved");
-        assert!(entry.baseline_matches(&loaded.snapshot));
+        assert!(entry.baseline_matches(&snapshot));
         assert_eq!(payload["version"], 2);
         assert_eq!(
             payload["base_snapshot"]["digest"].as_str().unwrap().len(),
@@ -424,18 +1043,151 @@ mod tests {
     }
 
     #[test]
+    fn loads_legacy_digest_only_journal() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let document = root.join("legacy.md");
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        ensure_directory(&journal.root).unwrap();
+        let file = RecoveryFile {
+            version: 1,
+            document_path: document.to_string_lossy().into_owned(),
+            workspace_root: root.to_string_lossy().into_owned(),
+            text: "legacy draft".to_owned(),
+            encoding: "utf-8".to_owned(),
+            base_snapshot: None,
+            base_digest: Some("a".repeat(64)),
+            updated_at: "2026-07-11T12:00:00+00:00".to_owned(),
+        };
+        fs::write(journal.path_for(&document), serialize_file(&file).unwrap()).unwrap();
+
+        let entry = journal.load(&document).unwrap().unwrap();
+
+        assert_eq!(entry.text, "legacy draft");
+        assert_eq!(entry.updated_at.year(), 2026);
+        assert!(!entry.baseline_matches(&FileSnapshot {
+            sha256: [0xaa; 32],
+            size: 0,
+            modified_ns: 0,
+            mode: 0,
+            device: 0,
+            inode: 0,
+        }));
+    }
+
+    #[test]
+    fn inventory_classifies_valid_missing_orphan_and_corrupt_records() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let (valid, valid_snapshot) = create_document(&root, "valid.md", "saved");
+        let (missing, missing_snapshot) = create_document(&root, "missing.md", "saved");
+        let (orphan, orphan_snapshot) = create_document(&root, "orphan.md", "saved");
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        for (path, snapshot) in [
+            (&valid, &valid_snapshot),
+            (&missing, &missing_snapshot),
+            (&orphan, &orphan_snapshot),
+        ] {
+            journal
+                .publish(path, &root, "draft", Encoding::Utf8, snapshot)
+                .unwrap();
+        }
+        fs::remove_file(&missing).unwrap();
+        fs::remove_file(&orphan).unwrap();
+        fs::create_dir(&orphan).unwrap();
+        let corrupt_path = journal.root.join(format!("{}.json", "f".repeat(64)));
+        fs::write(&corrupt_path, b"not JSON\0\xff").unwrap();
+
+        let records = journal.list_entries(Some(&root)).unwrap();
+
+        assert_eq!(records.len(), 4);
+        assert_eq!(
+            records
+                .iter()
+                .find(|record| record
+                    .entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.document_path == valid))
+                .unwrap()
+                .status,
+            RecoveryRecordStatus::Valid
+        );
+        assert_eq!(
+            records
+                .iter()
+                .find(|record| record
+                    .entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.document_path == missing))
+                .unwrap()
+                .status,
+            RecoveryRecordStatus::Missing
+        );
+        assert_eq!(
+            records
+                .iter()
+                .find(|record| record
+                    .entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.document_path == orphan))
+                .unwrap()
+                .status,
+            RecoveryRecordStatus::Orphan
+        );
+        let corrupt = records
+            .iter()
+            .find(|record| record.journal_path == corrupt_path)
+            .unwrap();
+        assert!(corrupt.is_corrupt());
+        assert!(corrupt.has_content_fingerprint);
+    }
+
+    #[test]
+    fn corrupt_entry_can_be_quarantined_without_changing_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        ensure_directory(&journal.root).unwrap();
+        let source = journal.root.join(format!("{}.json", "e".repeat(64)));
+        let bytes = b"{definitely not JSON}\r\n";
+        fs::write(&source, bytes).unwrap();
+        let record = journal.list_entries(None).unwrap().pop().unwrap();
+
+        let destination = journal.quarantine(&record).unwrap();
+
+        assert!(!source.exists());
+        assert_eq!(fs::read(destination).unwrap(), bytes);
+        assert!(journal.list_entries(None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn quarantine_refuses_a_record_that_changed_after_inventory() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        ensure_directory(&journal.root).unwrap();
+        let source = journal.root.join(format!("{}.json", "e".repeat(64)));
+        fs::write(&source, b"old corrupt bytes").unwrap();
+        let record = journal.list_entries(None).unwrap().pop().unwrap();
+        fs::write(&source, b"new corrupt bytes").unwrap();
+
+        let error = journal.quarantine(&record).unwrap_err();
+
+        assert!(error.to_string().contains("changed after it was listed"));
+        assert_eq!(fs::read(source).unwrap(), b"new corrupt bytes");
+    }
+
+    #[test]
     fn conditional_discard_preserves_a_newer_draft() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
-        let document = root.join("note.md");
-        fs::write(&document, "saved").unwrap();
-        let loaded = load_file(&document).unwrap();
+        let (document, snapshot) = create_document(&root, "note.md", "saved");
         let journal = RecoveryJournal::new(root.join("recovery"));
         let first = journal
-            .publish(&document, &root, "first", loaded.encoding, &loaded.snapshot)
+            .publish(&document, &root, "first", Encoding::Utf8, &snapshot)
             .unwrap();
         journal
-            .publish(&document, &root, "newer", loaded.encoding, &loaded.snapshot)
+            .publish(&document, &root, "newer", Encoding::Utf8, &snapshot)
             .unwrap();
 
         assert!(
@@ -444,5 +1196,97 @@ mod tests {
                 .is_err()
         );
         assert_eq!(journal.load(&document).unwrap().unwrap().text, "newer");
+    }
+
+    #[test]
+    fn expected_absence_never_deletes_a_journal_that_appeared() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let (document, snapshot) = create_document(&root, "note.md", "saved");
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        assert!(journal.record_for(&document).unwrap().is_none());
+        journal
+            .publish(
+                &document,
+                &root,
+                "other instance",
+                Encoding::Utf8,
+                &snapshot,
+            )
+            .unwrap();
+
+        let error = journal.discard(&document, None).unwrap_err();
+
+        assert!(error.to_string().contains("appeared after cleanup"));
+        assert!(journal.load(&document).unwrap().is_some());
+    }
+
+    #[test]
+    fn retention_deletes_only_confirmed_old_valid_quarantine() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let (old, old_snapshot) = create_document(&root, "old.md", "saved");
+        let (recent, recent_snapshot) = create_document(&root, "recent.md", "saved");
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        let now = OffsetDateTime::now_utc();
+        for (path, snapshot, age) in [
+            (&old, &old_snapshot, Duration::from_secs(90 * 24 * 60 * 60)),
+            (
+                &recent,
+                &recent_snapshot,
+                Duration::from_secs(2 * 24 * 60 * 60),
+            ),
+        ] {
+            journal
+                .publish(path, &root, "draft", Encoding::Utf8, snapshot)
+                .unwrap();
+            let active_path = journal.path_for(path);
+            set_updated_at(&active_path, now - age);
+            let record = journal
+                .list_entries(Some(&root))
+                .unwrap()
+                .into_iter()
+                .find(|record| record.journal_path == active_path)
+                .unwrap();
+            journal.quarantine(&record).unwrap();
+        }
+        let quarantine = journal.list_quarantined(Some(&root)).unwrap();
+        let old_record = quarantine
+            .iter()
+            .find(|record| record.entry.as_ref().unwrap().document_path == old)
+            .unwrap()
+            .clone();
+
+        let result = journal
+            .cleanup_quarantined(
+                now - Duration::from_secs(30 * 24 * 60 * 60),
+                Some(&root),
+                Some(std::slice::from_ref(&old_record)),
+            )
+            .unwrap();
+
+        assert_eq!(result.selected_count(), 1);
+        assert_eq!(result.deleted_count(), 1);
+        let remaining = journal.list_quarantined(Some(&root)).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].entry.as_ref().unwrap().document_path, recent);
+    }
+
+    #[test]
+    fn symlinked_quarantine_is_rejected() {
+        #[cfg(unix)]
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().canonicalize().unwrap();
+            let journal = RecoveryJournal::new(root.join("recovery"));
+            ensure_directory(&journal.root).unwrap();
+            let outside = root.join("outside");
+            fs::create_dir(&outside).unwrap();
+            std::os::unix::fs::symlink(&outside, journal.root.join("quarantine")).unwrap();
+
+            let error = journal.list_quarantined(None).unwrap_err();
+
+            assert!(error.to_string().contains("not a real directory"));
+        }
     }
 }
