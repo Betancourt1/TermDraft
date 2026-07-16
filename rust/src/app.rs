@@ -1,9 +1,14 @@
 //! Ratatui event/update coordinator.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, stdout};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -24,9 +29,16 @@ use crate::document::{Document, Encoding, LineEnding};
 use crate::editor::{
     apply_editor_config, source_from_textarea, style_cursor, textarea_from_source,
 };
+use crate::path_filter::parse_path_filter;
 use crate::persistence::{LoadedFile, SaveError, load_file, save_atomic};
 use crate::recovery::{RecoveryEntry, RecoveryJournal};
-use crate::search::{TextMatch, fuzzy_score, heading_outline, search_text};
+use crate::search::{
+    DEFAULT_FILE_RESULT_LIMIT, DocumentSearchMatch, MatchDirection, TextMatch, TextSearchMode,
+    TextSearchOptions, TextSearchOverride, TextSearchRequest, cycle_document_match_index,
+    find_document_matches, fuzzy_score, heading_outline, initial_document_match_index,
+    location_to_offset, offset_to_location, replace_document_matches, search_files_with_filter,
+    search_workspace_text,
+};
 use crate::session::{DocumentViewState, MAX_SESSION_DOCUMENTS, SessionState, SessionStore};
 use crate::ui;
 use crate::workspace::{Workspace, WorkspaceEntry, has_editable_suffix};
@@ -116,18 +128,36 @@ pub enum Overlay {
         selected: usize,
     },
     FileFinder {
-        input: TextInput,
+        query: TextInput,
+        filter: TextInput,
+        focus: FileFinderFocus,
         selected: usize,
+        error: Option<String>,
     },
     RecentDocuments {
         paths: Vec<PathBuf>,
         selected: usize,
     },
     Find {
-        input: TextInput,
+        query: TextInput,
+        replacement: TextInput,
+        case_sensitive: bool,
+        focus: FindFocus,
+        source: String,
+        matches: Vec<DocumentSearchMatch>,
+        selected: Option<usize>,
+        anchor_offset: usize,
+        read_only: bool,
     },
     WorkspaceSearch {
-        input: TextInput,
+        query: TextInput,
+        filter: TextInput,
+        mode: TextSearchMode,
+        case_sensitive: bool,
+        focus: WorkspaceSearchFocus,
+        results: Vec<TextMatch>,
+        selected: usize,
+        status: String,
     },
     SearchResults {
         results: Vec<TextMatch>,
@@ -155,6 +185,50 @@ pub enum Overlay {
     },
     Confirm(ConfirmAction),
     Message(String),
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FileFinderFocus {
+    #[default]
+    Query,
+    Filter,
+    Results,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FindFocus {
+    #[default]
+    Query,
+    Replacement,
+    Case,
+    Previous,
+    Next,
+    Replace,
+    ReplaceAll,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WorkspaceSearchFocus {
+    #[default]
+    Query,
+    Mode,
+    Case,
+    Filter,
+    Results,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FindOperation {
+    Previous,
+    Next,
+    Replace,
+    ReplaceAll,
+}
+
+struct WorkspaceSearchCompletion {
+    revision: u64,
+    query: String,
+    result: crate::search::TextSearchResult,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -458,6 +532,8 @@ pub const COMMANDS: &[CommandSpec] = &[
 pub struct EditorTab {
     pub document: Document,
     pub editor: TextArea<'static>,
+    undo_groups: Vec<usize>,
+    redo_groups: Vec<usize>,
 }
 
 impl EditorTab {
@@ -472,11 +548,76 @@ impl EditorTab {
         Self {
             document: loaded.into_document(),
             editor,
+            undo_groups: Vec::new(),
+            redo_groups: Vec::new(),
         }
     }
 
     pub fn sync_document(&mut self) {
         self.document.text = source_from_textarea(&self.editor);
+    }
+
+    fn record_edit(&mut self, history_items: usize) {
+        if history_items == 0 {
+            return;
+        }
+        self.undo_groups.push(history_items);
+        self.redo_groups.clear();
+    }
+
+    fn undo(&mut self) {
+        let requested = self.undo_groups.pop().unwrap_or(1);
+        let mut applied = 0;
+        for _ in 0..requested {
+            if !self.editor.undo() {
+                break;
+            }
+            applied += 1;
+        }
+        if applied > 0 {
+            self.redo_groups.push(applied);
+            self.sync_document();
+        }
+    }
+
+    fn redo(&mut self) {
+        let requested = self.redo_groups.pop().unwrap_or(1);
+        let mut applied = 0;
+        for _ in 0..requested {
+            if !self.editor.redo() {
+                break;
+            }
+            applied += 1;
+        }
+        if applied > 0 {
+            self.undo_groups.push(applied);
+            self.sync_document();
+        }
+    }
+
+    fn replace_range(&mut self, source_match: DocumentSearchMatch, replacement: &str) {
+        let source = source_from_textarea(&self.editor);
+        let start = offset_to_location(&source, source_match.start);
+        let end = offset_to_location(&source, source_match.end);
+        self.editor.move_cursor(CursorMove::Jump(
+            u16::try_from(start.0).unwrap_or(u16::MAX),
+            u16::try_from(start.1).unwrap_or(u16::MAX),
+        ));
+        self.editor.start_selection();
+        self.editor.move_cursor(CursorMove::Jump(
+            u16::try_from(end.0).unwrap_or(u16::MAX),
+            u16::try_from(end.1).unwrap_or(u16::MAX),
+        ));
+        self.editor.insert_str(replacement);
+        self.record_edit(1 + usize::from(!replacement.is_empty()));
+        self.sync_document();
+    }
+
+    fn replace_all(&mut self, source: &str) {
+        self.editor.select_all();
+        self.editor.insert_str(source);
+        self.record_edit(1 + usize::from(!source.is_empty()));
+        self.sync_document();
     }
 }
 
@@ -511,6 +652,9 @@ pub struct App {
     published_recovery: HashMap<PathBuf, (String, String)>,
     recent_paths: Vec<PathBuf>,
     session_views: HashMap<PathBuf, DocumentViewState>,
+    workspace_search_revision: Arc<AtomicU64>,
+    workspace_search_tx: Sender<WorkspaceSearchCompletion>,
+    workspace_search_rx: Receiver<WorkspaceSearchCompletion>,
     should_quit: bool,
 }
 
@@ -556,6 +700,7 @@ impl App {
             StartupView::Inline => ViewMode::Inline,
             StartupView::Split => ViewMode::Split,
         };
+        let (workspace_search_tx, workspace_search_rx) = mpsc::channel();
         let mut app = Self {
             workspace,
             config,
@@ -587,6 +732,9 @@ impl App {
             published_recovery: HashMap::new(),
             recent_paths: Vec::new(),
             session_views: HashMap::new(),
+            workspace_search_revision: Arc::new(AtomicU64::new(0)),
+            workspace_search_tx,
+            workspace_search_rx,
             should_quit: false,
         };
         if let Some(path) = initial_file {
@@ -1206,22 +1354,32 @@ impl App {
             CommandAction::CloseTab => self.close_active(),
             CommandAction::Quit => self.request_quit(),
             CommandAction::FileFinder => {
+                let _ = self.poll_external_state();
                 self.overlay = Some(Overlay::FileFinder {
-                    input: TextInput::default(),
+                    query: TextInput::default(),
+                    filter: TextInput::default(),
+                    focus: FileFinderFocus::Query,
                     selected: 0,
+                    error: None,
                 });
             }
             CommandAction::RecentDocuments => self.open_recent_documents(),
             CommandAction::WorkspaceSearch => {
+                self.sync_active_document();
+                self.workspace_search_revision
+                    .fetch_add(1, Ordering::Relaxed);
                 self.overlay = Some(Overlay::WorkspaceSearch {
-                    input: TextInput::default(),
+                    query: TextInput::default(),
+                    filter: TextInput::default(),
+                    mode: TextSearchMode::Literal,
+                    case_sensitive: false,
+                    focus: WorkspaceSearchFocus::Query,
+                    results: Vec::new(),
+                    selected: 0,
+                    status: "Enter a query to search Markdown source.".to_owned(),
                 });
             }
-            CommandAction::Find => {
-                self.overlay = Some(Overlay::Find {
-                    input: TextInput::default(),
-                });
-            }
+            CommandAction::Find => self.open_document_find(),
             CommandAction::Outline => self.open_outline(),
             CommandAction::ToggleExplorer => {
                 self.show_explorer = !self.show_explorer;
@@ -1236,14 +1394,12 @@ impl App {
             CommandAction::CommandMode => self.set_mode(Mode::Command),
             CommandAction::Undo => {
                 if let Some(tab) = self.active_tab_mut() {
-                    tab.editor.undo();
-                    tab.sync_document();
+                    tab.undo();
                 }
             }
             CommandAction::Redo => {
                 if let Some(tab) = self.active_tab_mut() {
-                    tab.editor.redo();
-                    tab.sync_document();
+                    tab.redo();
                 }
             }
             CommandAction::Help => self.overlay = Some(Overlay::Help),
@@ -1262,6 +1418,96 @@ impl App {
         } else {
             self.overlay = Some(Overlay::Outline { items, selected: 0 });
         }
+    }
+
+    fn open_document_find(&mut self) {
+        self.sync_active_document();
+        let Some(tab) = self.active_tab() else {
+            self.status_message = Some("Open a Markdown document first".to_owned());
+            return;
+        };
+        let source = tab.document.text.clone();
+        let anchor_offset = location_to_offset(&source, tab.editor.cursor());
+        let read_only = !tab.document.is_editable();
+        self.overlay = Some(Overlay::Find {
+            query: TextInput::default(),
+            replacement: TextInput::default(),
+            case_sensitive: false,
+            focus: FindFocus::Query,
+            source,
+            matches: Vec::new(),
+            selected: None,
+            anchor_offset,
+            read_only,
+        });
+    }
+
+    fn select_document_match(&mut self, source_match: DocumentSearchMatch) {
+        let Some(tab) = self.active_tab_mut() else {
+            return;
+        };
+        let source = source_from_textarea(&tab.editor);
+        let start = offset_to_location(&source, source_match.start);
+        let end = offset_to_location(&source, source_match.end);
+        tab.editor.move_cursor(CursorMove::Jump(
+            u16::try_from(start.0).unwrap_or(u16::MAX),
+            u16::try_from(start.1).unwrap_or(u16::MAX),
+        ));
+        tab.editor.start_selection();
+        tab.editor.move_cursor(CursorMove::Jump(
+            u16::try_from(end.0).unwrap_or(u16::MAX),
+            u16::try_from(end.1).unwrap_or(u16::MAX),
+        ));
+    }
+
+    fn replace_document_match(
+        &mut self,
+        expected_source: &str,
+        source_match: DocumentSearchMatch,
+        replacement: &str,
+    ) -> (String, usize) {
+        self.sync_active_document();
+        let Some(tab) = self.active_tab_mut() else {
+            return (expected_source.to_owned(), 0);
+        };
+        if tab.document.text != expected_source || !tab.document.is_editable() {
+            let anchor = location_to_offset(&tab.document.text, tab.editor.cursor());
+            return (tab.document.text.clone(), anchor);
+        }
+        tab.replace_range(source_match, replacement);
+        let anchor = source_match.start + replacement.chars().count();
+        let updated = tab.document.text.clone();
+        self.status_message = Some("Replaced one match".to_owned());
+        (updated, anchor)
+    }
+
+    fn replace_all_document_matches(
+        &mut self,
+        expected_source: &str,
+        matches: &[DocumentSearchMatch],
+        replacement: &str,
+    ) -> (String, usize) {
+        self.sync_active_document();
+        let Some(tab) = self.active_tab_mut() else {
+            return (expected_source.to_owned(), 0);
+        };
+        if tab.document.text != expected_source || !tab.document.is_editable() {
+            let anchor = location_to_offset(&tab.document.text, tab.editor.cursor());
+            return (tab.document.text.clone(), anchor);
+        }
+        let Ok(replaced) = replace_document_matches(expected_source, matches, replacement) else {
+            self.status_message = Some("Replace all failed · invalid match ranges".to_owned());
+            return (expected_source.to_owned(), 0);
+        };
+        let changed = replaced != expected_source;
+        if changed {
+            tab.replace_all(&replaced);
+        }
+        let updated = tab.document.text.clone();
+        if changed {
+            self.status_message = Some(format!("Replaced {} matches", matches.len()));
+        }
+        (updated, 0)
     }
 
     #[must_use]
@@ -1928,9 +2174,11 @@ impl App {
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         let modified = self.active_tab_mut().is_some_and(|tab| {
+            let selecting = tab.editor.is_selecting();
+            let mut history_items = 1;
             if auto_continue && !tab.editor.is_selecting() {
                 let (row, column) = tab.editor.cursor();
-                match action_for(tab.editor.lines(), row, column) {
+                let modified = match action_for(tab.editor.lines(), row, column) {
                     EnterAction::Continue(marker) => {
                         tab.editor.insert_str(format!("\n{marker}"));
                         true
@@ -1938,12 +2186,24 @@ impl App {
                     EnterAction::EndMarker(characters) => {
                         tab.editor.delete_str(characters);
                         tab.editor.insert_newline();
+                        history_items = 2;
                         true
                     }
                     EnterAction::Plain => tab.editor.input(key),
+                };
+                if modified {
+                    tab.record_edit(history_items);
                 }
+                modified
             } else {
-                tab.editor.input(key)
+                let modified = tab.editor.input(key);
+                if modified {
+                    if selecting && input_replaces_selection(key) {
+                        history_items = 2;
+                    }
+                    tab.record_edit(history_items);
+                }
+                modified
             }
         });
         if modified {
@@ -2197,19 +2457,64 @@ impl App {
                     _ => true,
                 }
             }
-            Overlay::FileFinder { input, selected } => {
-                let candidates = self.file_candidates(&input.value);
+            Overlay::FileFinder {
+                query,
+                filter,
+                focus,
+                selected,
+                error,
+            } => {
+                let candidates = self
+                    .filtered_file_candidates(&query.value, &filter.value)
+                    .unwrap_or_default();
                 match key.code {
+                    KeyCode::Tab => {
+                        *focus = match *focus {
+                            FileFinderFocus::Query => FileFinderFocus::Filter,
+                            FileFinderFocus::Filter if !candidates.is_empty() => {
+                                FileFinderFocus::Results
+                            }
+                            FileFinderFocus::Filter | FileFinderFocus::Results => {
+                                FileFinderFocus::Query
+                            }
+                        };
+                        true
+                    }
+                    KeyCode::BackTab => {
+                        *focus = match *focus {
+                            FileFinderFocus::Query if !candidates.is_empty() => {
+                                FileFinderFocus::Results
+                            }
+                            FileFinderFocus::Query | FileFinderFocus::Results => {
+                                FileFinderFocus::Filter
+                            }
+                            FileFinderFocus::Filter => FileFinderFocus::Query,
+                        };
+                        true
+                    }
                     KeyCode::Up => {
-                        *selected = selected.saturating_sub(1);
+                        if *focus == FileFinderFocus::Results {
+                            *selected = selected.saturating_sub(1);
+                        }
                         true
                     }
                     KeyCode::Down => {
-                        *selected = (*selected + 1).min(candidates.len().saturating_sub(1));
+                        if !candidates.is_empty() {
+                            if *focus == FileFinderFocus::Results {
+                                *selected = (*selected + 1).min(candidates.len().saturating_sub(1));
+                            } else {
+                                *focus = FileFinderFocus::Results;
+                            }
+                        }
                         true
                     }
                     KeyCode::Enter => {
-                        if let Some(index) = candidates.get(*selected) {
+                        let index = if *focus == FileFinderFocus::Results {
+                            candidates.get(*selected)
+                        } else {
+                            candidates.first()
+                        };
+                        if let Some(index) = index {
                             let path = self.entries[*index].path.clone();
                             if let Err(error) = self.open_document(&path) {
                                 self.status_message = Some(format!("Open failed · {error}"));
@@ -2217,8 +2522,18 @@ impl App {
                         }
                         false
                     }
-                    _ if edit_text_input(input, key) => {
+                    _ if *focus == FileFinderFocus::Query && edit_text_input(query, key) => {
                         *selected = 0;
+                        *error = self
+                            .filtered_file_candidates(&query.value, &filter.value)
+                            .err();
+                        true
+                    }
+                    _ if *focus == FileFinderFocus::Filter && edit_text_input(filter, key) => {
+                        *selected = 0;
+                        *error = self
+                            .filtered_file_candidates(&query.value, &filter.value)
+                            .err();
                         true
                     }
                     _ => true,
@@ -2244,22 +2559,194 @@ impl App {
                 }
                 _ => true,
             },
-            Overlay::Find { input } => match key.code {
-                KeyCode::Enter => {
-                    self.find_in_document(&input.value);
-                    false
+            Overlay::Find {
+                query,
+                replacement,
+                case_sensitive,
+                focus,
+                source,
+                matches,
+                selected,
+                anchor_offset,
+                read_only,
+            } => {
+                let mut operation = if key.code == KeyCode::F(3) {
+                    Some(if key.modifiers.contains(KeyModifiers::SHIFT) {
+                        FindOperation::Previous
+                    } else {
+                        FindOperation::Next
+                    })
+                } else {
+                    None
+                };
+                let mut refresh = false;
+                match key.code {
+                    KeyCode::Tab => {
+                        *focus = cycle_find_focus(*focus, *read_only, false);
+                    }
+                    KeyCode::BackTab => {
+                        *focus = cycle_find_focus(*focus, *read_only, true);
+                    }
+                    KeyCode::Char(' ') if *focus == FindFocus::Case => {
+                        *case_sensitive = !*case_sensitive;
+                        refresh = true;
+                    }
+                    KeyCode::Enter => match *focus {
+                        FindFocus::Query | FindFocus::Next => {
+                            operation = Some(FindOperation::Next);
+                        }
+                        FindFocus::Replacement | FindFocus::Replace if !*read_only => {
+                            operation = Some(FindOperation::Replace);
+                        }
+                        FindFocus::Case => {
+                            *case_sensitive = !*case_sensitive;
+                            refresh = true;
+                        }
+                        FindFocus::Previous => operation = Some(FindOperation::Previous),
+                        FindFocus::ReplaceAll if !*read_only => {
+                            operation = Some(FindOperation::ReplaceAll);
+                        }
+                        _ => {}
+                    },
+                    _ if *focus == FindFocus::Query && edit_text_input(query, key) => {
+                        refresh = true;
+                    }
+                    _ if *focus == FindFocus::Replacement && !*read_only => {
+                        let _ = edit_text_input(replacement, key);
+                    }
+                    _ => {}
                 }
-                _ if edit_text_input(input, key) => true,
-                _ => true,
-            },
-            Overlay::WorkspaceSearch { input } => match key.code {
-                KeyCode::Enter => {
-                    self.run_workspace_search(&input.value);
-                    false
+                if refresh {
+                    *matches = find_document_matches(source, &query.value, *case_sensitive);
+                    *selected = initial_document_match_index(matches, *anchor_offset);
                 }
-                _ if edit_text_input(input, key) => true,
-                _ => true,
-            },
+                match operation {
+                    Some(FindOperation::Previous) => {
+                        *selected = cycle_document_match_index(
+                            matches.len(),
+                            *selected,
+                            MatchDirection::Previous,
+                        );
+                    }
+                    Some(FindOperation::Next) => {
+                        *selected = cycle_document_match_index(
+                            matches.len(),
+                            *selected,
+                            MatchDirection::Next,
+                        );
+                    }
+                    Some(FindOperation::Replace) => {
+                        if let Some(source_match) = (*selected).and_then(|index| matches.get(index))
+                        {
+                            let (new_source, new_anchor) = self.replace_document_match(
+                                source,
+                                *source_match,
+                                &replacement.value,
+                            );
+                            *source = new_source;
+                            *anchor_offset = new_anchor;
+                            *matches = find_document_matches(source, &query.value, *case_sensitive);
+                            *selected = initial_document_match_index(matches, *anchor_offset);
+                        }
+                    }
+                    Some(FindOperation::ReplaceAll) if !matches.is_empty() => {
+                        let (new_source, new_anchor) =
+                            self.replace_all_document_matches(source, matches, &replacement.value);
+                        *source = new_source;
+                        *anchor_offset = new_anchor;
+                        *matches = find_document_matches(source, &query.value, *case_sensitive);
+                        *selected = initial_document_match_index(matches, *anchor_offset);
+                    }
+                    Some(FindOperation::ReplaceAll) | None => {}
+                }
+                if let Some(source_match) =
+                    (*selected).and_then(|index| matches.get(index)).copied()
+                {
+                    self.select_document_match(source_match);
+                }
+                true
+            }
+            Overlay::WorkspaceSearch {
+                query,
+                filter,
+                mode,
+                case_sensitive,
+                focus,
+                results,
+                selected,
+                status,
+            } => {
+                let mut submit = false;
+                match key.code {
+                    KeyCode::Tab => {
+                        *focus = cycle_workspace_search_focus(*focus, !results.is_empty(), false);
+                    }
+                    KeyCode::BackTab => {
+                        *focus = cycle_workspace_search_focus(*focus, !results.is_empty(), true);
+                    }
+                    KeyCode::Up if *focus == WorkspaceSearchFocus::Results => {
+                        *selected = selected.saturating_sub(1);
+                    }
+                    KeyCode::Down => {
+                        if !results.is_empty() {
+                            if *focus == WorkspaceSearchFocus::Results {
+                                *selected = (*selected + 1).min(results.len().saturating_sub(1));
+                            } else {
+                                *focus = WorkspaceSearchFocus::Results;
+                            }
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Right if *focus == WorkspaceSearchFocus::Mode => {
+                        *mode = cycle_text_search_mode(*mode, key.code == KeyCode::Left);
+                    }
+                    KeyCode::Char(' ') if *focus == WorkspaceSearchFocus::Mode => {
+                        *mode = cycle_text_search_mode(*mode, false);
+                    }
+                    KeyCode::Char(' ') if *focus == WorkspaceSearchFocus::Case => {
+                        *case_sensitive = !*case_sensitive;
+                    }
+                    KeyCode::Enter => match *focus {
+                        WorkspaceSearchFocus::Query => submit = true,
+                        WorkspaceSearchFocus::Mode => {
+                            *mode = cycle_text_search_mode(*mode, false);
+                        }
+                        WorkspaceSearchFocus::Case => {
+                            *case_sensitive = !*case_sensitive;
+                        }
+                        WorkspaceSearchFocus::Results => {
+                            if let Some(result) = results.get(*selected).cloned() {
+                                self.open_search_result(&result);
+                                return;
+                            }
+                        }
+                        WorkspaceSearchFocus::Filter => {}
+                    },
+                    _ if *focus == WorkspaceSearchFocus::Query => {
+                        let _ = edit_text_input(query, key);
+                    }
+                    _ if *focus == WorkspaceSearchFocus::Filter => {
+                        let _ = edit_text_input(filter, key);
+                    }
+                    _ => {}
+                }
+                if submit {
+                    if query.value.is_empty() {
+                        results.clear();
+                        "Enter a non-empty query.".clone_into(status);
+                    } else {
+                        "Searching…".clone_into(status);
+                        results.clear();
+                        *selected = 0;
+                        self.start_workspace_search(
+                            &query.value,
+                            *mode,
+                            *case_sensitive,
+                            &filter.value,
+                        );
+                    }
+                }
+                true
+            }
             Overlay::PathInput { action, input } => match key.code {
                 KeyCode::Enter => !self.apply_path_action(*action, &input.value),
                 _ if edit_text_input(input, key) => true,
@@ -2345,96 +2832,218 @@ impl App {
         let Some(overlay) = self.overlay.as_mut() else {
             return false;
         };
-        match overlay {
-            Overlay::Palette { input, selected } | Overlay::FileFinder { input, selected } => {
+        let mut selected_match = None;
+        let handled = match overlay {
+            Overlay::Palette { input, selected } => {
                 input.insert(text);
                 *selected = 0;
                 true
             }
-            Overlay::Find { input }
-            | Overlay::WorkspaceSearch { input }
-            | Overlay::PathInput { input, .. }
-            | Overlay::WorkspaceInput { input, .. } => {
+            Overlay::FileFinder {
+                query,
+                filter,
+                focus,
+                selected,
+                error,
+            } => {
+                match focus {
+                    FileFinderFocus::Query => query.insert(text),
+                    FileFinderFocus::Filter => filter.insert(text),
+                    FileFinderFocus::Results => return false,
+                }
+                *selected = 0;
+                *error = parse_path_filter(Some(&filter.value))
+                    .err()
+                    .map(|filter_error| filter_error.to_string());
+                true
+            }
+            Overlay::Find {
+                query,
+                replacement,
+                case_sensitive,
+                focus,
+                source,
+                matches,
+                selected,
+                anchor_offset,
+                read_only,
+            } => {
+                match focus {
+                    FindFocus::Query => {
+                        query.insert(text);
+                        *matches = find_document_matches(source, &query.value, *case_sensitive);
+                        *selected = initial_document_match_index(matches, *anchor_offset);
+                        selected_match = (*selected).and_then(|index| matches.get(index)).copied();
+                    }
+                    FindFocus::Replacement if !*read_only => replacement.insert(text),
+                    _ => return false,
+                }
+                true
+            }
+            Overlay::WorkspaceSearch {
+                query,
+                filter,
+                focus,
+                ..
+            } => {
+                match focus {
+                    WorkspaceSearchFocus::Query => query.insert(text),
+                    WorkspaceSearchFocus::Filter => filter.insert(text),
+                    _ => return false,
+                }
+                true
+            }
+            Overlay::PathInput { input, .. } | Overlay::WorkspaceInput { input, .. } => {
                 input.insert(text);
                 true
             }
             _ => false,
+        };
+        if let Some(source_match) = selected_match {
+            self.select_document_match(source_match);
         }
+        handled
     }
 
     #[must_use]
     pub fn file_candidates(&self, query: &str) -> Vec<usize> {
-        let mut candidates = self
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| !entry.is_dir)
-            .filter_map(|(index, entry)| {
-                fuzzy_score(query, &entry.relative.to_string_lossy()).map(|score| (score, index))
-            })
-            .collect::<Vec<_>>();
-        candidates.sort_by(|(left_score, left), (right_score, right)| {
-            right_score.cmp(left_score).then_with(|| {
-                self.entries[*left]
-                    .relative
-                    .cmp(&self.entries[*right].relative)
-            })
-        });
-        candidates
+        self.filtered_file_candidates(query, "").unwrap_or_default()
+    }
+
+    /// Return official-ranked file candidates after applying an optional path filter.
+    ///
+    /// # Errors
+    ///
+    /// Returns the path-filter validation message when the expression is invalid.
+    pub fn filtered_file_candidates(
+        &self,
+        query: &str,
+        filter: &str,
+    ) -> Result<Vec<usize>, String> {
+        let path_filter = parse_path_filter(Some(filter)).map_err(|error| error.to_string())?;
+        let matches = search_files_with_filter(
+            query,
+            &self.entries,
+            DEFAULT_FILE_RESULT_LIMIT,
+            path_filter.as_ref(),
+        );
+        Ok(matches
             .into_iter()
-            .take(100)
-            .map(|(_, index)| index)
-            .collect()
+            .filter_map(|entry| self.entries.iter().position(|candidate| candidate == entry))
+            .collect())
     }
 
-    fn find_in_document(&mut self, query: &str) {
-        if query.is_empty() {
-            return;
-        }
-        let Some(tab) = self.active_tab_mut() else {
-            return;
-        };
-        if tab.editor.set_search_pattern(query).is_ok() && tab.editor.search_forward(false) {
-            self.status_message = Some(format!("Found · {query}"));
-        } else {
-            self.status_message = Some(format!("No match · {query}"));
-        }
-    }
-
-    fn run_workspace_search(&mut self, query: &str) {
+    fn start_workspace_search(
+        &mut self,
+        query: &str,
+        mode: TextSearchMode,
+        case_sensitive: bool,
+        file_filter: &str,
+    ) {
         if query.is_empty() {
             return;
         }
         self.sync_active_document();
-        let mut results = Vec::new();
-        for entry in self.entries.iter().filter(|entry| !entry.is_dir) {
-            let text = self
-                .tabs
-                .iter()
-                .find(|tab| tab.document.path == entry.path)
-                .map_or_else(
-                    || load_file(&entry.path).map_or_else(|_| String::new(), |file| file.text),
-                    |tab| tab.document.text.clone(),
-                );
-            results.extend(search_text(&entry.path, &text, query, 100 - results.len()));
-            if results.len() == 100 {
-                break;
+        let files = self
+            .entries
+            .iter()
+            .filter(|entry| !entry.is_dir)
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>();
+        let overrides = self
+            .tabs
+            .iter()
+            .map(|tab| TextSearchOverride {
+                path: tab.document.path.clone(),
+                text: tab.document.text.clone(),
+                prefer_disk: tab.document.text == tab.document.saved_text && !tab.document.conflict,
+            })
+            .collect::<Vec<_>>();
+        let query = query.to_owned();
+        let root = self.workspace.root.clone();
+        let options = TextSearchOptions {
+            mode,
+            file_filter: (!file_filter.trim().is_empty()).then(|| file_filter.trim().to_owned()),
+            case_sensitive,
+        };
+        let revision = self
+            .workspace_search_revision
+            .fetch_add(1, Ordering::Relaxed)
+            + 1;
+        let current_revision = Arc::clone(&self.workspace_search_revision);
+        let sender = self.workspace_search_tx.clone();
+        let _worker = thread::spawn(move || {
+            let cancelled = || current_revision.load(Ordering::Relaxed) != revision;
+            let mut request = TextSearchRequest::new(&files, &query);
+            request.root = Some(&root);
+            request.overrides = &overrides;
+            request.options = options;
+            request.should_cancel = Some(&cancelled);
+            let result = search_workspace_text(&request);
+            if !cancelled() {
+                let _ = sender.send(WorkspaceSearchCompletion {
+                    revision,
+                    query,
+                    result,
+                });
             }
-        }
-        if results.is_empty() {
-            self.status_message = Some(format!("No workspace match · {query}"));
-        } else {
-            self.overlay = Some(Overlay::SearchResults {
+        });
+    }
+
+    fn poll_workspace_search_results(&mut self) -> bool {
+        let completions = self.workspace_search_rx.try_iter().collect::<Vec<_>>();
+        let mut changed = false;
+        for completion in completions {
+            if completion.revision != self.workspace_search_revision.load(Ordering::Relaxed) {
+                continue;
+            }
+            let Some(Overlay::WorkspaceSearch {
+                query,
+                filter,
+                mode,
+                focus,
                 results,
-                selected: 0,
-            });
+                selected,
+                status,
+                ..
+            }) = self.overlay.as_mut()
+            else {
+                continue;
+            };
+            if query.value != completion.query {
+                continue;
+            }
+            if let Some(search_error) = completion.result.error {
+                results.clear();
+                *status = format!("Search failed: {search_error}");
+            } else {
+                *results = completion.result.matches;
+                *selected = 0;
+                *status = workspace_search_status(
+                    results.len(),
+                    *mode,
+                    &filter.value,
+                    completion.result.warnings.len(),
+                );
+                if !results.is_empty() {
+                    *focus = WorkspaceSearchFocus::Results;
+                }
+            }
+            changed = true;
         }
+        changed
     }
 
     fn open_search_result(&mut self, result: &TextMatch) {
         if let Err(error) = self.open_document(&result.path) {
             self.status_message = Some(format!("Open failed · {error}"));
             return;
+        }
+        let clean = self.active_tab().is_some_and(|tab| {
+            tab.document.text == tab.document.saved_text && !tab.document.conflict
+        });
+        if clean {
+            let _ = self.poll_active_document();
         }
         self.move_editor(CursorMove::Jump(
             u16::try_from(result.line).unwrap_or(u16::MAX),
@@ -2559,6 +3168,122 @@ fn edit_text_input(input: &mut TextInput, key: KeyEvent) -> bool {
     true
 }
 
+const fn input_replaces_selection(key: KeyEvent) -> bool {
+    matches!(
+        key.code,
+        KeyCode::Char(_) | KeyCode::Enter | KeyCode::Tab | KeyCode::BackTab
+    )
+}
+
+fn cycle_find_focus(current: FindFocus, read_only: bool, reverse: bool) -> FindFocus {
+    const EDITABLE: &[FindFocus] = &[
+        FindFocus::Query,
+        FindFocus::Replacement,
+        FindFocus::Case,
+        FindFocus::Previous,
+        FindFocus::Next,
+        FindFocus::Replace,
+        FindFocus::ReplaceAll,
+    ];
+    const READ_ONLY: &[FindFocus] = &[
+        FindFocus::Query,
+        FindFocus::Case,
+        FindFocus::Previous,
+        FindFocus::Next,
+    ];
+    let fields = if read_only { READ_ONLY } else { EDITABLE };
+    let current = fields
+        .iter()
+        .position(|field| *field == current)
+        .unwrap_or(0);
+    let next = if reverse {
+        (current + fields.len() - 1) % fields.len()
+    } else {
+        (current + 1) % fields.len()
+    };
+    fields[next]
+}
+
+fn cycle_workspace_search_focus(
+    current: WorkspaceSearchFocus,
+    has_results: bool,
+    reverse: bool,
+) -> WorkspaceSearchFocus {
+    const WITH_RESULTS: &[WorkspaceSearchFocus] = &[
+        WorkspaceSearchFocus::Query,
+        WorkspaceSearchFocus::Mode,
+        WorkspaceSearchFocus::Case,
+        WorkspaceSearchFocus::Filter,
+        WorkspaceSearchFocus::Results,
+    ];
+    const WITHOUT_RESULTS: &[WorkspaceSearchFocus] = &[
+        WorkspaceSearchFocus::Query,
+        WorkspaceSearchFocus::Mode,
+        WorkspaceSearchFocus::Case,
+        WorkspaceSearchFocus::Filter,
+    ];
+    let fields = if has_results {
+        WITH_RESULTS
+    } else {
+        WITHOUT_RESULTS
+    };
+    let current = fields
+        .iter()
+        .position(|field| *field == current)
+        .unwrap_or(0);
+    let next = if reverse {
+        (current + fields.len() - 1) % fields.len()
+    } else {
+        (current + 1) % fields.len()
+    };
+    fields[next]
+}
+
+fn cycle_text_search_mode(current: TextSearchMode, reverse: bool) -> TextSearchMode {
+    const MODES: &[TextSearchMode] = &[
+        TextSearchMode::Literal,
+        TextSearchMode::Fuzzy,
+        TextSearchMode::WholeWord,
+        TextSearchMode::Regex,
+    ];
+    let current = MODES.iter().position(|mode| *mode == current).unwrap_or(0);
+    let next = if reverse {
+        (current + MODES.len() - 1) % MODES.len()
+    } else {
+        (current + 1) % MODES.len()
+    };
+    MODES[next]
+}
+
+#[must_use]
+pub const fn text_search_mode_label(mode: TextSearchMode) -> &'static str {
+    match mode {
+        TextSearchMode::Literal => "literal",
+        TextSearchMode::Fuzzy => "fuzzy",
+        TextSearchMode::WholeWord => "whole word",
+        TextSearchMode::Regex => "regular expression",
+    }
+}
+
+fn workspace_search_status(
+    matches: usize,
+    mode: TextSearchMode,
+    filter: &str,
+    warnings: usize,
+) -> String {
+    let noun = if matches == 1 { "match" } else { "matches" };
+    let mut status = format!("{matches} {noun} · {}", text_search_mode_label(mode));
+    if !filter.trim().is_empty() {
+        status.push_str(" · ");
+        status.push_str(filter.trim());
+    }
+    if warnings > 0 {
+        let noun = if warnings == 1 { "warning" } else { "warnings" };
+        let _ = write!(status, " · {warnings} {noun}");
+    }
+    status
+}
+
 const fn is_navigation_action(action: BindingAction) -> bool {
     matches!(
         action,
@@ -2638,7 +3363,9 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
                                     .active_tab_mut()
                                     .filter(|tab| tab.document.is_editable())
                             {
-                                tab.editor.insert_str(text);
+                                let selecting = tab.editor.is_selecting();
+                                tab.editor.insert_str(&text);
+                                tab.record_edit(1 + usize::from(selecting && !text.is_empty()));
                                 tab.sync_document();
                             }
                         }
@@ -2647,6 +3374,7 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
                     }
                     needs_draw = true;
                 }
+                needs_draw |= app.poll_workspace_search_results();
                 if rendered_mode != app.mode {
                     let shape = if app.mode == Mode::Write {
                         SetCursorStyle::BlinkingBar
@@ -2721,6 +3449,20 @@ impl Drop for TerminalExtrasGuard {
 mod tests {
     use super::*;
 
+    fn finish_workspace_search(app: &mut App) {
+        for _ in 0..200 {
+            let _ = app.poll_workspace_search_results();
+            if matches!(
+                &app.overlay,
+                Some(Overlay::WorkspaceSearch { status, .. }) if status != "Searching…"
+            ) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("workspace search did not finish");
+    }
+
     #[test]
     fn command_groups_preserve_frontend_contract() {
         let groups = COMMANDS
@@ -2763,20 +3505,167 @@ mod tests {
         let workspace = Workspace::from_target(&path).unwrap();
         let mut app = App::new(workspace).unwrap();
         app.set_mode(Mode::Write);
-        app.overlay = Some(Overlay::Find {
-            input: TextInput::default(),
-        });
+        app.open_document_find();
 
         assert!(app.paste_into_overlay("café\nneedle"));
 
-        let Some(Overlay::Find { input }) = &app.overlay else {
+        let Some(Overlay::Find { query, .. }) = &app.overlay else {
             panic!("find popup closed unexpectedly");
         };
-        assert_eq!(input.value, "caféneedle");
+        assert_eq!(query.value, "caféneedle");
         assert_eq!(
             source_from_textarea(&app.active_tab().unwrap().editor),
             "source"
         );
+    }
+
+    #[test]
+    fn file_finder_filters_and_opens_the_first_official_ranked_match() {
+        let directory = tempfile::tempdir().unwrap();
+        let docs = directory.path().join("docs");
+        fs::create_dir(&docs).unwrap();
+        let selected = docs.join("selected.md");
+        fs::write(&selected, "selected").unwrap();
+        fs::write(directory.path().join("excluded.md"), "excluded").unwrap();
+        let selected = fs::canonicalize(selected).unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let mut app = App::with_state_services(workspace, Config::default(), None, None).unwrap();
+
+        app.execute_command(CommandAction::FileFinder);
+        let Some(Overlay::FileFinder {
+            query,
+            filter,
+            focus,
+            ..
+        }) = app.overlay.as_mut()
+        else {
+            panic!("file finder did not open");
+        };
+        query.insert("sel");
+        filter.insert("docs/**");
+        *focus = FileFinderFocus::Query;
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.active_tab().unwrap().document.path, selected);
+
+        app.execute_command(CommandAction::FileFinder);
+        let Some(Overlay::FileFinder { filter, focus, .. }) = app.overlay.as_mut() else {
+            panic!("file finder did not reopen");
+        };
+        filter.insert("*.md,");
+        *focus = FileFinderFocus::Filter;
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Char(','), KeyModifiers::NONE));
+        let Some(Overlay::FileFinder { error, .. }) = &app.overlay else {
+            panic!("file finder closed on invalid filter");
+        };
+        assert!(
+            error
+                .as_deref()
+                .is_some_and(|error| error.contains("empty patterns"))
+        );
+    }
+
+    #[test]
+    fn document_find_wraps_replaces_all_and_undoes_as_one_action() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "one ONE one").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::with_state_services(workspace, Config::default(), None, None).unwrap();
+        app.move_editor(CursorMove::Jump(0, 4));
+        app.execute_command(CommandAction::Find);
+        for character in "one".chars() {
+            app.handle_overlay_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+
+        let Some(Overlay::Find {
+            matches, selected, ..
+        }) = &app.overlay
+        else {
+            panic!("find dialog closed while typing");
+        };
+        assert_eq!(matches.len(), 3);
+        assert_eq!(*selected, Some(1));
+
+        app.handle_overlay_key(KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE));
+        let Some(Overlay::Find { selected, .. }) = &app.overlay else {
+            panic!("find dialog closed on F3");
+        };
+        assert_eq!(*selected, Some(2));
+        app.handle_overlay_key(KeyEvent::new(KeyCode::F(3), KeyModifiers::SHIFT));
+        let Some(Overlay::Find { selected, .. }) = &app.overlay else {
+            panic!("find dialog closed on Shift+F3");
+        };
+        assert_eq!(*selected, Some(1));
+
+        let Some(Overlay::Find {
+            replacement, focus, ..
+        }) = app.overlay.as_mut()
+        else {
+            panic!("find dialog unavailable");
+        };
+        replacement.insert("x");
+        *focus = FindFocus::ReplaceAll;
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.active_tab().unwrap().document.text, "x x x");
+
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.execute_command(CommandAction::Undo);
+        assert_eq!(app.active_tab().unwrap().document.text, "one ONE one");
+    }
+
+    #[test]
+    fn workspace_search_uses_dirty_tabs_and_reloads_clean_disk_results() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.md");
+        let second = directory.path().join("second.md");
+        fs::write(&first, "base").unwrap();
+        fs::write(&second, "target needle").unwrap();
+        let first = fs::canonicalize(first).unwrap();
+        let second = fs::canonicalize(second).unwrap();
+        let workspace = Workspace::from_target(&first).unwrap();
+        let mut app = App::with_state_services(workspace, Config::default(), None, None).unwrap();
+        app.active_tab_mut()
+            .unwrap()
+            .editor
+            .insert_str("dirty needle ");
+        app.sync_active_document();
+
+        app.execute_command(CommandAction::WorkspaceSearch);
+        assert!(app.paste_into_overlay("needle"));
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        finish_workspace_search(&mut app);
+        let Some(Overlay::WorkspaceSearch {
+            results,
+            focus,
+            selected,
+            ..
+        }) = app.overlay.as_mut()
+        else {
+            panic!("workspace search closed after submission");
+        };
+        assert_eq!(results.len(), 2);
+        assert!(
+            results.iter().any(|result| {
+                result.path == first && result.preview.starts_with("dirty needle")
+            })
+        );
+        *selected = results
+            .iter()
+            .position(|result| result.path == second)
+            .unwrap();
+        *focus = WorkspaceSearchFocus::Results;
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.active_tab().unwrap().document.path, second);
+        assert_eq!(app.tabs[0].document.text, "dirty needle base");
+
+        fs::write(&second, "new disk needle").unwrap();
+        app.execute_command(CommandAction::WorkspaceSearch);
+        assert!(app.paste_into_overlay("new disk needle"));
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        finish_workspace_search(&mut app);
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.active_tab().unwrap().document.text, "new disk needle");
     }
 
     #[test]

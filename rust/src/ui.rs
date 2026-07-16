@@ -7,9 +7,11 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap};
 
 use crate::app::{
-    App, ConfirmAction, Focus, Mode, Overlay, TextInput, UiRegions, ViewMode, command_candidates,
+    App, ConfirmAction, FileFinderFocus, FindFocus, Focus, Mode, Overlay, TextInput, UiRegions,
+    ViewMode, WorkspaceSearchFocus, command_candidates, text_search_mode_label,
 };
 use crate::editor::apply_inline_preview;
+use crate::search::{TextMatch, TextSearchMode};
 
 const BACKGROUND: Color = Color::Black;
 const SURFACE: Color = Color::Rgb(16, 16, 16);
@@ -335,14 +337,13 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
     let area = match overlay {
         Overlay::Help => popup(frame.area(), 78, 24),
         Overlay::Palette { .. } => popup(frame.area(), 76, 22),
-        Overlay::FileFinder { .. }
-        | Overlay::RecentDocuments { .. }
+        Overlay::FileFinder { .. } => popup(frame.area(), 76, 23),
+        Overlay::RecentDocuments { .. }
         | Overlay::SearchResults { .. }
         | Overlay::Outline { .. } => popup(frame.area(), 76, 20),
-        Overlay::Find { .. }
-        | Overlay::WorkspaceSearch { .. }
-        | Overlay::PathInput { .. }
-        | Overlay::WorkspaceInput { .. } => popup(frame.area(), 66, 7),
+        Overlay::Find { .. } => popup(frame.area(), 70, 13),
+        Overlay::WorkspaceSearch { .. } => popup(frame.area(), 80, 24),
+        Overlay::PathInput { .. } | Overlay::WorkspaceInput { .. } => popup(frame.area(), 66, 7),
         Overlay::Recovery { .. } => popup(frame.area(), 70, 9),
         Overlay::TrashConfirm { .. } => popup(frame.area(), 70, 8),
         Overlay::Confirm(_) | Overlay::Message(_) => popup(frame.area(), 62, 7),
@@ -382,25 +383,23 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
                 *selected,
             );
         }
-        Overlay::FileFinder { input, selected } => {
-            let items = app
-                .file_candidates(&input.value)
-                .into_iter()
-                .take(100)
-                .map(|index| {
-                    let entry = &app.entries[index];
-                    Line::from(entry.relative.display().to_string()).style(Style::new().fg(TEXT))
-                })
-                .collect();
-            draw_picker(
-                frame,
-                area,
-                block.title(" Find file "),
-                Some(input),
-                items,
-                *selected,
-            );
-        }
+        Overlay::FileFinder {
+            query,
+            filter,
+            focus,
+            selected,
+            error,
+        } => draw_file_finder(
+            frame,
+            app,
+            area,
+            block,
+            query,
+            filter,
+            *focus,
+            *selected,
+            error.as_deref(),
+        ),
         Overlay::RecentDocuments { paths, selected } => {
             let active = app.active_tab().map(|tab| tab.document.path.as_path());
             let items = paths
@@ -423,19 +422,49 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
                 *selected,
             );
         }
-        Overlay::Find { input } => draw_input(
+        Overlay::Find {
+            query,
+            replacement,
+            case_sensitive,
+            focus,
+            matches,
+            selected,
+            read_only,
+            ..
+        } => draw_document_find(
             frame,
             area,
-            block.title(" Find in document "),
-            input,
-            "Enter finds next · Esc cancels",
+            block,
+            query,
+            replacement,
+            *case_sensitive,
+            *focus,
+            matches.len(),
+            *selected,
+            *read_only,
         ),
-        Overlay::WorkspaceSearch { input } => draw_input(
+        Overlay::WorkspaceSearch {
+            query,
+            filter,
+            mode,
+            case_sensitive,
+            focus,
+            results,
+            selected,
+            status,
+        } => draw_workspace_search(
             frame,
+            app,
             area,
-            block.title(" Search workspace "),
-            input,
-            "Literal search · up to 100 results",
+            block,
+            query,
+            filter,
+            *mode,
+            *case_sensitive,
+            *focus,
+            results,
+            *selected,
+            status,
         ),
         Overlay::PathInput { action, input } => draw_input(
             frame,
@@ -575,6 +604,343 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
             area,
         ),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_file_finder(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    block: Block<'_>,
+    query: &TextInput,
+    filter: &TextInput,
+    focus: FileFinderFocus,
+    selected: usize,
+    stored_error: Option<&str>,
+) {
+    let inner = block.inner(area);
+    frame.render_widget(block.title(" Find text file "), area);
+    let [
+        query_area,
+        filter_area,
+        status_area,
+        results_area,
+        footer_area,
+    ] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    frame.render_widget(
+        Paragraph::new(labeled_input_line(
+            "Path",
+            query,
+            focus == FileFinderFocus::Query,
+            false,
+        )),
+        query_area,
+    );
+    frame.render_widget(
+        Paragraph::new(labeled_input_line(
+            "Filter",
+            filter,
+            focus == FileFinderFocus::Filter,
+            false,
+        )),
+        filter_area,
+    );
+
+    let (candidates, current_error) =
+        match app.filtered_file_candidates(&query.value, &filter.value) {
+            Ok(candidates) => (candidates, None),
+            Err(error) => (Vec::new(), Some(error)),
+        };
+    let error = current_error.as_deref().or(stored_error);
+    let (status, items, selection) = if let Some(error) = error {
+        (
+            format!("Invalid file filter: {error}"),
+            vec![ListItem::new("Invalid file filter")],
+            None,
+        )
+    } else {
+        let count = candidates.len();
+        let noun = if count == 1 { "file" } else { "files" };
+        let mut status = format!("{count} {noun} · fuzzy path matching");
+        if !filter.value.trim().is_empty() {
+            status.push_str(" · ");
+            status.push_str(filter.value.trim());
+        }
+        let items = if candidates.is_empty() {
+            vec![ListItem::new("No matching text files")]
+        } else {
+            candidates
+                .iter()
+                .map(|index| ListItem::new(app.entries[*index].relative.display().to_string()))
+                .collect()
+        };
+        let selection = (!candidates.is_empty()).then_some(selected.min(count.saturating_sub(1)));
+        (status, items, selection)
+    };
+    frame.render_widget(
+        Paragraph::new(status).style(Style::new().fg(MUTED)),
+        status_area,
+    );
+    let list = List::new(items)
+        .highlight_symbol("› ")
+        .highlight_style(Style::new().bg(Color::Rgb(44, 44, 44)).fg(BRIGHT).bold());
+    let mut state = ratatui::widgets::ListState::default().with_selected(selection);
+    frame.render_stateful_widget(list, results_area, &mut state);
+    frame.render_widget(
+        Paragraph::new("Tab fields · ↓ results · Enter open · Esc close")
+            .style(Style::new().fg(MUTED)),
+        footer_area,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_document_find(
+    frame: &mut Frame,
+    area: Rect,
+    block: Block<'_>,
+    query: &TextInput,
+    replacement: &TextInput,
+    case_sensitive: bool,
+    focus: FindFocus,
+    match_count: usize,
+    selected: Option<usize>,
+    read_only: bool,
+) {
+    let inner = block.inner(area);
+    frame.render_widget(block.title(" Find and replace "), area);
+    let [
+        query_area,
+        replace_area,
+        case_area,
+        status_area,
+        actions_area,
+        footer_area,
+    ] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    frame.render_widget(
+        Paragraph::new(labeled_input_line(
+            "Find",
+            query,
+            focus == FindFocus::Query,
+            false,
+        )),
+        query_area,
+    );
+    frame.render_widget(
+        Paragraph::new(labeled_input_line(
+            "Replace",
+            replacement,
+            focus == FindFocus::Replacement,
+            read_only,
+        )),
+        replace_area,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![control_span(
+            &format!("[{}] Match case", if case_sensitive { "x" } else { " " }),
+            focus == FindFocus::Case,
+            true,
+        )])),
+        case_area,
+    );
+    let status = if query.value.is_empty() {
+        "Enter text to find".to_owned()
+    } else if let Some(selected) = selected {
+        format!("{} of {match_count}", selected + 1)
+    } else {
+        "No matches".to_owned()
+    };
+    frame.render_widget(
+        Paragraph::new(status).style(Style::new().fg(MUTED)),
+        status_area,
+    );
+    let has_match = selected.is_some();
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            control_span(" Previous ", focus == FindFocus::Previous, has_match),
+            Span::raw(" "),
+            control_span(" Next ", focus == FindFocus::Next, has_match),
+            Span::raw(" "),
+            control_span(
+                " Replace ",
+                focus == FindFocus::Replace,
+                has_match && !read_only,
+            ),
+            Span::raw(" "),
+            control_span(
+                " Replace all ",
+                focus == FindFocus::ReplaceAll,
+                has_match && !read_only,
+            ),
+        ])),
+        actions_area,
+    );
+    frame.render_widget(
+        Paragraph::new("Tab controls · F3 / Shift+F3 navigate · Esc close")
+            .style(Style::new().fg(MUTED)),
+        footer_area,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_workspace_search(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    block: Block<'_>,
+    query: &TextInput,
+    filter: &TextInput,
+    mode: TextSearchMode,
+    case_sensitive: bool,
+    focus: WorkspaceSearchFocus,
+    results: &[TextMatch],
+    selected: usize,
+    status: &str,
+) {
+    let inner = block.inner(area);
+    frame.render_widget(block.title(" Search workspace text "), area);
+    let [
+        query_area,
+        options_area,
+        filter_area,
+        status_area,
+        results_area,
+        footer_area,
+    ] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    frame.render_widget(
+        Paragraph::new(labeled_input_line(
+            "Query",
+            query,
+            focus == WorkspaceSearchFocus::Query,
+            false,
+        )),
+        query_area,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Mode ", Style::new().fg(MUTED)),
+            control_span(
+                text_search_mode_label(mode),
+                focus == WorkspaceSearchFocus::Mode,
+                true,
+            ),
+            Span::raw("   "),
+            control_span(
+                &format!("[{}] Match case", if case_sensitive { "x" } else { " " }),
+                focus == WorkspaceSearchFocus::Case,
+                true,
+            ),
+        ])),
+        options_area,
+    );
+    frame.render_widget(
+        Paragraph::new(labeled_input_line(
+            "Filter",
+            filter,
+            focus == WorkspaceSearchFocus::Filter,
+            false,
+        )),
+        filter_area,
+    );
+    frame.render_widget(
+        Paragraph::new(status.to_owned()).style(Style::new().fg(MUTED)),
+        status_area,
+    );
+    let items = if results.is_empty() {
+        let placeholder = if status == "Enter a query to search Markdown source." {
+            "No search yet"
+        } else if status == "Searching…" {
+            "Searching…"
+        } else if status.starts_with("Search failed:") {
+            "Search failed"
+        } else {
+            "No matching source lines"
+        };
+        vec![ListItem::new(placeholder)]
+    } else {
+        results
+            .iter()
+            .map(|result| {
+                ListItem::new(format!(
+                    "{}:{}:{}  {}",
+                    app.workspace.relative(&result.path).display(),
+                    result.line + 1,
+                    result.column + 1,
+                    result.preview
+                ))
+            })
+            .collect()
+    };
+    let list = List::new(items)
+        .highlight_symbol("› ")
+        .highlight_style(Style::new().bg(Color::Rgb(44, 44, 44)).fg(BRIGHT).bold());
+    let selection = (!results.is_empty()).then_some(selected.min(results.len().saturating_sub(1)));
+    let mut state = ratatui::widgets::ListState::default().with_selected(selection);
+    frame.render_stateful_widget(list, results_area, &mut state);
+    frame.render_widget(
+        Paragraph::new("Enter searches/opens · Tab fields · ←→ mode · Esc close")
+            .style(Style::new().fg(MUTED)),
+        footer_area,
+    );
+}
+
+fn labeled_input_line<'a>(
+    label: &'a str,
+    input: &'a TextInput,
+    focused: bool,
+    disabled: bool,
+) -> Line<'a> {
+    let byte = input.byte_cursor();
+    let label_style = if focused {
+        Style::new().fg(BRIGHT).bold()
+    } else {
+        Style::new().fg(MUTED)
+    };
+    let text_style = if disabled {
+        Style::new().fg(MUTED)
+    } else {
+        Style::new().fg(TEXT)
+    };
+    let cursor = if focused && !disabled { "█" } else { " " };
+    Line::from(vec![
+        Span::styled(format!("{label:<8}"), label_style),
+        Span::styled(&input.value[..byte], text_style),
+        Span::styled(cursor, Style::new().fg(BRIGHT)),
+        Span::styled(&input.value[byte..], text_style),
+    ])
+}
+
+fn control_span(label: &str, focused: bool, enabled: bool) -> Span<'static> {
+    let style = if !enabled {
+        Style::new().fg(MUTED)
+    } else if focused {
+        Style::new().fg(BRIGHT).bg(Color::Rgb(44, 44, 44)).bold()
+    } else {
+        Style::new().fg(TEXT)
+    };
+    Span::styled(label.to_owned(), style)
 }
 
 fn draw_help(frame: &mut Frame, app: &App, area: Rect, block: Block<'_>) {
