@@ -1,38 +1,103 @@
+<div align="center">
+
 # TermDraft
 
-**A local-first Markdown editor for the terminal, built in Rust.**
+**Write Markdown without leaving the terminal.**
 
-Rust is the primary implementation on `main`. The `termdraft` binary edits ordinary `.md`,
-`.markdown`, and `.txt` files through the keyboard-first workbench without requiring Python or
-Textual at runtime.
+A local-first, keyboard-first writing workbench for ordinary Markdown and text files.
 
-```text
-┌ TermDraft · ~/notes                                                ┐
-│ journal/2026-07-11.md │ ● projects/termdraft.md                    │
-│ Files                    │ Friday                                   │
-│  journal/                │                                          │
-│   2026-07-11.md          │ Today I learned…                         │
-│  projects/               │                                          │
-│   termdraft.md           │ # Current line is exact Markdown source  │
-├──────────────────────────┴──────────────────────────────────────────┤
-│ COMMAND HYBRID │ journal/2026-07-11.md ● modified │ 36 words      │
-└─────────────────────────────────────────────────────────────────────┘
-```
+[![Latest release](https://img.shields.io/github/v/release/Betancourt1/TermDraft?style=flat-square&color=6e6e6e)](https://github.com/Betancourt1/TermDraft/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/Betancourt1/TermDraft/ci.yml?branch=main&style=flat-square&label=build)](https://github.com/Betancourt1/TermDraft/actions/workflows/ci.yml)
+[![Homebrew](https://img.shields.io/badge/Homebrew-available-6e6e6e?style=flat-square)](#install)
+[![MIT license](https://img.shields.io/github/license/Betancourt1/TermDraft?style=flat-square&color=6e6e6e)](LICENSE)
 
-TermDraft 2.0 replaces the Python/Textual runtime with the Rust/Ratatui application. Python 1.2
-remains available as a legacy release and compatibility reference. See
-[RUST_PORT.md](RUST_PORT.md) for the measured comparison and accepted parity boundary.
+[Quick start](#quick-start) · [Workflow](#workflow) · [Install](#install) ·
+[Configuration](#configuration) · [Documentation](#documentation)
+
+</div>
 
 ## Quick start
-
-Install the current release with Homebrew:
 
 ```bash
 brew install Betancourt1/tap/termdraft
 termdraft ~/Documents/notes
 ```
 
-Rust 1.88 or newer is required when building from source:
+TermDraft edits existing `.md`, `.markdown`, and `.txt` files in place. There is no proprietary
+document format, cloud account, or background service.
+
+## Why TermDraft
+
+- **Your files stay ordinary.** Work directly with the folders and text files you already have.
+- **The keyboard stays in charge.** Modal writing, workspace navigation, search, and file management
+  share one compact interface.
+- **Source and structure stay together.** Hybrid mode renders inactive Markdown while keeping the
+  current line exact; split mode places source and semantic preview side by side. Neither view
+  rewrites the document.
+- **Local work is treated carefully.** Atomic saves, conflict checks, crash journals, recovery tools,
+  and session restoration protect unfinished writing.
+
+## Workflow
+
+TermDraft opens in **COMMAND** mode. Press `i` to enter **WRITE** mode and edit; press `Esc` to
+return to COMMAND mode.
+
+| Key | Action |
+| --- | --- |
+| `i` / `Esc` | Enter WRITE / COMMAND mode |
+| `w` | Save |
+| `f` | Find a file |
+| `/` | Search the workspace in literal, fuzzy, word, or regex mode |
+| `s` | Find and replace in the active document |
+| `S` | Open the document outline |
+| `v` | Switch editor/preview, or show/hide preview in a wide split layout |
+| `e` | Show or hide Files |
+| `[` / `]` | Switch tabs |
+| `:` / `?` | Open the command palette / shortcut help |
+| `q` | Quit safely |
+
+In COMMAND mode, the arrow keys and `h`, `j`, `k`, `l` move through the editor. `Tab` moves focus
+between the editor and Files; `Enter` opens the selected document. Press `?` in the application for
+the compact runtime reference, or run this outside it for the complete effective keymap:
+
+```bash
+termdraft --commands
+```
+
+<details>
+<summary><strong>More workspace and navigation shortcuts</strong></summary>
+
+| Key | Action |
+| --- | --- |
+| `W` | Save As to a new workspace-relative path |
+| `D` | Duplicate the active document |
+| `a` in Files | Create a file or folder |
+| `c` / `x` / `p` in Files | Copy / cut / paste an entry |
+| `r` / `m` / `d` in Files | Rename / move / Trash an entry |
+| `R` / `M` | Reload configuration / manage recovery drafts |
+| `K` / `b` / `B` / `I` | Markdown help / inspect blocks / read blocks / cursor coordinates |
+
+While Files is focused, `Shift+Left` and `Shift+Right` resize its pane; its divider can also be
+dragged with the mouse. Global shortcuts include `Ctrl+S`, `Ctrl+Q`, `Ctrl+P`, `Ctrl+F`, `Ctrl+B`,
+`Ctrl+E`, and `Ctrl+PageUp` / `Ctrl+PageDown`.
+
+In the focused preview, `Left`/`Right` or `h`/`l` scroll wide tables horizontally; `0` and `$` jump
+to their edges.
+
+</details>
+
+## Install
+
+### Homebrew
+
+```bash
+brew install Betancourt1/tap/termdraft
+termdraft ~/Documents/notes
+```
+
+### Build from source
+
+Rust 1.88 or newer is required.
 
 ```bash
 git clone https://github.com/Betancourt1/TermDraft.git
@@ -46,27 +111,11 @@ Open one file directly:
 cargo run --release --locked -- essay.md
 ```
 
-Or install the Rust binary in your Cargo bin directory:
+Or install the binary in your Cargo bin directory:
 
 ```bash
 cargo install --path . --locked
 termdraft ~/Documents/notes
-```
-
-The Files pane uses Yazi-style Nerd Font folder and Markdown icons, so a Nerd Font is recommended
-for the intended interface.
-
-On macOS, you can try the interface in [Server Mono](https://github.com/internet-development/www-server-mono)
-without changing your global Ghostty configuration. Server Mono supplies the text glyphs and
-Ghostty's bundled Symbols Nerd Font keeps the Files icons intact:
-
-```bash
-brew install --cask font-server-mono
-open -na Ghostty.app --args \
-  --font-family="Server Mono" \
-  --font-family="Symbols Nerd Font Mono" \
-  --working-directory="$PWD" \
-  -e cargo run --release --locked -- ~/Documents/notes
 ```
 
 Useful non-interactive commands:
@@ -81,77 +130,46 @@ termdraft --inspect ~/Documents/notes
 When running without `cargo install`, replace `termdraft` with
 `cargo run --release --locked --`, keeping the extra `--` before application arguments.
 
-## Basic workflow
+## Features
 
-TermDraft starts in **COMMAND** mode. Press `i` to enter **WRITE** mode and edit the active file;
-press `Esc` to return to COMMAND mode.
-
-| Key | Action |
-| --- | --- |
-| `i` / `Esc` | Enter WRITE / COMMAND mode |
-| `w` | Save |
-| `W` | Save As to a new workspace-relative path |
-| `D` | Duplicate the active document |
-| `a` while Files is focused | Create a file or folder |
-| `c` / `x` / `p` while Files is focused | Copy / cut / paste an entry |
-| `r` / `m` / `d` while Files is focused | Rename / move / Trash an entry |
-| `f` | Find a file |
-| `/` | Search text across the workspace in literal, fuzzy, word, or regex mode |
-| `s` | Find and replace in the active document |
-| `S` | Open the document outline |
-| `v` | Switch editor/preview, or show/hide preview in a wide Split layout |
-| `e` | Show or hide the file explorer |
-| `[` / `]` | Switch tabs |
-| `:` / `?` | Open the command palette / shortcut help |
-| `R` / `M` | Reload configuration / manage recovery drafts |
-| `K` / `b` / `B` / `I` | Markdown help / inspect blocks / read blocks / cursor coordinates |
-| `q` | Quit safely |
-
-In COMMAND mode, the arrow keys and `h`, `j`, `k`, `l` move through the editor. `Tab` moves focus
-between the editor and Files; the same letter keys navigate Files, and `Enter` opens the selected
-document. While Files is focused, `Shift+Left` and `Shift+Right` resize its pane; its divider can
-also be dragged with the mouse.
-Global shortcuts include `Ctrl+S`, `Ctrl+Q`, `Ctrl+P`, `Ctrl+F`, `Ctrl+B`, `Ctrl+E`, and
-`Ctrl+PageUp` / `Ctrl+PageDown`.
-
-Run `termdraft --commands` for the effective TermDraft COMMAND, Files, global, editor-action, and
-preview-action reference. Press `?` inside the application for a compact scrollable 27-row runtime
-summary. In the focused preview, `Left`/`Right` or `h`/`l` scroll wide tables horizontally; `0` and
-`$` jump to their edges. [RUST_PORT.md](RUST_PORT.md) also inventories the fixed underlying editor
-commands.
-
-## What is included
-
-- A standalone Ratatui/Crossterm frontend with the preserved title, tabs, Files pane, centered
-  editor, compact status line, command palette, and explicit terminal cursor shapes
-- Hybrid Markdown presentation by default: the cursor line stays exact source while the remaining
-  lines become compact rendered text without delimiter-sized gaps. A configurable resizable split
-  layout adds a semantic read-only preview; neither presentation path rewrites the document
 - Multiple documents with independent undo histories, restored tabs, active document, and cursor
   positions
-- Fuzzy file finding, four-mode workspace search, active-document find and replace, recent documents,
-  and heading outline
-- File/folder create, copy, cut, paste, rename, move, Trash, Save As, and duplication through
+- Fuzzy file finding, four-mode workspace search, active-document find and replace, recent
+  documents, and heading outline
+- File and folder creation, copy, cut, paste, rename, move, Trash, Save As, and duplication through
   no-clobber workspace-relative paths
-- UTF-8 and UTF-8 BOM support with LF, CRLF, or CR preservation; mixed-ending files require consent,
-  remain exact until the first edit, and then normalize to the disclosed target
+- UTF-8 and UTF-8 BOM support with LF, CRLF, or CR preservation
+- Mouse focus, Files selection and double-click, wheel scrolling, draggable dividers, and keyboard
+  Files-pane resizing
+- Markdown continuation for bullets, tasks, numbered lists, and quotes
+
+<details>
+<summary><strong>Complete implementation details</strong></summary>
+
+- A standalone Ratatui/Crossterm frontend with the title, tabs, Files pane, centered editor, compact
+  status line, command palette, and explicit terminal cursor shapes
+- Hybrid Markdown presentation by default, plus a configurable resizable split layout with a
+  semantic read-only preview; neither presentation path rewrites the document
+- Mixed-ending files remain exact until the first edit and normalize only to a disclosed target
+  after consent
 - Conflict-checked atomic saves, safe external-conflict choices, per-document guarded exits, crash
   journals, and a recovery inventory/retarget/archive/restore/export/delete/retention manager
 - All 52 compatible application binding IDs, effective remapping, live `R` reload, and an exact
-  32-action command palette using the same grouped grid, order, and descriptions as Python
-- Main-pane mouse focus, Files selection/double-click, wheel scrolling, draggable dividers, and
-  keyboard Files-pane resizing
+  32-action command palette
 - Markdown syntax, semantic-block, experimental reader, and coordinate-diagnostic overlays
-- Markdown continuation for bullets, tasks, numbered lists, and quotes
+- Sessions remain content-free; crash-recovery journals contain dirty source and share their v2
+  data format with the legacy Python implementation
+- Default state locations align on macOS and Linux/XDG; Windows paths and recovery locks still
+  differ
 
-The exact inventories are in [RUST_PORT.md](RUST_PORT.md). The largest remaining gaps are the richer
-Python preview and link/footnote interactions, outline filtering/preview reveal, collapsible/lazy
-Files and inactive-tab monitoring, full mouse/overlay input, direct opening of missing/orphan
-recovery drafts, session scroll restoration, and TCSS themes.
+The exact inventory, measured comparison, safety differences, and remaining parity gaps are in
+[RUST_PORT.md](RUST_PORT.md).
+
+</details>
 
 ## Configuration
 
-Create the compatible configuration templates without replacing existing files:
+Create compatible configuration templates without replacing existing files:
 
 ```bash
 termdraft --init-config
@@ -170,27 +188,51 @@ startup_mode = "command" # or "write"
 view_mode = "inline"     # or "split"
 ```
 
-Configuration is strict. The generated template documents all 52 `[keybindings]` IDs; Rust applies
-valid overrides to global, editor, preview, and COMMAND actions, rejects collisions and reserved
-keys, and reloads `config.toml` with `R`. Invalid reloads leave the active configuration untouched.
-`theme.tcss` is still created only for compatibility: Rust never evaluates Textual CSS, always uses
-its built-in theme, and requires Python for theme watching. Use `--config-dir PATH` for isolation.
+Configuration is strict. The generated template documents all 52 `[keybindings]` IDs; valid
+overrides apply to global, editor, preview, and COMMAND actions. Collisions, reserved keys, and
+unknown settings are rejected. Invalid live reloads leave the active configuration untouched.
 
-Sessions remain content-free. Crash-recovery journals contain dirty source, and their v2 data formats
-are shared with Python. Default state locations align on macOS and Linux/XDG; Windows paths and
-recovery locks still differ. For a fully isolated comparison, set
-`XDG_STATE_HOME=/tmp/termdraft-test-state` and pass
+`theme.tcss` is created for compatibility but is not evaluated by the Rust frontend, which uses its
+built-in monochrome theme. Use `--config-dir PATH` for an isolated configuration.
+
+For a fully isolated comparison, set `XDG_STATE_HOME=/tmp/termdraft-test-state` and pass
 `--config-dir /tmp/termdraft-test-config`.
+
+## Terminal typography
+
+A Nerd Font is recommended for the intended Files icons. On macOS, the interface can be tried in
+[Server Mono](https://github.com/internet-development/www-server-mono) without changing the global
+Ghostty configuration. Ghostty's bundled Symbols Nerd Font supplies the icons:
+
+```bash
+brew install --cask font-server-mono
+open -na Ghostty.app --args \
+  --font-family="Server Mono" \
+  --font-family="Symbols Nerd Font Mono" \
+  --working-directory="$PWD" \
+  -e cargo run --release --locked -- ~/Documents/notes
+```
+
+## Project status
+
+TermDraft 2.0 is the Rust/Ratatui application on `main`. It replaces the Python/Textual runtime and
+does not require Python at runtime. Python 1.2 remains in `src/termdraft` as a legacy release,
+compatibility reference, and regression oracle.
+
+The largest remaining differences are richer Python preview and link/footnote interactions,
+outline filtering and preview reveal, collapsible/lazy Files and inactive-tab monitoring, complete
+mouse/overlay input, direct opening of missing recovery drafts, session scroll restoration, and
+TCSS themes. See [RUST_PORT.md](RUST_PORT.md) for the accepted parity boundary.
 
 ## Documentation
 
 - [Rust comparison](RUST_PORT.md) — parity, omissions, safety differences, and benchmarks
 - [Architecture](docs/architecture.md) — Rust modules, state flow, persistence, and recovery
-- [Markdown gallery](docs/markdown-gallery.md) — exercise the current inline and split renderers
-- [Semantic editing](docs/semantic-editing.md) — future block-aware editing boundary for Rust
-- [Design QA](design-qa.md) — current Ratatui frontend acceptance checks
-- [Release guide](docs/releasing.md) — native artifact, GitHub, and Homebrew release checklist
-- [Changelog](CHANGELOG.md) — Rust 2.x and legacy Python 1.x release history
+- [Markdown gallery](docs/markdown-gallery.md) — exercise the inline and split renderers
+- [Semantic editing](docs/semantic-editing.md) — future block-aware editing boundary
+- [Design QA](design-qa.md) — Ratatui frontend acceptance checks
+- [Release guide](docs/releasing.md) — native artifact, GitHub, and Homebrew checklist
+- [Changelog](CHANGELOG.md) — Rust 2.x and legacy Python 1.x history
 
 ## Development
 
@@ -203,8 +245,9 @@ cargo test --locked --all-targets
 cargo test --locked --release
 ```
 
-The Python implementation remains in `src/termdraft` as a reference and regression oracle. Its test
-suite can still be run from the prepared development environment with `.venv/bin/pytest -q`; public
-2.x releases package only the Rust application.
+The Python reference suite can still be run from the prepared development environment with
+`.venv/bin/pytest -q`. Public 2.x releases package only the Rust application.
+
+## License
 
 TermDraft is released under the [MIT License](LICENSE).
