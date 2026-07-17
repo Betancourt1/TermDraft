@@ -27,6 +27,8 @@ const BACKGROUND: Color = Color::Black;
 const SURFACE: Color = Color::Rgb(16, 16, 16);
 const PANEL: Color = Color::Rgb(28, 28, 28);
 const BORDER: Color = Color::Rgb(58, 58, 58);
+const POPUP_BACKGROUND: Color = Color::Rgb(6, 6, 6);
+const POPUP_BORDER: Color = Color::Rgb(82, 82, 82);
 const TEXT: Color = Color::Rgb(218, 218, 218);
 const MUTED: Color = Color::Rgb(118, 118, 118);
 const BRIGHT: Color = Color::Rgb(242, 242, 242);
@@ -401,8 +403,8 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
     frame.render_widget(Clear, area);
     let block = Block::new()
         .borders(Borders::ALL)
-        .border_style(Style::new().fg(BORDER))
-        .style(Style::new().bg(BACKGROUND))
+        .border_style(Style::new().fg(POPUP_BORDER))
+        .style(Style::new().bg(POPUP_BACKGROUND))
         .padding(Padding::horizontal(2));
     match overlay {
         Overlay::Help { scroll, .. } => draw_help(frame, app, area, block, *scroll),
@@ -2236,6 +2238,25 @@ mod tests {
                 .rendered_cursor_position()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn overlays_use_a_terminal_independent_dark_surface() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.overlay = Some(Overlay::Message("Done".to_owned()));
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let popup_area = popup(terminal.backend().buffer().area, 62, 7);
+        let buffer = terminal.backend().buffer();
+        assert_eq!(
+            buffer[(popup_area.x + 3, popup_area.y + 1)].bg,
+            POPUP_BACKGROUND
+        );
+        assert_eq!(buffer[(popup_area.x, popup_area.y)].fg, POPUP_BORDER);
     }
 
     #[test]
