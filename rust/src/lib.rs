@@ -7,6 +7,7 @@ pub mod continuation;
 pub mod coordinate_diagnostic;
 pub mod document;
 pub mod editor;
+pub mod markdown;
 pub mod markdown_help;
 pub mod path_filter;
 pub mod persistence;

@@ -14,7 +14,8 @@ use crate::app::{
 };
 use crate::coordinate_diagnostic::CoordinateDiagnostic;
 use crate::document::LineEnding;
-use crate::editor::apply_inline_preview;
+use crate::editor::inline_preview_editor;
+use crate::markdown::render_markdown;
 use crate::markdown_help::MARKDOWN_SYNTAX_HELP;
 use crate::recovery::{RecoveryRecord, RecoveryRecordStatus};
 use crate::search::{TextMatch, TextSearchMode};
@@ -245,15 +246,19 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
     let Some(tab) = app.active_tab_mut() else {
         return;
     };
-    if inline {
-        apply_inline_preview(&mut tab.editor);
-    }
     if mode == Mode::Command {
         tab.editor
             .set_cursor_line_style(Style::new().bg(Color::Rgb(10, 10, 10)));
     }
     frame.render_widget(&tab.editor, area);
-    if show_cursor && let Some(position) = tab.editor.rendered_cursor_position() {
+    let cursor_position = if inline {
+        let rendered = inline_preview_editor(&tab.editor);
+        frame.render_widget(&rendered, area);
+        rendered.rendered_cursor_position()
+    } else {
+        tab.editor.rendered_cursor_position()
+    };
+    if show_cursor && let Some(position) = cursor_position {
         frame.set_cursor_position(position);
     }
     tab.editor.clear_custom_highlight();
@@ -264,7 +269,7 @@ fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
     let Some(source) = app.active_tab().map(|tab| tab.document.text.clone()) else {
         return;
     };
-    let text = tui_markdown::from_str(&source);
+    let text = render_markdown(&source);
     let title_style = if app.focus == Focus::Preview {
         Style::new().fg(BRIGHT).bold()
     } else {
@@ -2022,6 +2027,18 @@ mod tests {
             .join("\n")
     }
 
+    fn rendered_area(terminal: &Terminal<TestBackend>, area: Rect) -> String {
+        let buffer = terminal.backend().buffer();
+        (area.y..area.y.saturating_add(area.height))
+            .map(|y| {
+                (area.x..area.x.saturating_add(area.width))
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
     fn renders_the_preserved_application_shell() {
         let directory = tempfile::tempdir().unwrap();
@@ -2089,6 +2106,28 @@ mod tests {
     }
 
     #[test]
+    fn default_editor_keeps_the_cursor_line_raw_and_renders_the_rest() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        let source = "# Current source\n\nInactive **bold** [link](https://example.com)";
+        fs::write(&path, source).unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let editor = rendered_area(&terminal, app.ui_regions.editor.unwrap());
+        assert!(editor.contains("# Current source"));
+        assert!(editor.contains("Inactive"));
+        assert!(editor.contains("bold"));
+        assert!(editor.contains("link"));
+        assert!(!editor.contains("**"));
+        assert!(!editor.contains("https://example.com"));
+        assert_eq!(app.active_tab().unwrap().document.text, source);
+    }
+
+    #[test]
     fn palette_actions_preserve_configured_shortcut_mappings() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("note.md");
@@ -2128,7 +2167,11 @@ mod tests {
     fn split_preview_uses_the_preserved_shell_and_focus_status() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("note.md");
-        fs::write(&path, "# Note\nbody").unwrap();
+        fs::write(
+            &path,
+            "# Note\n\nA **bold** paragraph.\n\n```rust\nlet x = 1;\n```",
+        )
+        .unwrap();
         let workspace = Workspace::from_target(&path).unwrap();
         let mut config = Config::default();
         config.editor.view_mode = StartupView::Split;
@@ -2150,6 +2193,13 @@ mod tests {
         assert!(rendered.contains("Preview"));
         assert!(rendered.contains("COMMAND · PREVIEW"));
         assert!(rendered.contains("Preview 100%"));
+        let preview = rendered_area(&terminal, app.ui_regions.preview.unwrap());
+        assert!(preview.contains("Note"));
+        assert!(!preview.contains("# Note"));
+        assert!(preview.contains("A bold paragraph."));
+        assert!(!preview.contains("**"));
+        assert!(preview.contains("let x = 1;"));
+        assert!(!preview.contains("```"));
     }
 
     #[test]
