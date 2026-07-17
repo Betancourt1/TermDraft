@@ -168,12 +168,13 @@ pub struct Document {
     pub mixed_source: Option<MixedSource>,
     pub snapshot: FileSnapshot,
     pub conflict: bool,
+    pub recovery_conflict: bool,
 }
 
 impl Document {
     #[must_use]
     pub fn is_dirty(&self) -> bool {
-        self.text != self.saved_text
+        self.text != self.saved_text || self.recovery_conflict
     }
 
     #[must_use]
@@ -229,6 +230,7 @@ impl Document {
         self.saved_text.clone_from(&self.text);
         self.snapshot = snapshot;
         self.conflict = false;
+        self.recovery_conflict = false;
         if self.line_ending != LineEnding::Mixed {
             self.mixed_source = None;
         }

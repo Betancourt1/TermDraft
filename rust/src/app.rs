@@ -26,12 +26,12 @@ use crate::bindings::{Action as BindingAction, BindingScope};
 use crate::config::{self, Config, EditorConfig, StartupMode, StartupView};
 use crate::continuation::{EnterAction, action_for};
 use crate::coordinate_diagnostic::{CoordinateDiagnostic, diagnose_coordinate};
-use crate::document::{Document, Encoding, LineEnding};
+use crate::document::{Document, Encoding, LineEnding, MixedSource};
 use crate::editor::{
     apply_editor_config, source_from_textarea, style_cursor, textarea_from_source,
 };
 use crate::path_filter::parse_path_filter;
-use crate::persistence::{LoadedFile, SaveError, load_file, save_atomic};
+use crate::persistence::{LoadedFile, SaveError, load_file, normalize_line_endings, save_atomic};
 use crate::recovery::{RecoveryEntry, RecoveryJournal};
 use crate::search::{
     DEFAULT_FILE_RESULT_LIMIT, DocumentSearchMatch, MatchDirection, TextMatch, TextSearchMode,
@@ -122,6 +122,32 @@ pub enum ConfirmAction {
     CloseTab,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MixedLineEndingContext {
+    Open,
+    Reload,
+    Recovery,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConflictKind {
+    Changed,
+    Missing,
+    Unavailable,
+}
+
+#[derive(Clone, Debug)]
+struct PendingTransition {
+    action: ConfirmAction,
+    accepted_paths: Vec<PathBuf>,
+}
+
+enum DiskState {
+    Current(LoadedFile),
+    Missing,
+    Unavailable(String),
+}
+
 #[derive(Clone, Debug)]
 pub enum Overlay {
     Help,
@@ -199,6 +225,17 @@ pub enum Overlay {
     },
     Recovery {
         entry: Box<RecoveryEntry>,
+    },
+    MixedLineEndings {
+        tab_index: usize,
+        previous_active: Option<usize>,
+        context: MixedLineEndingContext,
+        target: LineEnding,
+    },
+    Conflict {
+        kind: ConflictKind,
+        can_reload: bool,
+        allow_continue: bool,
     },
     Confirm(ConfirmAction),
     Message(String),
@@ -316,6 +353,7 @@ impl TextInput {
 pub enum PathAction {
     Create,
     SaveAs,
+    SaveConflictAs,
     Duplicate,
 }
 
@@ -349,6 +387,7 @@ impl PathAction {
         match self {
             Self::Create => " Create file ",
             Self::SaveAs => " Save as ",
+            Self::SaveConflictAs => " Save local version as ",
             Self::Duplicate => " Duplicate document ",
         }
     }
@@ -357,7 +396,7 @@ impl PathAction {
     pub const fn verb(self) -> &'static str {
         match self {
             Self::Create => "create",
-            Self::SaveAs => "save",
+            Self::SaveAs | Self::SaveConflictAs => "save",
             Self::Duplicate => "duplicate",
         }
     }
@@ -599,7 +638,8 @@ impl EditorTab {
     }
 
     pub fn sync_document(&mut self) {
-        self.document.text = source_from_textarea(&self.editor);
+        self.document
+            .update_from_editor(source_from_textarea(&self.editor));
     }
 
     fn record_edit(&mut self, history_items: usize) {
@@ -700,6 +740,7 @@ pub struct App {
     workspace_search_revision: Arc<AtomicU64>,
     workspace_search_tx: Sender<WorkspaceSearchCompletion>,
     workspace_search_rx: Receiver<WorkspaceSearchCompletion>,
+    pending_transition: Option<PendingTransition>,
     should_quit: bool,
 }
 
@@ -780,6 +821,7 @@ impl App {
             workspace_search_revision: Arc::new(AtomicU64::new(0)),
             workspace_search_tx,
             workspace_search_rx,
+            pending_transition: None,
             should_quit: false,
         };
         if let Some(path) = initial_file {
@@ -886,8 +928,11 @@ impl App {
             return;
         };
         let conflict = !entry.baseline_matches(&self.tabs[index].document.snapshot);
+        let line_ending = LineEnding::detect(&entry.text);
+        let normalized = normalize_line_endings(&entry.text);
+        let mixed_target = LineEnding::mixed_target(&entry.text);
         let cursor = self.tabs[index].editor.cursor();
-        let mut editor = textarea_from_source(&entry.text);
+        let mut editor = textarea_from_source(&normalized);
         apply_editor_config(&mut editor, &self.config.editor);
         style_cursor(&mut editor, self.mode);
         editor.move_cursor(CursorMove::Jump(
@@ -895,9 +940,17 @@ impl App {
             u16::try_from(cursor.1).unwrap_or(u16::MAX),
         ));
         self.tabs[index].editor = editor;
-        self.tabs[index].document.text.clone_from(&entry.text);
+        self.tabs[index].document.text = if mixed_target.is_some() {
+            entry.text.clone()
+        } else {
+            normalized.clone()
+        };
         self.tabs[index].document.encoding = entry.encoding;
+        self.tabs[index].document.line_ending = line_ending;
+        self.tabs[index].document.mixed_source =
+            mixed_target.map(|target| MixedSource::new(entry.text.clone(), normalized, target));
         self.tabs[index].document.conflict = conflict;
+        self.tabs[index].document.recovery_conflict = conflict;
         self.active_tab = Some(index);
         self.published_recovery.insert(
             entry.document_path.clone(),
@@ -908,6 +961,15 @@ impl App {
         } else {
             "Recovered unsaved draft".to_owned()
         });
+        if let Some(target) = mixed_target {
+            self.overlay = Some(Overlay::MixedLineEndings {
+                tab_index: index,
+                previous_active: Some(index),
+                context: MixedLineEndingContext::Recovery,
+                target,
+            });
+            self.enforce_active_read_only();
+        }
     }
 
     fn discard_recovery_for(&mut self, path: &Path) {
@@ -970,17 +1032,6 @@ impl App {
                     self.status_message = Some(format!("Recovery not saved · {error}"));
                 }
             }
-        }
-    }
-
-    fn discard_all_recovery(&mut self) {
-        let paths = self
-            .tabs
-            .iter()
-            .map(|tab| tab.document.path.clone())
-            .collect::<Vec<_>>();
-        for path in paths {
-            self.discard_recovery_for(&path);
         }
     }
 
@@ -1096,6 +1147,7 @@ impl App {
             self.mark_recent(&path);
             return Ok(());
         }
+        let previous_active = self.active_tab;
         self.cache_active_view();
         let mut tab = EditorTab::from_path(&path, &self.config.editor)?;
         style_cursor(&mut tab.editor, self.mode);
@@ -1105,64 +1157,150 @@ impl App {
                 u16::try_from(view.column).unwrap_or(u16::MAX),
             ));
         }
-        let mixed = !tab.document.is_editable();
+        let mixed_target = tab.document.mixed_line_ending_target();
         self.tabs.push(tab);
-        self.active_tab = Some(self.tabs.len() - 1);
+        let tab_index = self.tabs.len() - 1;
+        self.active_tab = Some(tab_index);
         self.focus = Focus::Editor;
         self.preview_scroll = 0;
         self.narrow_pane = Focus::Editor;
-        self.status_message = mixed.then(|| {
-            "Mixed line endings · read-only until normalization is implemented".to_owned()
-        });
-        self.mark_recent(&path);
-        self.enforce_active_read_only();
-        self.offer_recovery(&path);
+        if let Some(target) = mixed_target {
+            self.overlay = Some(Overlay::MixedLineEndings {
+                tab_index,
+                previous_active,
+                context: MixedLineEndingContext::Open,
+                target,
+            });
+            self.status_message = Some(format!(
+                "Mixed line endings · edit will normalize to {}",
+                line_ending_name(target)
+            ));
+            self.enforce_active_read_only();
+        } else {
+            self.mark_recent(&path);
+            self.offer_recovery(&path);
+        }
         Ok(())
     }
 
     fn save_active(&mut self) {
         self.sync_active_document();
-        let Some(tab) = self.active_tab_mut() else {
+        let Some(index) = self.active_tab else {
             self.status_message = Some("No document to save".to_owned());
             return;
         };
-        if !tab.document.is_editable() {
-            self.status_message = Some("Mixed line endings remain read-only".to_owned());
+        if !self.tabs[index].document.is_editable() {
+            self.status_message =
+                Some("Mixed line endings · choose whether to edit first".to_owned());
             return;
         }
-        if tab.document.conflict {
-            self.status_message = Some("CONFLICT · use Save As to preserve this draft".to_owned());
-            return;
+        let path = self.tabs[index].document.path.clone();
+        match disk_state(&path) {
+            DiskState::Current(loaded) => self.save_against_loaded(index, loaded),
+            DiskState::Missing => self.show_conflict(index, ConflictKind::Missing),
+            DiskState::Unavailable(error) => {
+                self.status_message = Some(format!("CONFLICT · file unavailable · {error}"));
+                self.show_conflict(index, ConflictKind::Unavailable);
+            }
         }
-        if !tab.document.is_dirty() {
-            self.status_message = Some("Already saved".to_owned());
+    }
+
+    fn save_against_loaded(&mut self, index: usize, loaded: LoadedFile) {
+        let baseline = self.tabs[index].document.snapshot.clone();
+        let dirty = self.tabs[index].document.is_dirty();
+        let same_content = loaded.snapshot.sha256 == baseline.sha256;
+        let same_origin = loaded.snapshot.same_origin(&baseline);
+        let safe_baseline = loaded.snapshot == baseline || (same_content && same_origin);
+
+        if !dirty {
+            if safe_baseline {
+                self.tabs[index].document.snapshot = loaded.snapshot;
+                self.tabs[index].document.conflict = false;
+                self.status_message = Some("Already saved".to_owned());
+            } else {
+                self.install_loaded(index, loaded, MixedLineEndingContext::Reload);
+                self.status_message = Some("Reloaded external changes".to_owned());
+            }
             return;
         }
 
+        if self.tabs[index].document.recovery_conflict || !safe_baseline {
+            self.show_conflict(index, ConflictKind::Changed);
+            return;
+        }
+
+        self.tabs[index].document.snapshot = loaded.snapshot;
+        self.tabs[index].document.conflict = false;
+        let document = &self.tabs[index].document;
         let result = save_atomic(
-            &tab.document.path,
-            &tab.document.text,
-            tab.document.encoding,
-            tab.document.line_ending,
-            Some(&tab.document.snapshot),
+            &document.path,
+            &document.text,
+            document.encoding,
+            document.line_ending,
+            Some(&document.snapshot),
             false,
         );
-        let mut saved_path = None;
         match result {
             Ok(snapshot) => {
-                tab.document.mark_saved(snapshot);
-                saved_path = Some(tab.document.path.clone());
+                let path = self.tabs[index].document.path.clone();
+                self.tabs[index].document.mark_saved(snapshot);
                 self.status_message = Some("Saved".to_owned());
+                self.discard_recovery_for(&path);
             }
             Err(SaveError::Conflict) => {
-                tab.document.conflict = true;
-                self.status_message = Some("CONFLICT · file changed on disk".to_owned());
+                let kind = conflict_kind_for_path(&self.tabs[index].document.path);
+                self.show_conflict(index, kind);
             }
             Err(error) => self.status_message = Some(format!("Save failed · {error}")),
         }
-        if let Some(path) = saved_path {
-            self.discard_recovery_for(&path);
+    }
+
+    fn install_loaded(
+        &mut self,
+        index: usize,
+        loaded: LoadedFile,
+        context: MixedLineEndingContext,
+    ) {
+        let cursor = self.tabs[index].editor.cursor();
+        let mut tab = EditorTab::from_loaded(loaded, &self.config.editor);
+        let mixed_target = tab.document.mixed_line_ending_target();
+        style_cursor(&mut tab.editor, self.mode);
+        tab.editor.move_cursor(CursorMove::Jump(
+            u16::try_from(cursor.0).unwrap_or(u16::MAX),
+            u16::try_from(cursor.1).unwrap_or(u16::MAX),
+        ));
+        self.tabs[index] = tab;
+        if let Some(target) = mixed_target {
+            self.overlay = Some(Overlay::MixedLineEndings {
+                tab_index: index,
+                previous_active: Some(index),
+                context,
+                target,
+            });
+            self.enforce_active_read_only();
         }
+    }
+
+    fn show_conflict(&mut self, index: usize, kind: ConflictKind) {
+        self.tabs[index].document.conflict = true;
+        let can_reload = kind == ConflictKind::Changed;
+        let allow_continue = self.pending_transition.is_some()
+            && !self.tabs[index].document.is_dirty()
+            && !can_reload;
+        self.overlay = Some(Overlay::Conflict {
+            kind,
+            can_reload,
+            allow_continue,
+        });
+        self.status_message = Some(match kind {
+            ConflictKind::Changed => {
+                "CONFLICT · file changed outside TermDraft · use Save As".to_owned()
+            }
+            ConflictKind::Missing => "CONFLICT · source file is missing · use Save As".to_owned(),
+            ConflictKind::Unavailable => {
+                "CONFLICT · source file is unavailable · use Save As".to_owned()
+            }
+        });
     }
 
     fn set_mode(&mut self, mode: Mode) {
@@ -1199,12 +1337,99 @@ impl App {
         self.status_message = Some("Mixed line endings · read-only".to_owned());
     }
 
+    fn accept_mixed_line_endings(
+        &mut self,
+        tab_index: usize,
+        context: MixedLineEndingContext,
+        target: LineEnding,
+    ) {
+        let Some(tab) = self.tabs.get_mut(tab_index) else {
+            return;
+        };
+        if !tab.document.accept_mixed_line_endings() {
+            return;
+        }
+        let path = tab.document.path.clone();
+        self.status_message = Some(format!(
+            "Mixed line endings · first edit will normalize to {}",
+            line_ending_name(target)
+        ));
+        if context == MixedLineEndingContext::Open {
+            self.mark_recent(&path);
+            self.offer_recovery(&path);
+        }
+    }
+
+    fn cancel_mixed_line_endings(
+        &mut self,
+        tab_index: usize,
+        previous_active: Option<usize>,
+        context: MixedLineEndingContext,
+    ) {
+        if context == MixedLineEndingContext::Open && tab_index < self.tabs.len() {
+            self.tabs.remove(tab_index);
+            self.active_tab = previous_active.filter(|index| *index < self.tabs.len());
+            self.focus = if self.active_tab.is_some() {
+                Focus::Editor
+            } else {
+                Focus::Explorer
+            };
+            self.status_message = Some("Cancelled opening mixed-line-ending file".to_owned());
+            return;
+        }
+        self.active_tab = (tab_index < self.tabs.len()).then_some(tab_index);
+        self.enforce_active_read_only();
+        self.status_message = Some("Mixed line endings · kept read-only".to_owned());
+    }
+
+    fn open_conflict_save_as(&mut self) {
+        let Some(path) = self.active_tab().map(|tab| tab.document.path.clone()) else {
+            return;
+        };
+        let suggestion = conflict_copy_path(&self.workspace, &path);
+        self.overlay = Some(Overlay::PathInput {
+            action: PathAction::SaveConflictAs,
+            input: TextInput {
+                cursor: suggestion.chars().count(),
+                value: suggestion,
+            },
+        });
+    }
+
+    fn reload_conflict(&mut self) {
+        let Some(index) = self.active_tab else {
+            return;
+        };
+        let path = self.tabs[index].document.path.clone();
+        match disk_state(&path) {
+            DiskState::Current(loaded) => {
+                self.install_loaded(index, loaded, MixedLineEndingContext::Reload);
+                self.discard_recovery_for(&path);
+                if self.pending_transition.is_some() {
+                    self.overlay = None;
+                    self.continue_pending_transition();
+                } else if self.overlay.is_none() {
+                    self.status_message = Some("Reloaded external version".to_owned());
+                }
+            }
+            DiskState::Missing => self.show_conflict(index, ConflictKind::Missing),
+            DiskState::Unavailable(error) => {
+                self.status_message = Some(format!("CONFLICT · file unavailable · {error}"));
+                self.show_conflict(index, ConflictKind::Unavailable);
+            }
+        }
+    }
+
     fn request_quit(&mut self) {
         self.sync_active_document();
+        self.pending_transition = Some(PendingTransition {
+            action: ConfirmAction::Quit,
+            accepted_paths: Vec::new(),
+        });
         if self.tabs.iter().any(|tab| tab.document.is_dirty()) {
             self.overlay = Some(Overlay::Confirm(ConfirmAction::Quit));
         } else {
-            self.should_quit = true;
+            self.validate_pending_transition();
         }
     }
 
@@ -1213,11 +1438,146 @@ impl App {
         let Some(index) = self.active_tab else {
             return;
         };
+        self.pending_transition = Some(PendingTransition {
+            action: ConfirmAction::CloseTab,
+            accepted_paths: Vec::new(),
+        });
         if self.tabs[index].document.is_dirty() {
             self.overlay = Some(Overlay::Confirm(ConfirmAction::CloseTab));
             return;
         }
-        self.close_active_discarding();
+        self.validate_pending_transition();
+    }
+
+    fn continue_pending_transition(&mut self) {
+        let Some(action) = self
+            .pending_transition
+            .as_ref()
+            .map(|pending| pending.action)
+        else {
+            return;
+        };
+        let saved = match action {
+            ConfirmAction::Quit => self.save_all_dirty(),
+            ConfirmAction::CloseTab => {
+                if self.active_tab().is_some_and(|tab| tab.document.is_dirty()) {
+                    self.save_active();
+                }
+                self.active_tab().is_none_or(|tab| !tab.document.is_dirty())
+            }
+        };
+        if !saved {
+            if self.overlay.is_none() {
+                self.overlay = Some(Overlay::Confirm(action));
+            }
+            return;
+        }
+        self.validate_pending_transition();
+    }
+
+    fn validate_pending_transition(&mut self) {
+        let Some(action) = self
+            .pending_transition
+            .as_ref()
+            .map(|pending| pending.action)
+        else {
+            return;
+        };
+        let indices = match action {
+            ConfirmAction::Quit => (0..self.tabs.len()).collect::<Vec<_>>(),
+            ConfirmAction::CloseTab => self.active_tab.into_iter().collect(),
+        };
+        for index in indices {
+            let path = self.tabs[index].document.path.clone();
+            if self.pending_transition.as_ref().is_some_and(|pending| {
+                pending
+                    .accepted_paths
+                    .iter()
+                    .any(|accepted| accepted == &path)
+            }) {
+                continue;
+            }
+            match disk_state(&path) {
+                DiskState::Current(loaded) => {
+                    let baseline = &self.tabs[index].document.snapshot;
+                    if loaded.snapshot == *baseline
+                        || (loaded.snapshot.sha256 == baseline.sha256
+                            && loaded.snapshot.same_origin(baseline))
+                    {
+                        self.tabs[index].document.snapshot = loaded.snapshot;
+                        if !self.tabs[index].document.recovery_conflict {
+                            self.tabs[index].document.conflict = false;
+                        }
+                    }
+                }
+                DiskState::Missing => {
+                    self.active_tab = Some(index);
+                    self.show_conflict(index, ConflictKind::Missing);
+                    return;
+                }
+                DiskState::Unavailable(error) => {
+                    self.active_tab = Some(index);
+                    self.status_message = Some(format!("CONFLICT · file unavailable · {error}"));
+                    self.show_conflict(index, ConflictKind::Unavailable);
+                    return;
+                }
+            }
+        }
+        self.pending_transition = None;
+        match action {
+            ConfirmAction::Quit => self.should_quit = true,
+            ConfirmAction::CloseTab => self.close_active_discarding(),
+        }
+    }
+
+    fn continue_without_conflict_copy(&mut self) {
+        let Some(path) = self.active_tab().map(|tab| tab.document.path.clone()) else {
+            return;
+        };
+        if let Some(pending) = self.pending_transition.as_mut()
+            && !pending.accepted_paths.contains(&path)
+        {
+            pending.accepted_paths.push(path);
+        }
+        self.validate_pending_transition();
+    }
+
+    fn discard_pending_changes(&mut self, action: ConfirmAction) {
+        match action {
+            ConfirmAction::CloseTab => {
+                if let Some(path) = self.active_tab().map(|tab| tab.document.path.clone()) {
+                    self.discard_recovery_for(&path);
+                }
+                self.pending_transition = None;
+                self.close_active_discarding();
+            }
+            ConfirmAction::Quit => {
+                let dirty_paths = self
+                    .tabs
+                    .iter()
+                    .filter(|tab| tab.document.is_dirty())
+                    .map(|tab| tab.document.path.clone())
+                    .collect::<Vec<_>>();
+                for path in &dirty_paths {
+                    self.discard_recovery_for(path);
+                }
+                for tab in &mut self.tabs {
+                    if tab.document.is_dirty() {
+                        tab.document.saved_text.clone_from(&tab.document.text);
+                        tab.document.conflict = false;
+                        tab.document.recovery_conflict = false;
+                    }
+                }
+                if let Some(pending) = self.pending_transition.as_mut() {
+                    for path in dirty_paths {
+                        if !pending.accepted_paths.contains(&path) {
+                            pending.accepted_paths.push(path);
+                        }
+                    }
+                }
+                self.validate_pending_transition();
+            }
+        }
     }
 
     fn close_active_discarding(&mut self) {
@@ -2161,14 +2521,29 @@ impl App {
         }
 
         self.sync_active_document();
-        let Some(tab) = self.active_tab() else {
+        let Some(active_index) = self.active_tab else {
             return false;
         };
+        if self
+            .tabs
+            .iter()
+            .enumerate()
+            .any(|(index, tab)| index != active_index && tab.document.path == target)
+        {
+            self.status_message = Some("Save failed · path is reserved by an open tab".to_owned());
+            return false;
+        }
+        if action == PathAction::SaveConflictAs && self.tabs[active_index].document.path == target {
+            self.status_message =
+                Some("Save failed · the original path will not be recreated".to_owned());
+            return false;
+        }
+        let tab = &self.tabs[active_index];
         let text = tab.document.text.clone();
         let encoding = tab.document.encoding;
         let line_ending = tab.document.line_ending;
         match save_atomic(&target, &text, encoding, line_ending, None, true) {
-            Ok(snapshot) if action == PathAction::SaveAs => {
+            Ok(snapshot) if matches!(action, PathAction::SaveAs | PathAction::SaveConflictAs) => {
                 let previous = self.active_tab().map(|tab| tab.document.path.clone());
                 if let Some(tab) = self.active_tab_mut() {
                     tab.document.path.clone_from(&target);
@@ -2178,12 +2553,20 @@ impl App {
                     self.retarget_recent(previous, &target);
                 }
                 self.refresh_entries(Some(&target));
+                let label = if action == PathAction::SaveConflictAs {
+                    "Saved local version as"
+                } else {
+                    "Saved as"
+                };
                 self.status_message = Some(format!(
-                    "Saved as {}",
+                    "{label} {}",
                     self.workspace.relative(&target).display()
                 ));
                 if let Some(previous) = previous {
                     self.discard_recovery_for(&previous);
+                }
+                if action == PathAction::SaveConflictAs && self.pending_transition.is_some() {
+                    self.continue_pending_transition();
                 }
                 true
             }
@@ -2506,7 +2889,28 @@ impl App {
     #[allow(clippy::too_many_lines)]
     fn handle_overlay_key(&mut self, key: KeyEvent) {
         if key.code == KeyCode::Esc {
-            self.overlay = None;
+            let overlay = self.overlay.take();
+            match overlay {
+                Some(Overlay::MixedLineEndings {
+                    tab_index,
+                    previous_active,
+                    context,
+                    ..
+                }) => self.cancel_mixed_line_endings(tab_index, previous_active, context),
+                Some(Overlay::PathInput {
+                    action: PathAction::SaveConflictAs,
+                    ..
+                }) => {
+                    if let Some(index) = self.active_tab {
+                        let kind = conflict_kind_for_path(&self.tabs[index].document.path);
+                        self.show_conflict(index, kind);
+                    }
+                }
+                Some(Overlay::Confirm(_) | Overlay::Conflict { .. }) => {
+                    self.pending_transition = None;
+                }
+                _ => {}
+            }
             return;
         }
         let Some(mut overlay) = self.overlay.take() else {
@@ -2579,41 +2983,44 @@ impl App {
                     true
                 }
             },
+            Overlay::MixedLineEndings {
+                tab_index,
+                context,
+                target,
+                ..
+            } => match key.code {
+                KeyCode::Enter | KeyCode::Char('e') => {
+                    self.accept_mixed_line_endings(*tab_index, *context, *target);
+                    false
+                }
+                _ => true,
+            },
+            Overlay::Conflict {
+                can_reload,
+                allow_continue,
+                ..
+            } => match key.code {
+                KeyCode::Char('s') => {
+                    self.open_conflict_save_as();
+                    false
+                }
+                KeyCode::Char('r') if *can_reload => {
+                    self.reload_conflict();
+                    false
+                }
+                KeyCode::Char('n') if *allow_continue => {
+                    self.continue_without_conflict_copy();
+                    false
+                }
+                _ => true,
+            },
             Overlay::Confirm(action) => match key.code {
-                KeyCode::Char('y') => match action {
-                    ConfirmAction::Quit => {
-                        let saved = self.save_all_dirty();
-                        self.should_quit = saved;
-                        !saved
-                    }
-                    ConfirmAction::CloseTab => {
-                        self.save_active();
-                        let saved = self.active_tab().is_none_or(|tab| !tab.document.is_dirty());
-                        if saved {
-                            self.close_active_discarding();
-                        }
-                        !saved
-                    }
-                },
+                KeyCode::Char('y') => {
+                    self.continue_pending_transition();
+                    false
+                }
                 KeyCode::Char('n') => {
-                    match action {
-                        ConfirmAction::Quit => {
-                            self.discard_all_recovery();
-                            for tab in &mut self.tabs {
-                                tab.document.saved_text.clone_from(&tab.document.text);
-                                tab.document.conflict = false;
-                            }
-                            self.should_quit = true;
-                        }
-                        ConfirmAction::CloseTab => {
-                            if let Some(path) =
-                                self.active_tab().map(|tab| tab.document.path.clone())
-                            {
-                                self.discard_recovery_for(&path);
-                            }
-                            self.close_active_discarding();
-                        }
-                    }
+                    self.discard_pending_changes(*action);
                     false
                 }
                 _ => true,
@@ -3237,6 +3644,9 @@ impl App {
     }
 
     fn poll_external_state(&mut self) -> bool {
+        if self.overlay.is_some() {
+            return false;
+        }
         self.sync_active_document();
         let mut changed = self.poll_active_document();
         let selected_path = self
@@ -3264,12 +3674,26 @@ impl App {
         let path = self.tabs[index].document.path.clone();
         let baseline = self.tabs[index].document.snapshot.clone();
         match load_file(&path) {
-            Ok(loaded) if loaded.snapshot == baseline => false,
+            Ok(loaded) if loaded.snapshot == baseline => {
+                if self.tabs[index].document.conflict
+                    && !self.tabs[index].document.recovery_conflict
+                {
+                    self.tabs[index].document.conflict = false;
+                    self.status_message = Some("External conflict cleared".to_owned());
+                    true
+                } else {
+                    false
+                }
+            }
             Ok(loaded) => {
                 let same_content = loaded.snapshot.sha256 == baseline.sha256;
                 let same_origin = loaded.snapshot.same_origin(&baseline);
-                let dirty = self.tabs[index].document.text != self.tabs[index].document.saved_text;
-                if dirty && (!same_content || !same_origin) {
+                let dirty = self.tabs[index].document.is_dirty();
+                if dirty
+                    && (self.tabs[index].document.recovery_conflict
+                        || !same_content
+                        || !same_origin)
+                {
                     if !self.tabs[index].document.conflict {
                         self.tabs[index].document.conflict = true;
                         self.status_message =
@@ -3278,20 +3702,28 @@ impl App {
                     }
                     return false;
                 }
-                if same_content {
+                if same_content && same_origin {
                     self.tabs[index].document.snapshot = loaded.snapshot;
-                    return false;
+                    let cleared = self.tabs[index].document.conflict
+                        && !self.tabs[index].document.recovery_conflict;
+                    if cleared {
+                        self.tabs[index].document.conflict = false;
+                        self.status_message = Some("External conflict cleared".to_owned());
+                    }
+                    return cleared;
                 }
 
-                let cursor = self.tabs[index].editor.cursor();
-                let mut tab = EditorTab::from_loaded(loaded, &self.config.editor);
-                style_cursor(&mut tab.editor, self.mode);
-                tab.editor.move_cursor(CursorMove::Jump(
-                    u16::try_from(cursor.0).unwrap_or(u16::MAX),
-                    u16::try_from(cursor.1).unwrap_or(u16::MAX),
+                let mixed_target = loaded.mixed_line_ending_target();
+                self.install_loaded(index, loaded, MixedLineEndingContext::Reload);
+                self.status_message = Some(mixed_target.map_or_else(
+                    || "Reloaded external changes".to_owned(),
+                    |target| {
+                        format!(
+                            "External file has mixed line endings · target {}",
+                            line_ending_name(target)
+                        )
+                    },
                 ));
-                self.tabs[index] = tab;
-                self.status_message = Some("Reloaded external changes".to_owned());
                 true
             }
             Err(error) => {
@@ -3321,6 +3753,52 @@ impl App {
         self.active_tab = original;
         true
     }
+}
+
+fn disk_state(path: &Path) -> DiskState {
+    match load_file(path) {
+        Ok(loaded) => DiskState::Current(loaded),
+        Err(error) => match fs::symlink_metadata(path) {
+            Err(metadata_error) if metadata_error.kind() == io::ErrorKind::NotFound => {
+                DiskState::Missing
+            }
+            _ => DiskState::Unavailable(error.to_string()),
+        },
+    }
+}
+
+fn conflict_kind_for_path(path: &Path) -> ConflictKind {
+    match disk_state(path) {
+        DiskState::Current(_) => ConflictKind::Changed,
+        DiskState::Missing => ConflictKind::Missing,
+        DiskState::Unavailable(_) => ConflictKind::Unavailable,
+    }
+}
+
+const fn line_ending_name(line_ending: LineEnding) -> &'static str {
+    match line_ending {
+        LineEnding::Crlf => "CRLF",
+        LineEnding::Cr => "CR",
+        LineEnding::None | LineEnding::Lf | LineEnding::Mixed => "LF",
+    }
+}
+
+fn conflict_copy_path(workspace: &Workspace, source: &Path) -> String {
+    let stem = source.file_stem().unwrap_or_default().to_string_lossy();
+    let extension = source
+        .extension()
+        .map(|extension| format!(".{}", extension.to_string_lossy()))
+        .unwrap_or_default();
+    let file_name = format!("{stem}-local{extension}");
+    workspace
+        .relative(source)
+        .parent()
+        .map_or_else(
+            || PathBuf::from(&file_name),
+            |parent| parent.join(&file_name),
+        )
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn update_scroll(scroll: &mut u16, code: KeyCode, line_count: usize) {
@@ -4736,5 +5214,171 @@ mod tests {
         app.persist_recovery();
         assert!(!journal.path_for(&path).exists());
         assert_eq!(fs::read_to_string(path).unwrap(), "saved");
+    }
+
+    #[test]
+    fn mixed_open_requires_consent_and_untouched_save_preserves_exact_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mixed.md");
+        let original = b"first\nsecond\r\nthird\r";
+        fs::write(&path, original).unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::MixedLineEndings {
+                context: MixedLineEndingContext::Open,
+                target: LineEnding::Crlf,
+                ..
+            })
+        ));
+        assert!(!app.active_tab().unwrap().document.is_editable());
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.active_tab().unwrap().document.is_editable());
+        app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(!app.active_tab().unwrap().document.is_dirty());
+        assert_eq!(
+            app.active_tab().unwrap().document.line_ending,
+            LineEnding::Mixed
+        );
+    }
+
+    #[test]
+    fn cancelling_mixed_open_restores_previous_tab_and_first_edit_normalizes() {
+        let directory = tempfile::tempdir().unwrap();
+        let normal = directory.path().join("normal.md");
+        let mixed = directory.path().join("mixed.md");
+        fs::write(&normal, "normal").unwrap();
+        fs::write(&mixed, b"one\r\ntwo\n").unwrap();
+        let workspace = Workspace::from_target(&normal).unwrap();
+        let mut app = App::new(workspace).unwrap();
+
+        app.open_document(&mixed).unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(
+            app.active_tab().unwrap().document.path,
+            normal.canonicalize().unwrap()
+        );
+        assert_eq!(fs::read(&mixed).unwrap(), b"one\r\ntwo\n");
+
+        app.open_document(&mixed).unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+
+        assert_eq!(fs::read(&mixed).unwrap(), b"xone\r\ntwo\r\n");
+        assert_eq!(
+            app.active_tab().unwrap().document.line_ending,
+            LineEnding::Crlf
+        );
+    }
+
+    #[test]
+    fn conflict_save_as_preserves_external_and_retargets_local_draft() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "disk").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.active_tab_mut().unwrap().editor.insert_str("local ");
+        fs::write(&path, "external").unwrap();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Conflict {
+                kind: ConflictKind::Changed,
+                can_reload: true,
+                ..
+            })
+        ));
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert!(matches!(
+            &app.overlay,
+            Some(Overlay::PathInput {
+                action: PathAction::SaveConflictAs,
+                input,
+            }) if input.value == "note-local.md"
+        ));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let local = directory.path().join("note-local.md");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "external");
+        assert_eq!(fs::read_to_string(&local).unwrap(), "local disk");
+        assert_eq!(
+            app.active_tab().unwrap().document.path,
+            local.canonicalize().unwrap()
+        );
+        assert!(!app.active_tab().unwrap().document.conflict);
+        assert!(!app.active_tab().unwrap().document.is_dirty());
+    }
+
+    #[test]
+    fn reverted_conflict_clears_and_allows_guarded_save() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "disk").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.active_tab_mut().unwrap().editor.insert_str("local ");
+
+        fs::write(&path, "external").unwrap();
+        assert!(app.poll_external_state());
+        assert!(app.active_tab().unwrap().document.conflict);
+        fs::write(&path, "disk").unwrap();
+        assert!(app.poll_external_state());
+        assert!(!app.active_tab().unwrap().document.conflict);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        assert_eq!(fs::read_to_string(path).unwrap(), "local disk");
+    }
+
+    #[test]
+    fn clean_missing_close_and_quit_require_explicit_continue() {
+        let directory = tempfile::tempdir().unwrap();
+        let close_path = directory.path().join("close.md");
+        fs::write(&close_path, "clean").unwrap();
+        let workspace = Workspace::from_target(&close_path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        fs::remove_file(&close_path).unwrap();
+
+        app.close_active();
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Conflict {
+                kind: ConflictKind::Missing,
+                can_reload: false,
+                allow_continue: true,
+            })
+        ));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.tabs.len(), 1);
+        app.close_active();
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(app.tabs.is_empty());
+
+        let quit_path = directory.path().join("quit.md");
+        fs::write(&quit_path, "clean").unwrap();
+        let workspace = Workspace::from_target(&quit_path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        fs::remove_file(&quit_path).unwrap();
+        app.request_quit();
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Conflict {
+                kind: ConflictKind::Missing,
+                allow_continue: true,
+                ..
+            })
+        ));
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(app.should_quit);
     }
 }

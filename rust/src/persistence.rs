@@ -43,6 +43,7 @@ impl LoadedFile {
             mixed_source,
             snapshot: self.snapshot,
             conflict: false,
+            recovery_conflict: false,
         }
     }
 
@@ -137,8 +138,7 @@ pub fn save_atomic(
         return Err(SaveError::AlreadyExists);
     }
     if let Some(expected) = expected {
-        let current = load_file(path)
-            .map_err(|error| io::Error::other(format!("cannot verify destination: {error}")))?;
+        let current = load_file(path).map_err(|_| SaveError::Conflict)?;
         if current.snapshot != *expected {
             return Err(SaveError::Conflict);
         }
@@ -158,8 +158,7 @@ pub fn save_atomic(
     temporary.as_file().sync_all()?;
 
     if let Some(expected) = expected {
-        let current = load_file(path)
-            .map_err(|error| io::Error::other(format!("cannot recheck destination: {error}")))?;
+        let current = load_file(path).map_err(|_| SaveError::Conflict)?;
         if current.snapshot != *expected {
             return Err(SaveError::Conflict);
         }
@@ -262,6 +261,28 @@ mod tests {
         .unwrap_err();
         assert!(matches!(error, SaveError::Conflict));
         assert_eq!(fs::read_to_string(path).unwrap(), "external");
+    }
+
+    #[test]
+    fn missing_expected_destination_is_a_conflict_and_is_not_recreated() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "original").unwrap();
+        let loaded = load_file(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+
+        let error = save_atomic(
+            &path,
+            "local",
+            loaded.encoding,
+            loaded.line_ending,
+            Some(&loaded.snapshot),
+            false,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, SaveError::Conflict));
+        assert!(!path.exists());
     }
 
     #[test]

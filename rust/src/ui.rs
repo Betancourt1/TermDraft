@@ -7,10 +7,12 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap};
 
 use crate::app::{
-    App, ConfirmAction, FileFinderFocus, FindFocus, Focus, Mode, Overlay, TextInput, UiRegions,
-    ViewMode, WorkspaceSearchFocus, command_candidates, text_search_mode_label,
+    App, ConfirmAction, ConflictKind, FileFinderFocus, FindFocus, Focus, MixedLineEndingContext,
+    Mode, Overlay, TextInput, UiRegions, ViewMode, WorkspaceSearchFocus, command_candidates,
+    text_search_mode_label,
 };
 use crate::coordinate_diagnostic::CoordinateDiagnostic;
+use crate::document::LineEnding;
 use crate::editor::apply_inline_preview;
 use crate::markdown_help::MARKDOWN_SYNTAX_HELP;
 use crate::search::{TextMatch, TextSearchMode};
@@ -79,12 +81,13 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
             .unwrap_or_default()
             .to_string_lossy();
         let dirty = if tab.document.is_dirty() { " ●" } else { "" };
+        let conflict = if tab.document.conflict { " !" } else { "" };
         let style = if Some(index) == app.active_tab {
             Style::new().fg(BRIGHT).bold()
         } else {
             Style::new().fg(MUTED)
         };
-        spans.push(Span::styled(format!(" {name}{dirty} "), style));
+        spans.push(Span::styled(format!(" {name}{dirty}{conflict} "), style));
     }
     frame.render_widget(
         Paragraph::new(Line::from(spans)).style(Style::new().bg(SURFACE)),
@@ -318,7 +321,14 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 Style::new().fg(TEXT),
             ),
             Span::styled(
-                format!(" │ {} words │ {location}", tab.document.word_count()),
+                format!(
+                    " │ {} words{} │ {location}",
+                    tab.document.word_count(),
+                    mixed_line_ending_status(
+                        tab.document.line_ending,
+                        tab.document.mixed_line_ending_target()
+                    )
+                ),
                 Style::new().fg(MUTED),
             ),
         ]);
@@ -351,7 +361,8 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
         Overlay::Find { .. } => popup(frame.area(), 70, 13),
         Overlay::WorkspaceSearch { .. } => popup(frame.area(), 80, 24),
         Overlay::PathInput { .. } | Overlay::WorkspaceInput { .. } => popup(frame.area(), 66, 7),
-        Overlay::Recovery { .. } => popup(frame.area(), 70, 9),
+        Overlay::Recovery { .. } | Overlay::MixedLineEndings { .. } => popup(frame.area(), 70, 9),
+        Overlay::Conflict { .. } => popup(frame.area(), 74, 10),
         Overlay::TrashConfirm { .. } => popup(frame.area(), 70, 8),
         Overlay::Confirm(_) | Overlay::Message(_) => popup(frame.area(), 62, 7),
     };
@@ -561,6 +572,77 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
             ]);
             frame.render_widget(
                 Paragraph::new(text).block(block.title(" Crash recovery ")),
+                area,
+            );
+        }
+        Overlay::MixedLineEndings {
+            context, target, ..
+        } => {
+            let cancel = if *context == MixedLineEndingContext::Open {
+                "Cancel opening"
+            } else {
+                "Keep read-only"
+            };
+            let detail = match context {
+                MixedLineEndingContext::Open => {
+                    "The file contains more than one newline style. Disk stays unchanged until edit and save."
+                }
+                MixedLineEndingContext::Reload => {
+                    "The external version contains mixed newlines. Accept before editing the reloaded source."
+                }
+                MixedLineEndingContext::Recovery => {
+                    "The recovered source contains mixed newlines. Accept before editing the draft."
+                }
+            };
+            let text = Text::from(vec![
+                Line::from(detail).style(Style::new().fg(TEXT)),
+                Line::from(format!(
+                    "The first edit will normalize newlines to {}.",
+                    line_ending_label(*target)
+                ))
+                .style(Style::new().fg(MUTED)),
+                Line::from(""),
+                Line::from(format!("Enter/e  Edit and normalize     Esc  {cancel}"))
+                    .style(Style::new().fg(BRIGHT)),
+            ]);
+            frame.render_widget(
+                Paragraph::new(text).block(block.title(" Mixed line endings ")),
+                area,
+            );
+        }
+        Overlay::Conflict {
+            kind,
+            can_reload,
+            allow_continue,
+        } => {
+            let detail = match kind {
+                ConflictKind::Changed => {
+                    "This file changed outside TermDraft. The local draft was not written."
+                }
+                ConflictKind::Missing => {
+                    "This file no longer exists. The original path will not be recreated."
+                }
+                ConflictKind::Unavailable => {
+                    "This file cannot be read or verified. The original path will not be changed."
+                }
+            };
+            let mut actions = "s  Save local as…".to_owned();
+            if *can_reload {
+                actions.push_str("     r  Reload external");
+            }
+            if *allow_continue {
+                actions.push_str("     n  Continue without copy");
+            }
+            actions.push_str("     Esc  Cancel");
+            let text = Text::from(vec![
+                Line::from(detail).style(Style::new().fg(TEXT)),
+                Line::from("Local source remains available in this tab.")
+                    .style(Style::new().fg(MUTED)),
+                Line::from(""),
+                Line::from(actions).style(Style::new().fg(BRIGHT)),
+            ]);
+            frame.render_widget(
+                Paragraph::new(text).block(block.title(" External conflict ")),
                 area,
             );
         }
@@ -1438,6 +1520,24 @@ fn popup(area: Rect, width: u16, height: u16) -> Rect {
     center
 }
 
+const fn line_ending_label(line_ending: LineEnding) -> &'static str {
+    match line_ending {
+        LineEnding::Crlf => "CRLF",
+        LineEnding::Cr => "CR",
+        LineEnding::None | LineEnding::Lf | LineEnding::Mixed => "LF",
+    }
+}
+
+fn mixed_line_ending_status(line_ending: LineEnding, target: Option<LineEnding>) -> String {
+    if line_ending != LineEnding::Mixed {
+        return String::new();
+    }
+    format!(
+        " │ MIXED→{}",
+        line_ending_label(target.unwrap_or(LineEnding::Lf))
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -1582,5 +1682,40 @@ mod tests {
         assert!(screen.contains("Logical location: line 0, column 1"));
         assert!(screen.contains("Terminal screen: row 8, cell 12"));
         assert!(screen.contains("Coordinates are a read-only snapshot"));
+    }
+
+    #[test]
+    fn renders_mixed_and_conflict_actions_without_changing_the_shell() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "source").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+
+        app.overlay = Some(Overlay::MixedLineEndings {
+            tab_index: 0,
+            previous_active: None,
+            context: MixedLineEndingContext::Open,
+            target: LineEnding::Crlf,
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let screen = rendered(&terminal);
+        assert!(screen.contains("Mixed line endings"));
+        assert!(screen.contains("Edit and normalize"));
+        assert!(screen.contains("Cancel opening"));
+        assert!(screen.contains("CRLF"));
+
+        app.overlay = Some(Overlay::Conflict {
+            kind: ConflictKind::Missing,
+            can_reload: false,
+            allow_continue: true,
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let screen = rendered(&terminal);
+        assert!(screen.contains("External conflict"));
+        assert!(screen.contains("Save local as"));
+        assert!(screen.contains("Continue without copy"));
+        assert!(!screen.contains("Reload external"));
     }
 }
