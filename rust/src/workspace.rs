@@ -212,6 +212,20 @@ pub fn has_editable_suffix(path: &Path) -> bool {
         .is_some_and(|suffix| EDITABLE_SUFFIXES.contains(&suffix.to_ascii_lowercase().as_str()))
 }
 
+/// Return whether two existing paths resolve to the same directory entry under different
+/// filesystem spellings. Canonical paths keep distinct hardlinks distinct while folding the case
+/// and Unicode aliases supported by the host filesystem.
+#[must_use]
+pub fn paths_are_spelling_aliases(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

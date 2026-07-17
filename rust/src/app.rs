@@ -45,12 +45,12 @@ use crate::search::{
 use crate::semantic_blocks::{SemanticBlockMap, map_semantic_blocks};
 use crate::session::{DocumentViewState, MAX_SESSION_DOCUMENTS, SessionState, SessionStore};
 use crate::ui;
-use crate::workspace::{Workspace, WorkspaceEntry, has_editable_suffix};
+use crate::workspace::{
+    Workspace, WorkspaceEntry, has_editable_suffix, paths_are_spelling_aliases,
+};
 use crate::workspace_entries::{
     copy_entry, create_file, create_folder, move_entry, move_to_trash, rename_entry,
 };
-
-const RECOVERY_RETENTION_DAYS: i64 = 30;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode {
@@ -1119,7 +1119,7 @@ impl App {
             target: TextInput::default(),
             protected_journals,
             protected_documents,
-            retention_days: RECOVERY_RETENTION_DAYS,
+            retention_days: i64::from(self.config.recovery.retention_days),
             status,
         });
     }
@@ -1152,7 +1152,10 @@ impl App {
                 );
                 return;
             };
-            if dirty_documents.contains(&entry.document_path) {
+            if dirty_documents
+                .iter()
+                .any(|path| paths_are_spelling_aliases(path, &entry.document_path))
+            {
                 self.show_recovery_manager(
                     selected,
                     "Cannot restore onto an open dirty document.".to_owned(),
@@ -1213,6 +1216,15 @@ impl App {
         }
         match self.open_document(&entry.document_path) {
             Ok(()) => {
+                if matches!(
+                    self.overlay,
+                    Some(Overlay::MixedLineEndings {
+                        context: MixedLineEndingContext::Open,
+                        ..
+                    })
+                ) {
+                    return;
+                }
                 self.status_message = Some(message);
                 self.overlay = Some(Overlay::Recovery {
                     entry: Box::new(entry),
@@ -1345,19 +1357,25 @@ impl App {
             return;
         };
         match journal.cleanup_quarantined(cutoff, Some(&self.workspace.root), Some(records)) {
-            Ok(result) => self.show_recovery_manager(
-                0,
-                format!(
-                    "Deleted {} of {} expired recoveries{}",
+            Ok(result) => {
+                let mut status = format!(
+                    "Deleted {} of {} expired recoveries",
                     result.deleted_count(),
-                    result.selected_count(),
-                    if result.failed_count() == 0 {
-                        String::new()
-                    } else {
-                        format!(" · {} failed", result.failed_count())
+                    result.selected_count()
+                );
+                if result.failed_count() > 0 {
+                    let _ = write!(status, " · {} failed", result.failed_count());
+                    for outcome in result.outcomes.iter().filter(|outcome| !outcome.deleted) {
+                        let _ = write!(
+                            status,
+                            " · {}: {}",
+                            self.workspace.relative(&outcome.document_path).display(),
+                            outcome.error.as_deref().unwrap_or("deletion failed")
+                        );
                     }
-                ),
-            ),
+                }
+                self.show_recovery_manager(0, status);
+            }
             Err(error) => self.show_recovery_manager(0, format!("Cleanup failed · {error}")),
         }
     }
@@ -6247,9 +6265,10 @@ mod tests {
         fs::write(&second, "second").unwrap();
         let journal = RecoveryJournal::new(root.join("recovery"));
         let workspace = Workspace::from_target(&root).unwrap();
+        let mut config = Config::default();
+        config.recovery.retention_days = 45;
         let mut app =
-            App::with_state_services(workspace, Config::default(), None, Some(journal.clone()))
-                .unwrap();
+            App::with_state_services(workspace, config, None, Some(journal.clone())).unwrap();
 
         app.open_document(&first).unwrap();
         app.active_tab_mut().unwrap().editor.insert_str("draft ");
@@ -6268,6 +6287,7 @@ mod tests {
             records,
             protected_journals,
             protected_documents,
+            retention_days,
             ..
         }) = &app.overlay
         else {
@@ -6278,6 +6298,7 @@ mod tests {
         assert!(protected_documents.contains(&second));
         assert!(protected_journals.contains(&journal.path_for(&first)));
         assert!(protected_journals.contains(&journal.path_for(&second)));
+        assert_eq!(*retention_days, 45);
     }
 
     #[test]
@@ -6381,6 +6402,99 @@ mod tests {
     }
 
     #[test]
+    fn recovery_manager_defers_active_and_restored_drafts_until_mixed_consent() {
+        for quarantined in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().canonicalize().unwrap();
+            let path = root.join("mixed.md");
+            fs::write(&path, b"one\r\ntwo\n").unwrap();
+            let loaded = load_file(&path).unwrap();
+            let journal = RecoveryJournal::new(root.join("recovery"));
+            journal
+                .publish(
+                    &path,
+                    &root,
+                    "recovered draft\n",
+                    loaded.encoding,
+                    &loaded.snapshot,
+                )
+                .unwrap();
+            if quarantined {
+                let record = journal.list_entries(Some(&root)).unwrap().pop().unwrap();
+                journal.quarantine(&record).unwrap();
+            }
+            let workspace = Workspace::from_target(&root).unwrap();
+            let mut app =
+                App::with_state_services(workspace, Config::default(), None, Some(journal.clone()))
+                    .unwrap();
+
+            app.open_recovery_manager();
+            app.handle_overlay_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+
+            assert!(matches!(
+                app.overlay,
+                Some(Overlay::MixedLineEndings {
+                    context: MixedLineEndingContext::Open,
+                    ..
+                })
+            ));
+            assert!(!app.active_tab().unwrap().document.is_editable());
+
+            app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+            assert!(app.active_tab().unwrap().document.is_editable());
+            assert!(matches!(
+                &app.overlay,
+                Some(Overlay::Recovery { entry }) if entry.text == "recovered draft\n"
+            ));
+        }
+    }
+
+    #[test]
+    fn recovery_manager_protects_dirty_documents_reached_through_spelling_aliases() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("Case.md");
+        let alias = root.join("case.md");
+        fs::write(&path, "saved").unwrap();
+        if alias.canonicalize().ok() != path.canonicalize().ok() {
+            return;
+        }
+        let loaded = load_file(&alias).unwrap();
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        journal
+            .publish(
+                &alias,
+                &root,
+                "archived draft",
+                loaded.encoding,
+                &loaded.snapshot,
+            )
+            .unwrap();
+        let active = journal.list_entries(Some(&root)).unwrap().pop().unwrap();
+        let archived_path = journal.quarantine(&active).unwrap();
+        let archived = journal
+            .list_quarantined(Some(&root))
+            .unwrap()
+            .pop()
+            .unwrap();
+        let workspace = Workspace::from_target(&root).unwrap();
+        let mut app =
+            App::with_state_services(workspace, Config::default(), None, Some(journal)).unwrap();
+        app.open_document(&path).unwrap();
+        app.active_tab_mut().unwrap().editor.insert_str("dirty ");
+
+        app.open_managed_recovery(0, &archived);
+
+        assert!(archived_path.exists());
+        assert!(matches!(
+            &app.overlay,
+            Some(Overlay::RecoveryManager { status, .. })
+                if status.contains("open dirty document")
+        ));
+    }
+
+    #[test]
     fn corrupt_quarantine_requires_an_explicit_delete_key() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
@@ -6460,7 +6574,10 @@ mod tests {
         assert!(archived_path.exists());
         assert!(matches!(
             &app.overlay,
-            Some(Overlay::RecoveryManager { status, .. }) if status.contains("1 failed")
+            Some(Overlay::RecoveryManager { status, .. })
+                if status.contains("1 failed")
+                    && status.contains("old.md")
+                    && status.contains("changed after it was listed")
         ));
 
         app.handle_overlay_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));

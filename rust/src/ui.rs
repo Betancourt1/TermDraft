@@ -19,6 +19,7 @@ use crate::markdown_help::MARKDOWN_SYNTAX_HELP;
 use crate::recovery::{RecoveryRecord, RecoveryRecordStatus};
 use crate::search::{TextMatch, TextSearchMode};
 use crate::semantic_blocks::{ReaderPresentation, SemanticBlockMap};
+use crate::workspace::paths_are_spelling_aliases;
 
 const BACKGROUND: Color = Color::Black;
 const SURFACE: Color = Color::Rgb(16, 16, 16);
@@ -858,10 +859,11 @@ fn draw_recovery_manager(
     });
     let restore_protected = record.is_some_and(|record| {
         record.quarantined
-            && record
-                .entry
-                .as_ref()
-                .is_some_and(|entry| protected_documents.contains(&entry.document_path))
+            && record.entry.as_ref().is_some_and(|entry| {
+                protected_documents
+                    .iter()
+                    .any(|path| paths_are_spelling_aliases(path, &entry.document_path))
+            })
     });
     let has_entry = record.is_some_and(|record| record.entry.is_some());
     let quarantined = record.is_some_and(|record| record.quarantined);
@@ -985,10 +987,11 @@ fn recovery_record_label(
     let mut flags = Vec::new();
     if (!record.quarantined && protected_journals.contains(&record.journal_path))
         || (record.quarantined
-            && record
-                .entry
-                .as_ref()
-                .is_some_and(|entry| protected_documents.contains(&entry.document_path)))
+            && record.entry.as_ref().is_some_and(|entry| {
+                protected_documents
+                    .iter()
+                    .any(|path| paths_are_spelling_aliases(path, &entry.document_path))
+            }))
     {
         flags.push("active");
     }

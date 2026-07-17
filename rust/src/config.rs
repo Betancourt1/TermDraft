@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use directories::BaseDirs;
 use serde::Deserialize;
 use thiserror::Error;
+use time::{Date, OffsetDateTime};
 
 use crate::bindings::{BindingError, Keymap};
 
@@ -152,6 +153,8 @@ pub enum ConfigError {
     },
     #[error("recovery.retention_days must be a positive integer")]
     InvalidRetention,
+    #[error("recovery.retention_days is too large for the current date")]
+    RetentionTooLarge,
     #[error(transparent)]
     InvalidKeybindings(#[from] BindingError),
     #[error("cannot create configuration at {path}: {source}")]
@@ -208,6 +211,9 @@ pub fn load(root: PathBuf) -> Result<Config, ConfigError> {
     if parsed.recovery.retention_days == 0 {
         return Err(ConfigError::InvalidRetention);
     }
+    if parsed.recovery.retention_days > maximum_retention_days(OffsetDateTime::now_utc()) {
+        return Err(ConfigError::RetentionTooLarge);
+    }
     let keybindings = Keymap::resolve(&parsed.keybindings)?;
     Ok(Config {
         root,
@@ -216,6 +222,13 @@ pub fn load(root: PathBuf) -> Result<Config, ConfigError> {
         keybinding_overrides: parsed.keybindings,
         keybindings,
     })
+}
+
+fn maximum_retention_days(now: OffsetDateTime) -> u32 {
+    let Ok(minimum) = Date::from_ordinal_date(1, 1) else {
+        return 0;
+    };
+    u32::try_from((now.date() - minimum).whole_days()).unwrap_or(0)
 }
 
 /// Create missing templates without replacing either existing file.
@@ -320,6 +333,24 @@ retention_days = 45
         assert_eq!(config.recovery.retention_days, 45);
         assert_eq!(config.keybindings["save"], "ctrl+s");
         assert!(config.keybinding_overrides.is_empty());
+    }
+
+    #[test]
+    fn rejects_recovery_retention_outside_the_supported_date_range() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(CONFIG_FILE_NAME);
+
+        fs::write(&path, "[recovery]\nretention_days = 0\n").unwrap();
+        assert!(matches!(
+            load(directory.path().to_path_buf()),
+            Err(ConfigError::InvalidRetention)
+        ));
+
+        fs::write(&path, "[recovery]\nretention_days = 999999999\n").unwrap();
+        assert!(matches!(
+            load(directory.path().to_path_buf()),
+            Err(ConfigError::RetentionTooLarge)
+        ));
     }
 
     #[test]
