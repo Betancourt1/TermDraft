@@ -113,8 +113,10 @@ Global shortcuts include `Ctrl+S`, `Ctrl+Q`, `Ctrl+P`, `Ctrl+F`, `Ctrl+B`, `Ctrl
 `Ctrl+PageUp` / `Ctrl+PageDown`.
 
 Run `termdraft-rs --commands` for the effective TermDraft COMMAND, Files, global, editor-action, and
-preview-action reference. Press `?` inside the application for a compact scrollable 26-row runtime
-summary. [RUST_PORT.md](RUST_PORT.md) also inventories the fixed underlying editor commands.
+preview-action reference. Press `?` inside the application for a compact scrollable 27-row runtime
+summary. In the focused preview, `Left`/`Right` or `h`/`l` scroll wide tables horizontally; `0` and
+`$` jump to their edges. [RUST_PORT.md](RUST_PORT.md) also inventories the fixed underlying editor
+commands.
 
 ## What is included
 

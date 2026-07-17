@@ -16,7 +16,7 @@ use crate::app::{
 use crate::coordinate_diagnostic::CoordinateDiagnostic;
 use crate::document::LineEnding;
 use crate::editor::style_cursor;
-use crate::markdown::render_markdown_with_width;
+use crate::markdown::render_markdown;
 use crate::markdown_help::MARKDOWN_SYNTAX_HELP;
 use crate::recovery::{RecoveryRecord, RecoveryRecordStatus};
 use crate::search::{TextMatch, TextSearchMode};
@@ -32,7 +32,7 @@ const POPUP_BORDER: Color = Color::Rgb(82, 82, 82);
 const TEXT: Color = Color::Rgb(218, 218, 218);
 const MUTED: Color = Color::Rgb(118, 118, 118);
 const BRIGHT: Color = Color::Rgb(242, 242, 242);
-const SHORTCUT_HELP_LINE_COUNT: u16 = 26;
+const SHORTCUT_HELP_LINE_COUNT: u16 = 27;
 const MARKDOWN_ICON: &str = "";
 const FOLDER_ICON: &str = "";
 
@@ -296,7 +296,24 @@ fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
     let area = centered(area, 104);
     let inner = block.inner(area);
     let content_width = usize::from(inner.width.max(1));
-    let text = render_markdown_with_width(&source, content_width);
+    let text = render_markdown(&source);
+    let horizontal_max = text
+        .lines
+        .iter()
+        .filter(|line| is_rendered_table_line(line))
+        .map(Line::width)
+        .max()
+        .unwrap_or_default()
+        .saturating_sub(content_width);
+    app.preview_horizontal_max_scroll = u16::try_from(horizontal_max).unwrap_or(u16::MAX);
+    app.preview_horizontal_scroll = app
+        .preview_horizontal_scroll
+        .min(app.preview_horizontal_max_scroll);
+    let text = scroll_rendered_tables(
+        text,
+        usize::from(app.preview_horizontal_scroll),
+        content_width,
+    );
     let line_count = text
         .lines
         .iter()
@@ -312,6 +329,85 @@ fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
     app.preview_scroll = app.preview_scroll.min(app.preview_max_scroll);
     let preview = preview.scroll((app.preview_scroll, 0));
     frame.render_widget(preview, area);
+}
+
+fn scroll_rendered_tables(
+    mut text: Text<'static>,
+    horizontal_scroll: usize,
+    width: usize,
+) -> Text<'static> {
+    for line in &mut text.lines {
+        if is_rendered_table_line(line) {
+            *line = clip_line(line, horizontal_scroll, width);
+        }
+    }
+    text
+}
+
+fn is_rendered_table_line(line: &Line<'_>) -> bool {
+    let first = line
+        .spans
+        .iter()
+        .find_map(|span| span.content.chars().next());
+    let last = line
+        .spans
+        .iter()
+        .rev()
+        .find_map(|span| span.content.chars().next_back());
+    matches!(
+        (first, last),
+        (Some('┌'), Some('┐'))
+            | (Some('├'), Some('┤'))
+            | (Some('└'), Some('┘'))
+            | (Some('│'), Some('│'))
+    )
+}
+
+fn clip_line(line: &Line<'_>, horizontal_scroll: usize, width: usize) -> Line<'static> {
+    let viewport_end = horizontal_scroll.saturating_add(width);
+    let mut position = 0_usize;
+    let mut spans = Vec::<Span<'static>>::new();
+
+    'line: for span in &line.spans {
+        for grapheme in span.styled_graphemes(line.style) {
+            let grapheme_width = unicode_width::UnicodeWidthStr::width(grapheme.symbol);
+            let next = position.saturating_add(grapheme_width);
+            if next <= horizontal_scroll {
+                position = next;
+                continue;
+            }
+            if position >= viewport_end {
+                break 'line;
+            }
+            let visible_width = next
+                .min(viewport_end)
+                .saturating_sub(position.max(horizontal_scroll));
+            if position < horizontal_scroll || next > viewport_end {
+                push_clipped_span(&mut spans, &" ".repeat(visible_width), grapheme.style);
+            } else {
+                push_clipped_span(&mut spans, grapheme.symbol, grapheme.style);
+            }
+            position = next;
+        }
+    }
+    Line {
+        alignment: line.alignment,
+        spans,
+        ..Line::default()
+    }
+}
+
+fn push_clipped_span(spans: &mut Vec<Span<'static>>, content: &str, style: Style) {
+    if content.is_empty() {
+        return;
+    }
+    if let Some(last) = spans.last_mut()
+        && last.style == style
+    {
+        last.content.to_mut().push_str(content);
+        return;
+    }
+    spans.push(Span::styled(content.to_owned(), style));
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
@@ -340,7 +436,15 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 u32::from(app.preview_scroll) * 100 / u32::from(app.preview_max_scroll)
             };
-            format!("Preview {percentage}%")
+            let horizontal = if app.preview_horizontal_max_scroll == 0 {
+                String::new()
+            } else {
+                format!(
+                    " · ↔ {}/{}",
+                    app.preview_horizontal_scroll, app.preview_horizontal_max_scroll
+                )
+            };
+            format!("Preview {percentage}%{horizontal}")
         } else {
             format!("{}:{}", row + 1, column + 1)
         };
@@ -1784,6 +1888,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, block: Block<'_>, scroll:
             shortcut(app, &["command_toggle_preview", "toggle_preview"]),
             "Show / hide preview",
         ),
+        help_line("VIEW", "← / → / h / l", "Scroll preview table horizontally"),
         help_line(
             "EDIT",
             shortcut(app, &["command_undo", "command_redo"]),
@@ -2285,12 +2390,13 @@ mod tests {
         let Some(Overlay::Help { scroll, max_scroll }) = &mut app.overlay else {
             panic!("shortcut help should remain open");
         };
-        assert_eq!(*max_scroll, 7);
+        assert_eq!(*max_scroll, 8);
         *scroll = *max_scroll;
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let last_page = rendered(&terminal);
         assert!(!last_page.contains("Enter WRITE mode"));
+        assert!(last_page.contains("Scroll preview table horizontally"));
         assert!(last_page.contains("Open grouped command menu"));
         assert!(last_page.contains("Enter/Esc/F1"));
     }
@@ -2437,7 +2543,7 @@ mod tests {
     }
 
     #[test]
-    fn split_preview_keeps_wrapped_table_rows_inside_their_borders() {
+    fn split_preview_scrolls_wide_tables_horizontally() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("note.md");
         fs::write(
@@ -2454,20 +2560,62 @@ mod tests {
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
 
-        let preview = rendered_area(&terminal, app.ui_regions.preview.unwrap());
-        let table_lines = preview
+        let horizontal_max = app.preview_horizontal_max_scroll;
+        assert!(horizontal_max > 0);
+        let left_edge = rendered_area(&terminal, app.ui_regions.preview.unwrap());
+        let table_lines = left_edge
             .lines()
             .map(str::trim)
             .filter(|line| matches!(line.chars().next(), Some('┌' | '├' | '└' | '│')))
             .collect::<Vec<_>>();
-        assert!(table_lines.len() >= 6);
+        assert_eq!(table_lines.len(), 5);
+        assert!(left_edge.contains("│ Key │ Action"));
+        assert!(!left_edge.contains("the preview │"));
         assert!(
-            table_lines
-                .iter()
-                .all(|line| { matches!(line.chars().last(), Some('┐' | '┤' | '┘' | '│')) })
+            rendered(&terminal).contains(&format!("↔ 0/{horizontal_max}")),
+            "horizontal position should be visible in the status line"
         );
-        assert!(preview.contains("wrap"));
-        assert!(preview.contains("cleanly"));
+
+        app.preview_horizontal_scroll = horizontal_max;
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let right_edge = rendered_area(&terminal, app.ui_regions.preview.unwrap());
+        let closed_lines = right_edge
+            .lines()
+            .map(str::trim)
+            .filter(|line| matches!(line.chars().last(), Some('┐' | '┤' | '┘' | '│')))
+            .count();
+        assert_eq!(closed_lines, 5);
+        assert!(right_edge.contains("the preview │"));
+        assert!(rendered(&terminal).contains(&format!("↔ {horizontal_max}/{horizontal_max}")));
+    }
+
+    #[test]
+    fn horizontal_table_clipping_preserves_unicode_cells_and_non_table_lines() {
+        let text = render_markdown(
+            "A paragraph that remains intact.\n\n| Name | Note |\n| --- | --- |\n| Áda | café ☕ notes |",
+        );
+        let natural_width = text
+            .lines
+            .iter()
+            .filter(|line| is_rendered_table_line(line))
+            .map(Line::width)
+            .max()
+            .unwrap();
+        let clipped = scroll_rendered_tables(text, natural_width - 15, 15);
+
+        assert_eq!(clipped.lines.len(), 7);
+        assert_eq!(
+            clipped.lines[0].spans[0].content,
+            "A paragraph that remains intact."
+        );
+        assert!(clipped.lines[2..].iter().all(|line| line.width() <= 15));
+        let table = clipped.lines[2..]
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(table.contains("café ☕ notes │"));
     }
 
     #[test]

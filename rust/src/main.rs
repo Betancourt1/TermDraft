@@ -202,6 +202,14 @@ fn format_command_help(config: &Config) -> String {
             "Move to the start or end of the preview",
         ),
         (
+            "Left / Right / h / l in preview".to_owned(),
+            "Scroll a wide preview table horizontally",
+        ),
+        (
+            "0 / $ in preview".to_owned(),
+            "Move to the left or right edge of a wide table",
+        ),
+        (
             "Tab / Shift+Tab in preview".to_owned(),
             "Preview links remain visible but cannot be selected",
         ),
@@ -340,6 +348,8 @@ mod tests {
             "Ctrl+S                            Save the current document",
             "Preview links remain visible but cannot be selected",
             "Links and footnotes remain inert",
+            "Left / Right / h / l in preview",
+            "Move to the left or right edge of a wide table",
             "Enter in a list",
             "Press : in COMMAND mode or Ctrl+\\ in either mode",
         ] {

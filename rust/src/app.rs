@@ -819,6 +819,8 @@ pub struct App {
     pub status_message: Option<String>,
     pub preview_scroll: u16,
     pub preview_max_scroll: u16,
+    pub preview_horizontal_scroll: u16,
+    pub preview_horizontal_max_scroll: u16,
     pub preview_page: u16,
     pub viewport_width: u16,
     pub explorer_width: u16,
@@ -900,6 +902,8 @@ impl App {
             status_message: None,
             preview_scroll: 0,
             preview_max_scroll: 0,
+            preview_horizontal_scroll: 0,
+            preview_horizontal_max_scroll: 0,
             preview_page: 1,
             viewport_width: 100,
             explorer_width: EXPLORER_DEFAULT_WIDTH,
@@ -1576,6 +1580,7 @@ impl App {
             self.active_tab = Some(index);
             self.focus = Focus::Editor;
             self.preview_scroll = 0;
+            self.preview_horizontal_scroll = 0;
             self.narrow_pane = Focus::Editor;
             if show_prompts {
                 self.mark_recent(&path);
@@ -1599,6 +1604,7 @@ impl App {
         self.active_tab = Some(self.tabs.len() - 1);
         self.focus = Focus::Editor;
         self.preview_scroll = 0;
+        self.preview_horizontal_scroll = 0;
         self.narrow_pane = Focus::Editor;
         if show_prompts && !self.ensure_active_mixed_open_prompt(previous_active) {
             self.mark_recent(&path);
@@ -2124,6 +2130,7 @@ impl App {
             self.mark_recent(&path);
         }
         self.preview_scroll = 0;
+        self.preview_horizontal_scroll = 0;
         self.narrow_pane = Focus::Editor;
         self.ensure_active_mixed_open_prompt(Some(current));
         self.enforce_active_read_only();
@@ -2573,6 +2580,13 @@ impl App {
             .unwrap_or(self.preview_max_scroll);
     }
 
+    fn scroll_preview_horizontally_by(&mut self, amount: i32) {
+        let next = i32::from(self.preview_horizontal_scroll).saturating_add(amount);
+        self.preview_horizontal_scroll =
+            u16::try_from(next.clamp(0, i32::from(self.preview_horizontal_max_scroll)))
+                .unwrap_or(self.preview_horizontal_max_scroll);
+    }
+
     fn handle_preview_key(&mut self, key: KeyEvent) -> bool {
         if key
             .modifiers
@@ -2587,11 +2601,13 @@ impl App {
             KeyCode::PageDown => self.scroll_preview_by(i32::from(self.preview_page)),
             KeyCode::Home | KeyCode::Char('g') => self.preview_scroll = 0,
             KeyCode::End | KeyCode::Char('G') => self.preview_scroll = self.preview_max_scroll,
-            KeyCode::Left
-            | KeyCode::Right
-            | KeyCode::Char('h' | 'l' | '0' | '$')
-            | KeyCode::Tab
-            | KeyCode::Enter => {}
+            KeyCode::Left | KeyCode::Char('h') => self.scroll_preview_horizontally_by(-1),
+            KeyCode::Right | KeyCode::Char('l') => self.scroll_preview_horizontally_by(1),
+            KeyCode::Char('0') => self.preview_horizontal_scroll = 0,
+            KeyCode::Char('$') => {
+                self.preview_horizontal_scroll = self.preview_horizontal_max_scroll;
+            }
+            KeyCode::Tab | KeyCode::Enter => {}
             _ => return false,
         }
         true
@@ -3385,6 +3401,16 @@ impl App {
                         }
                     }
                 }
+            }
+            MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight
+                if UiRegions::contains(self.ui_regions.preview, column, row) =>
+            {
+                let direction = if mouse.kind == MouseEventKind::ScrollLeft {
+                    -2
+                } else {
+                    2
+                };
+                self.scroll_preview_horizontally_by(direction);
             }
             _ => {}
         }
@@ -5712,6 +5738,29 @@ command_manage_recovery = "Z"
     }
 
     #[test]
+    fn focused_preview_scrolls_wide_tables_horizontally() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "preview").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.focus = Focus::Preview;
+        app.preview_horizontal_max_scroll = 30;
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+        assert_eq!(app.preview_horizontal_scroll, 2);
+        app.handle_key(KeyEvent::new(KeyCode::Char('$'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.preview_horizontal_scroll, 30);
+        app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        assert_eq!(app.preview_horizontal_scroll, 29);
+        app.handle_key(KeyEvent::new(KeyCode::Char('0'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.preview_horizontal_scroll, 0);
+    }
+
+    #[test]
     fn mouse_focus_scroll_resize_and_double_click_reach_the_workbench() {
         let directory = tempfile::tempdir().unwrap();
         let first = directory.path().join("first.md");
@@ -5750,6 +5799,11 @@ command_manage_recovery = "Z"
         app.preview_max_scroll = 10;
         app.handle_mouse(mouse(MouseEventKind::ScrollDown, 90, 10));
         assert_eq!(app.preview_scroll, 2);
+        app.preview_horizontal_max_scroll = 10;
+        app.handle_mouse(mouse(MouseEventKind::ScrollRight, 90, 10));
+        assert_eq!(app.preview_horizontal_scroll, 2);
+        app.handle_mouse(mouse(MouseEventKind::ScrollLeft, 90, 10));
+        assert_eq!(app.preview_horizontal_scroll, 0);
         app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 90, 10));
         assert_eq!(app.focus, Focus::Preview);
         app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 10));

@@ -24,6 +24,8 @@ Enter continues bullets, numbered lists, tasks, and blockquotes. Press Enter on
 an empty marker to end the list. Press Esc for COMMAND mode and i to return to WRITE mode. In the
 focused preview, links and footnotes remain visible but inert; Tab, Shift+Tab, and Enter do not
 activate them.
+Wide tables keep their natural columns. Use Left/Right or h/l to scroll them horizontally; 0 and $
+move to their left and right edges.
 Alt+Down and Alt+Up move between rendered headings and show the current heading position.
 External URLs remain inert. Raw HTML is ignored and omitted from the preview.
 Subscript and superscript render as dim italic text.
@@ -75,6 +77,8 @@ mod tests {
             "Press Esc for COMMAND mode",
             "links and footnotes remain visible but inert",
             "Tab, Shift+Tab, and Enter do not\nactivate them",
+            "Wide tables keep their natural columns",
+            "Use Left/Right or h/l to scroll them horizontally",
             "Alt+Down and Alt+Up move between rendered headings",
             "External URLs remain inert",
             "Images             ![alt](path) (alt text only; image data is omitted)",
