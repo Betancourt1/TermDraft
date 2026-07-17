@@ -1,6 +1,6 @@
 # Rust terminal frontend QA
 
-This checklist covers the Ratatui frontend on the `rust-port` branch at checkpoint `1367cc0`. The
+This checklist covers the Ratatui frontend on the `rust-port` branch at checkpoint `889215d`. The
 goal is to preserve the Python application's recognizable keyboard-first writing hierarchy with the
 fewest interface changes practical, not to claim pixel parity with Textual.
 
@@ -35,7 +35,8 @@ destructive confirmations, and narrow/small-terminal bounds.
 The app/domain tests separately cover:
 
 - exact 32-action palette group/order/shortcut parity and all 52 effective binding actions;
-- WRITE editing, Markdown continuation, undo/redo, and conflict-checked atomic saves;
+- COMMAND arrow/Vim navigation, WRITE editing, exact-modifier Markdown continuation, undo/redo, and
+  conflict-checked atomic saves;
 - mixed-line-ending open/reload/recovery consent, exact no-edit save, and first-edit normalization;
 - fuzzy file search, four workspace-search modes, filters, dirty overrides, cancellation, warnings,
   Unicode coordinates, find/replace, and one-step Replace All undo;
@@ -56,7 +57,7 @@ cargo test --locked --all-targets
 cargo test --locked --release
 ```
 
-At checkpoint `1367cc0`, 153 library tests and 3 binary tests pass.
+At checkpoint `889215d`, 155 library tests and 3 binary tests pass.
 
 ## Manual PTY check
 
@@ -78,8 +79,8 @@ Verify in order:
    no-clobber file/folder flows.
 3. `i`, Unicode typing/paste, `Esc`, and `w` preserve the expected bytes.
 4. `v` follows Inline/Split behavior without altering source; Alt+Up/Down navigates preview headings.
-5. `:` contains the same six groups and 32 ordered actions as Python; `?` shows the compact effective
-   summary and `--commands` remains the exhaustive reference.
+5. `:` contains the same six groups and 32 ordered actions as Python; `?` shows the compact action
+   summary and `--commands` remains the fuller TermDraft-action reference.
 6. `f`, `o`, `/`, `s`, and `S` exercise file, recent, workspace, document, and heading navigation.
 7. `K`, `b`, `B`, and `I` open the read-only reference/diagnostic windows and return safely.
 8. `M` shows active/quarantine/corrupt inventory; Tab changes record/target focus; irreversible

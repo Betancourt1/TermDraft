@@ -105,7 +105,8 @@ cancel after reload/recovery keeps it read-only.
 
 The Rust frontend preserves two interaction modes:
 
-- **COMMAND** routes configured keys to navigation/application actions and uses a block cursor.
+- **COMMAND** routes plain arrows plus configured keys to navigation/application actions and uses a
+  block cursor.
 - **WRITE** sends editing input to `tui-textarea-2` and uses a bar cursor.
 
 It also preserves the two configured view modes:
@@ -114,6 +115,8 @@ It also preserves the two configured view modes:
    presentation-only styles for common headings, emphasis, strong text, strikeout, inline code,
    links, tasks, bullets, and table separators. The cursor line remains exact source.
 2. **Split** shows the exact source editor beside a read-only best-effort `tui-markdown` preview.
+   Rust reparses that complete preview synchronously on each draw; Python instead uses a
+   revisioned/debounced preview pipeline.
 
 There is no separate Source view. In Inline or a narrow terminal, `v` switches between editor and
 preview. In a wide Split layout, it hides or shows the preview. Reading-width limits affect only
@@ -138,13 +141,16 @@ Search surfaces share validated paths and source coordinates but remain separate
   matching lines;
 - active-document search supports case selection, previous/next, single replace, Replace All, and
   search-only operation for read-only source;
-- outline uses parsed ATX headings and jumps to the selected source line.
+- outline uses parsed CommonMark headings, including Setext headings, and jumps to the selected
+  source line.
 
-Workspace search is the one background operation. Every submission increments an atomic revision;
-the worker checks cancellation between source units, and only the current overlay/query accepts the
-completion. Clean open overrides prefer disk, dirty/conflicted overrides prefer current source, and
-individual read/decode failures become warnings. Rust's `regex` crate provides linear-time matching
-and deliberately omits look-around/backreferences; both frontends cap patterns at 500 characters.
+Workspace search is the one background operation. It searches the existing Files snapshot captured
+when the request is submitted rather than performing Python's fresh workspace scan. Every submission
+increments an atomic revision; the worker checks cancellation between source units, and only the
+current overlay/query accepts the completion. Clean open overrides prefer disk, dirty/conflicted
+overrides prefer current source, and individual read/decode failures become warnings. Rust's `regex`
+crate provides linear-time matching and deliberately omits look-around/backreferences; both
+frontends cap patterns at 500 characters.
 
 Replace All builds one final source edit so undo restores the whole operation in one step. The Rust
 outline does not yet expose Python's query field or Show in preview destination.
@@ -191,8 +197,9 @@ Sessions and recovery use version-2 JSON shapes compatible with Python.
 Sessions contain workspace-relative open paths, active path, cursor positions, and bounded MRU
 views; they never contain source, baselines, or undo history. Rust eagerly loads restored tabs and
 restores cursors. It reads/writes compatible scroll fields as zero, so viewport restoration remains
-a Python-only behavior. Corrupt session state is ignored with a visible warning and can be replaced
-by the next valid publication.
+a Python-only behavior. Rust validates individual relative paths and size/count bounds, but lacks
+Python's duplicate-path and active/open/view cross-field checks. Corrupt session state is ignored
+with a visible warning and can be replaced by the next valid publication.
 
 Dirty documents are journaled on a nominal 500 ms event-loop interval. Journals contain exact
 source, encoding, workspace/path, saved baseline, and timestamp. Private atomic publication and
@@ -234,8 +241,9 @@ Rust always uses its built-in theme, so `--safe-mode` is behaviorally redundant.
 
 The command palette contains the same 32 actions in the same six groups/order as Python, rendered as
 one searchable list. Python projects those actions into a responsive grouped grid with descriptions.
-Rust's `?` screen is a scrollable 25-row effective summary; `--commands` is the exhaustive user-facing
-reference.
+Rust's `?` screen is a scrollable 25-row action summary; `--commands` is the fuller TermDraft-action
+reference. Neither substitutes for the underlying editor-key inventory in
+[RUST_PORT.md](../RUST_PORT.md).
 
 ## Terminal lifecycle
 
@@ -261,6 +269,6 @@ cargo test --locked --all-targets
 cargo test --locked --release
 ```
 
-At checkpoint `1367cc0`, 153 Rust library tests and 3 Rust binary tests pass. The Python suite remains
+At checkpoint `889215d`, 155 Rust library tests and 3 Rust binary tests pass. The Python suite remains
 the product oracle and passes 681 tests with 2 expected platform skips. The exhaustive interface and
 gap inventory, plus the explicitly historical benchmark, live in [RUST_PORT.md](../RUST_PORT.md).

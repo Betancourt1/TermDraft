@@ -91,13 +91,15 @@ press `Esc` to return to COMMAND mode.
 | `K` / `b` / `B` / `I` | Markdown help / inspect blocks / read blocks / cursor coordinates |
 | `q` | Quit safely |
 
-In COMMAND mode, `h`, `j`, `k`, and `l` move through the editor. `Tab` moves focus between the
-editor and Files; the same movement keys navigate Files, and `Enter` opens the selected document.
+In COMMAND mode, the arrow keys and `h`, `j`, `k`, `l` move through the editor. `Tab` moves focus
+between the editor and Files; the same letter keys navigate Files, and `Enter` opens the selected
+document.
 Global shortcuts include `Ctrl+S`, `Ctrl+Q`, `Ctrl+P`, `Ctrl+F`, `Ctrl+B`, `Ctrl+E`, and
 `Ctrl+PageUp` / `Ctrl+PageDown`.
 
-Run `termdraft-rs --commands` for the complete effective COMMAND, Files, global, editor, and preview
-reference. Press `?` inside the application for a compact scrollable 25-row runtime summary.
+Run `termdraft-rs --commands` for the effective TermDraft COMMAND, Files, global, editor-action, and
+preview-action reference. Press `?` inside the application for a compact scrollable 25-row runtime
+summary. [RUST_PORT.md](RUST_PORT.md) also inventories the fixed underlying editor commands.
 
 ## What is included
 
@@ -115,8 +117,8 @@ reference. Press `?` inside the application for a compact scrollable 25-row runt
   remain exact until the first edit, and then normalize to the disclosed target
 - Conflict-checked atomic saves, safe external-conflict choices, per-document guarded exits, crash
   journals, and a recovery inventory/retarget/archive/restore/export/delete/retention manager
-- All 52 compatible binding IDs, effective remapping, live `R` reload, and an exact 32-action command
-  palette in the same groups and order as Python
+- All 52 compatible application binding IDs, effective remapping, live `R` reload, and an exact
+  32-action command palette in the same groups and order as Python
 - Main-pane mouse focus, Files selection/double-click, wheel scrolling, and resizable dividers
 - Markdown syntax, semantic-block, experimental reader, and coordinate-diagnostic overlays
 - Markdown continuation for bullets, tasks, numbered lists, and quotes
@@ -153,9 +155,10 @@ keys, and reloads `config.toml` with `R`. Invalid reloads leave the active confi
 `theme.tcss` is still created only for compatibility: Rust never evaluates Textual CSS, always uses
 its built-in theme, and requires Python for theme watching. Use `--config-dir PATH` for isolation.
 
-Sessions remain content-free. Crash-recovery journals contain dirty source and use the existing
-TermDraft state directories so the Python and Rust implementations can understand their v2 data.
-For a fully isolated comparison, set `XDG_STATE_HOME=/tmp/termdraft-rs-state` and pass
+Sessions remain content-free. Crash-recovery journals contain dirty source, and their v2 data formats
+are shared with Python. Default state locations align on macOS and Linux/XDG; Windows paths and
+recovery locks still differ. For a fully isolated comparison, set
+`XDG_STATE_HOME=/tmp/termdraft-rs-state` and pass
 `--config-dir /tmp/termdraft-rs-config`.
 
 ## Documentation

@@ -2,7 +2,8 @@
 
 This branch compares the released Python/Textual application with a standalone Rust/Ratatui
 frontend. Both edit the same ordinary `.md`, `.markdown`, and `.txt` files and use compatible
-configuration, session, and recovery formats.
+configuration, session, and recovery formats. Their default state locations align on macOS and
+Linux/XDG; Windows differences are inventoried below.
 
 Rust is now the likely primary direction: it preserves nearly all of the keyboard-first workflow,
 the current branch feels materially more immediate in use, and the historical measurements below
@@ -31,14 +32,14 @@ termdraft-rs ~/Documents/notes
 The Python reference remains available from a prepared checkout as `termdraft` or
 `.venv/bin/termdraft`.
 
-Both implementations normally share compatible configuration, session, and recovery locations.
-Sessions contain no Markdown; recovery journals contain private dirty source. For an isolated Rust
-comparison, set `XDG_STATE_HOME=/tmp/termdraft-rs-state` and pass
+On macOS and Linux/XDG, both implementations normally share compatible configuration, session, and
+recovery locations. Sessions contain no Markdown; recovery journals contain private dirty source.
+For an isolated Rust comparison, set `XDG_STATE_HOME=/tmp/termdraft-rs-state` and pass
 `--config-dir /tmp/termdraft-rs-config`.
 
 ## Inventory snapshot
 
-This inventory was recounted from the Python source and Rust checkpoint `1367cc0`:
+This inventory was recounted from the Python source and Rust checkpoint `889215d`:
 
 - both command palettes contain exactly **32 actions** in the same six groups and order;
 - both configuration contracts contain exactly **52 binding IDs**, all of which reach implemented
@@ -48,7 +49,7 @@ This inventory was recounted from the Python source and Rust checkpoint `1367cc0
   **21 overlay types are currently user-reachable**;
 - shared dialog types serve several workflows, so the operation-by-operation popup matrix below is
   the authoritative interface comparison;
-- the Rust suite passes **153 library tests plus 3 binary tests**; the Python suite passes
+- the Rust suite passes **155 library tests plus 3 binary tests**; the Python suite passes
   **681 tests with 2 platform skips**.
 
 Neither frontend has a native menu bar. In both, the searchable command palette is the application
@@ -68,13 +69,13 @@ menu; the focused Files key layer is a second contextual menu.
 | Workspace text search | Literal, fuzzy, whole-word, and regex modes; case toggle; path filter; dirty/open overrides; warnings; deterministic 100-result bound; cancellable revisioned background search |
 | Active-document search | Case-aware find, previous/next, single replace, Replace All, read-only search, and one-step undo for Replace All |
 | Recent documents | Content-free MRU order independent of open-tab order, missing-path pruning, and reopening closed documents |
-| Workspace mutations | Create file/folder, copy, cut, paste, rename, move, and operating-system Trash with no-clobber, containment, ignored-path, and symlink protection |
-| Save As and Duplicate | Workspace-relative no-clobber publication; Save As retargets; Duplicate leaves the original active and dirty |
+| Workspace mutations | Create file/folder, copy, cut, paste, rename, move, and operating-system Trash with no-clobber, containment, and ignored-path protection |
+| Save As and Duplicate | Workspace-relative no-clobber publication; Save As retargets; Duplicate leaves the original active and preserves its existing dirty/clean state |
 | Encoding and ordinary line endings | UTF-8/UTF-8 BOM plus uniform LF, CRLF, or CR round trips |
 | Mixed line endings | Explicit Edit and normalize consent; cancel opening or keep read-only; accepted but untouched source remains byte-identical; the first edit uses the same CRLF-first normalization target |
 | External conflicts | Local source remains in memory; Save local as, Reload external, Continue without copy when safe, and Cancel are state-gated |
 | Dirty close and quit | Each dirty document gets its own filename-specific Save, Discard, or Cancel decision; Enter does not confirm destruction |
-| Markdown continuation | Bullets, ordered markers, tasks, quotes, empty-marker termination, and ordinary Enter fallback |
+| Markdown continuation | Common bullets, ordered markers, tasks, quotes, empty-marker termination, and ordinary Enter fallback |
 | Recovery storage | Python-compatible v2 journals, exact fingerprints, advisory Unix cross-process mutation locks, inventory, retarget, quarantine, restore, export, permanent deletion, and configured retention cleanup |
 | Recovery Manager for readable sources | `M`/palette access, active/quarantined/corrupt inventory, protected dirty drafts, target input, guarded actions, destructive confirmations, and per-record cleanup errors |
 | Diagnostic references | Markdown syntax, semantic source-block inspector, experimental block reader, and cursor-coordinate inspector |
@@ -87,17 +88,24 @@ menu; the focused Files key layer is a second contextual menu.
 | Executable and runtime | Published `termdraft`; Python/Textual and Nerd Font icons | Branch-local `termdraft-rs`; one native executable and ordinary Unicode symbols | Rust starts with less runtime overhead and needs no Nerd Font; Python remains the supported package |
 | Shell chrome | Textual styling and Nerd Font glyphs | Monochrome Ratatui chrome, `RUST PORT` badge, `▸`, `◆`, and `›` | Same hierarchy, not pixel parity |
 | Palette layout | Responsive grouped two-column cheatsheet that stacks when narrow; descriptions below | One searchable list with a group column and shortcut on every row | Actions and order match; Rust shows less explanatory copy at once |
-| Shortcut help | Generated exhaustive effective reference | Scrollable 25-row effective summary | Rust `--commands` is the exhaustive reference; `?` is intentionally more compact |
+| Shortcut help | Generated TermDraft-action reference | Scrollable 25-row action summary | Rust `--commands` is the fuller TermDraft-action reference; `?` is intentionally more compact |
 | Preview engine | `markdown-it-py`/Textual with tables, tasks, alerts, footnotes, definitions, link selection, and internal footnote navigation | Presentation-only inline styling plus a best-effort `tui-markdown` split preview | Source remains authoritative in both; richer preview behavior is still Python-only |
 | Explorer model | Lazy, collapsible Textual `DirectoryTree` plus asynchronous indexing | Always-expanded sorted snapshot from `ignore::WalkBuilder` | Rust is simpler and predictable; large trees can occupy more space and delay first frame |
 | Search regex engine | Python `regex`, full case folding, and a per-line timeout | Rust `regex`, a linear-time syntax subset, and the same 500-character input limit | Common regexes work; look-around/backreferences accepted by Python are not Rust syntax |
+| Workspace-search discovery | Fresh cancellable workspace scan for each submission, including scan warnings | Searches the indexed snapshot captured before the popup opened; source reads are cancellable and warn individually | New filesystem entries can be absent in Rust until the popup closes and the next poll refreshes Files |
+| Markdown continuation details | Preserves marker spacing, validates nested indentation with CommonMark, and intercepts only unmodified Enter | Normalizes supported marker spacing and conservatively rejects tab/four-space-leading lines; only unmodified Enter is intercepted | Common continuations match; unusual spacing and nested indentation can differ |
 | I/O scheduling | Most scans, reads, probes, saves, mutations, sessions, recovery, and semantic work run in Textual workers | Workspace text search has a background thread; most other I/O runs in the event loop | Rust has less coordination code, but a slow filesystem operation can pause drawing |
+| Preview updates | Revisioned/debounced render pipeline | Re-parses the complete split preview synchronously on each draw | Rust stays simple, but large documents can add per-frame work |
 | Session restoration | Deferred inactive tabs plus cursor and scroll restoration | Eager tab loading, cursor restoration, and zeroed scroll fields in the compatible v2 file | Tab/order/MRU parity; viewport restoration differs |
+| Session validation | Rejects duplicate paths and inconsistent active/open/view relationships | Validates each relative path and bounds but accepts some cross-field inconsistencies | Malformed hand-edited Rust state can be tolerated where Python rejects it |
 | External monitoring | Active tab plus rotating inactive-tab probes and focus checks | Active document plus a two-second workspace rescan | An inactive Rust tab is checked after activation, not proactively |
 | Save hardening | Parent-descriptor-bound publication, stable-read retry, post-publication digest verification, detailed directory-sync uncertainty | Same-directory atomic save with two destination snapshot checks and directory sync, but path-based publication | Both reject observed conflicts; Python remains stronger against parent-directory replacement races |
 | Recovery startup | Decisions occur before a document is installed; directory launches also offer missing/orphan drafts | Existing readable documents open before Restore/Use disk/Later; missing/orphan records stay visible in Manager | Normal crash recovery works; startup and unavailable-source flows differ |
 | Feedback | Persistent status plus Textual notifications/toasts | Persistent status messages | Rust is quieter and keeps transient feedback in one line |
 | Mouse | Textual tabs, tree, editor, preview links, inputs, rows, and buttons participate | Main-pane focus, Files selection/double-click, wheel scrolling, and divider dragging | Rust overlays remain keyboard-only and editor/tab clicking is incomplete |
+| Inline presentation | Transforms headings, quotes, lists/tasks, rules, fences, images/links, and GFM table borders | Primarily hides/styles ATX and inline markers while leaving more block syntax literal | Editing and bytes match, but Python's Inline view looks substantially more rendered |
+| Directory-copy symlinks | `shutil.copytree` follows nested symlinks by default | Rejects a nested symlink and removes the partial destination | Rust is intentionally stricter and will refuse some Python copies |
+| Windows state and locks | `%LOCALAPPDATA%/TermDraft` plus `msvcrt` recovery locks | Unix-style non-macOS state resolution and no advisory recovery lock outside Unix | Shared default locations and cooperating locks are not Windows-compatible yet |
 
 ## Still missing from the Rust frontend
 
@@ -118,8 +126,9 @@ These are current gaps, not items that were merely absent in the early port:
    Python can restore them into an unavailable-path conflict and then Save As.
 6. **Python-equivalent startup recovery cancellation.** Rust `Esc` means Later after the readable
    disk document is already open; Python can Cancel opening before installing it.
-7. **Session scroll offsets and lazy tab materialization.** Rust stores compatible zero scroll
-   fields and loads restored tabs immediately.
+7. **Session scroll offsets, lazy tab materialization, and full cross-field validation.** Rust stores
+   compatible zero scroll fields, loads restored tabs immediately, and does not reject every
+   duplicate/inconsistent relationship that Python rejects.
 8. **`theme.tcss`.** Rust creates the compatibility template but never parses or watches Textual
    CSS; `--safe-mode` therefore has no additional visual effect.
 9. **Full background-I/O and cooperative signal shutdown.** Rust lacks Python's critical-operation
@@ -129,6 +138,8 @@ These are current gaps, not items that were merely absent in the early port:
     reporting.
 11. **Public distribution.** There is no Rust release workflow, downloadable artifact, crates.io
     package, Homebrew formula, or stable Rust tag namespace yet.
+12. **Windows state-path and lock compatibility.** Rust does not yet use Python's LocalAppData state
+    root or its Windows recovery locking implementation.
 
 ## Main interface comparison
 
@@ -137,7 +148,7 @@ These are current gaps, not items that were merely absent in the early port:
 | Title | App/workspace title | Same plus `RUST PORT` | Deliberate badge |
 | Tabs | Clickable Textual tabs with modified/conflict state | Keyboard tabs with `●` modified and `!` conflict indicators | Keyboard parity; mouse gap |
 | Files | Collapsible tree, icons, click and keyboard | Always-expanded snapshot, Unicode symbols, click/double-click and keyboard | Different tree model |
-| Workbench | Inline editor or resizable split source/preview | Inline editor or resizable split source/preview | Layout parity |
+| Workbench | Inline editor or resizable split source/preview | Inline editor or resizable split source/preview | Layout parity; Inline presentation differs materially |
 | `v` in Inline/narrow | Switch editor and preview | Switch editor and preview | Parity |
 | `v` in wide Split | Show/hide preview | Show/hide preview | Parity |
 | Modes | COMMAND/WRITE in status; block/bar cursor | COMMAND/WRITE in status; block/bar cursor | Parity |
@@ -173,10 +184,10 @@ prints the group on every row. Both fuzzy-filter the complete 32-action set.
 | User-facing surface | Python/Textual | Rust/Ratatui | Status or changed behavior |
 | --- | --- | --- | --- |
 | Command palette | Search, six responsive groups, descriptions, mouse/keyboard | Search, same 32 actions/groups/order, one list, keyboard | Functional parity; layout/mouse differ |
-| Shortcut help | Full effective binding reference | Scrollable 25-row effective summary | Rust is intentionally shorter; every row remains reachable at 80x24 and `--commands` is exhaustive |
+| Shortcut help | Full TermDraft-action binding reference | Scrollable 25-row action summary | Rust is intentionally shorter; every row remains reachable at 80x24 and `--commands` is fuller |
 | Markdown syntax help | `HelpDialog` with supported syntax and examples | Dedicated scrollable Markdown Help overlay | Parity, with Rust limitations stated truthfully |
 | Find file | Query, include/exclude filter, ranked results | Same fields, filter contract, ranking, and open action | Parity |
-| Workspace search | Query, literal/fuzzy/word/regex, case, filter, warnings/results | Same controls and asynchronous revision/cancellation behavior | Parity |
+| Workspace search | Query, literal/fuzzy/word/regex, case, filter, fresh-scan warnings/results | Same controls and cancellable source search over the pre-popup index snapshot | Control/result parity; discovery and scan-warning timing differ |
 | Recent documents | MRU list and open | MRU list and open | Parity |
 | Find and replace | Query, replacement, case, previous/next, replace/all | Same, including F3/Shift+F3 and one-step Replace All undo | Parity |
 | Document outline | Filter, source jump, preview reveal | Heading list and source jump | Rust lacks filter and preview destination |
@@ -206,9 +217,11 @@ left/right/delete/backspace, Home/End, Ctrl+A/Ctrl+E, and terminal paste.
 
 ## Complete configurable binding inventory
 
-The IDs and defaults below are shared by both frontends. Rust applies overrides at runtime, rejects
-unknown/empty/malformed/reserved/colliding keys, refreshes help and menu shortcuts from the effective
-map, and reloads a valid replacement map with `R` without partially applying invalid configuration.
+The IDs and defaults below are shared by both frontends. They cover TermDraft application actions,
+not every built-in editor command; the fixed editor keymaps are inventoried separately below. Rust
+applies overrides at runtime, rejects unknown/empty/malformed/reserved/colliding keys, refreshes help
+and menu shortcuts from the effective map, and reloads a valid replacement map with `R` without
+partially applying invalid configuration.
 
 | Action | Direct/global/editor/preview ID and default | COMMAND ID and default |
 | --- | --- | --- |
@@ -248,7 +261,114 @@ map, and reloads a valid replacement map with `R` without partially applying inv
 | Document start | — | `command_document_start` = `g` |
 | Document end | — | `command_document_end` = `G` |
 
-### Fixed and contextual controls
+## Complete fixed editor and preview control inventory
+
+These are the default effective controls with an editable document focused in WRITE mode. The
+configurable TermDraft bindings above run first; remapping one can expose or consume an underlying
+editor-engine shortcut. The two engines can also disagree on exact punctuation word boundaries and
+wrapped-page positioning even when the command intent matches.
+
+### Shared editor controls
+
+| Behavior | Effective keys in both |
+| --- | --- |
+| Insert text or replace selection | Any printable character |
+| Indent to the next four-column stop | `Tab` |
+| Newline / Markdown continuation | Unmodified `Enter` |
+| Move one visual position or row | `←`, `→`, `↑`, `↓` |
+| Move by word | `Ctrl+←`, `Ctrl+→` |
+| Move to logical line start / end | `Home`, `Ctrl+A` / `End` |
+| Move by page | `PageUp`, `PageDown` |
+| Extend selection by position or row | `Shift+←`, `Shift+→`, `Shift+↑`, `Shift+↓` |
+| Extend selection by word | `Ctrl+Shift+←`, `Ctrl+Shift+→` |
+| Extend selection to a line edge | `Shift+Home`, `Shift+End` |
+| Delete previous character or selection | `Backspace` |
+| Delete next character or selection | `Delete`, `Ctrl+D` |
+| Delete previous word or selection | `Ctrl+W`, `Alt+Backspace` |
+| Delete next word or selection | `Alt+Delete` |
+| Delete to line end; at EOL join the next line, with no selection | `Ctrl+K` |
+| TermDraft grouped undo | `Ctrl+Z`, `Super+Z` |
+| TermDraft grouped redo | `Ctrl+Y`, `Super+Y`, `Ctrl+Shift+Z` |
+
+### Same editor key, changed behavior
+
+| Key | Python/Textual | Rust/Ratatui |
+| --- | --- | --- |
+| Modified `Enter` | Only exact Enter has an editor action | Shift/Super/Ctrl/Alt+Enter inserts a plain newline without continuation |
+| `Ctrl+U` | Delete to line start; at column zero join the previous line | Extra raw-engine undo alias |
+| `Ctrl+V` | Paste Textual's application clipboard | Scroll down one editor page |
+| `Ctrl+C` | Copy to the application clipboard and retain selection | Copy to `tui-textarea`'s private yank buffer and clear selection |
+| `Ctrl+X` | Cut to the application clipboard; without selection, cut the line | Cut to the private yank buffer; without selection, do nothing |
+| `Ctrl+K` with a selection | Delete from the active cursor to line end | Delete the selected range |
+
+Bracketed terminal paste still inserts source in Rust, but it is an `Event::Paste`, not a Ctrl+V
+editor command. Rust's private yank buffer has no reachable default paste key because TermDraft's
+configured redo owns Ctrl+Y before `tui-textarea` can treat it as yank.
+
+### Python-only fixed editor controls
+
+| Behavior | Python keys |
+| --- | --- |
+| Delete previous word | `Ctrl+Backspace` |
+| Delete to line start | `Super+Backspace` |
+| Delete complete line(s) intersecting selection | `Ctrl+Shift+K` |
+| Select current line | `F6` |
+| Select all | `F7` |
+| Application-clipboard cut/copy aliases | `Super+X`, `Super+C` |
+
+### Rust-only fixed editor controls
+
+| Behavior | Rust keys |
+| --- | --- |
+| Newline alias | `Ctrl+M` |
+| Delete previous character | `Ctrl+H` |
+| Delete to line start; at column zero join previous line | `Ctrl+J` |
+| Delete previous / next word | `Alt+H` / `Alt+D` |
+| Extra raw-engine undo / redo | `Ctrl+U` / `Ctrl+R` |
+| Move down one row | `Ctrl+N` |
+| Move forward / back by word | `Alt+F` / `Alt+B` |
+| Move down one paragraph | `Alt+]`, `Alt+N`, `Ctrl+↓` |
+| Move up one paragraph | `Alt+[`, `Alt+P`, `Ctrl+↑` |
+| Move to line start | `Ctrl+Alt+B`, `Ctrl+Alt+←`; `Home` also accepts otherwise unused Ctrl/Alt modifiers |
+| Move to line end | `Ctrl+Alt+F`, `Ctrl+Alt+→`; `End` also accepts otherwise unused Ctrl/Alt modifiers |
+| Move to document start | `Alt+<`, `Ctrl+Alt+P`, `Ctrl+Alt+↑` |
+| Move to document end | `Alt+>`, `Ctrl+Alt+N`, `Ctrl+Alt+↓` |
+| Scroll down / up one page | `Ctrl+V` / `Alt+V` |
+| Extend a Rust movement/page selection | Add `Shift` to any reachable movement above |
+
+`PageUp` and `PageDown` also accept otherwise unused Ctrl/Alt modifiers. Exact Ctrl+PageUp and
+Ctrl+PageDown remain TermDraft tab commands. The raw Ctrl+U/Ctrl+R aliases bypass TermDraft's grouped
+undo/redo entry points.
+
+### Default priority overrides
+
+| TermDraft shortcut | Underlying editor behavior it shadows |
+| --- | --- |
+| `Ctrl+E` · toggle preview | Python and Rust line-end alias |
+| `Ctrl+P` · find file | Rust cursor-up alias |
+| `Ctrl+B` · toggle Files | Rust cursor-left alias |
+| `Ctrl+F` · find/replace | Rust cursor-right alias |
+| `Ctrl+Shift+F` · workspace search | Rust shifted cursor-right alias |
+| `Ctrl+PageUp` / `Ctrl+PageDown` · tabs | Base page/viewport commands |
+| `Ctrl+Y` · redo | Rust private-yank paste |
+| Configured undo/redo keys | Both libraries' corresponding defaults |
+
+In COMMAND mode, TermDraft owns input. With editor focus, arrows move in both versions and Rust's
+configurable `h`/`j`/`k`/`l`, `0`/`$`, and `g`/`G` commands provide its Yazi/Vim-style aliases.
+
+### Fixed preview controls
+
+| Behavior | Python/Textual | Rust/Ratatui |
+| --- | --- | --- |
+| Next / previous rendered heading | Configured `Alt+↓` / `Alt+↑` | Same |
+| Link traversal | `Tab` / `Shift+Tab`; leaves preview at either end | Inert |
+| Activate selected link or footnote | `Enter` | Inert |
+| Scroll one row | No fixed keyboard command | `↑`/`k`, `↓`/`j` |
+| Scroll one page | No fixed keyboard command | `PageUp`, `PageDown` |
+| Start / end of preview | No fixed keyboard command | `Home`/`g`, `End`/`G` |
+| Explicitly inert directional controls | Unbound | `←`, `→`, `h`, `l`, `0`, `$` are consumed without action |
+
+## Other fixed and contextual controls
 
 | Context | Keys | Behavior and interface difference |
 | --- | --- | --- |
@@ -256,7 +376,7 @@ map, and reloads a valid replacement map with `R` without partially applying inv
 | Main workbench | `Tab` in COMMAND | Toggle Files/editor focus when Files is visible |
 | Files navigation | `↑`/`k`, `↓`/`j`, `Enter`/`→`/`l`, `←`/`h` | Select, open, or return to editor |
 | Files actions | `a`, `c`, `x`, `p`, `r`, `m`, `d` | Create, copy, cut, paste, rename, move, Trash |
-| Preview scroll | `↑`/`k`, `↓`/`j`, PageUp/PageDown, Home/End, `g`/`G` | Same scrolling in both; configured Alt+Up/Down select headings |
+| Preview scroll | Python: mouse/scrollbar; Rust: `↑`/`↓`, `k`/`j`, PageUp/PageDown, Home/End, `g`/`G` | Configured Alt+Up/Down selects headings in both; fixed keyboard scrolling is Rust-only |
 | Preview links | Python: Tab/Shift+Tab/Enter; Rust: inert | Python selects internal links/footnotes; Rust consumes these keys without activation |
 | Popup lists | `↑`/`↓`, Home/End where shown, Enter, Esc | Keyboard selection/submission/cancel |
 | Popup fields | Tab/Shift+Tab, arrows, Home/End, Ctrl+A/Ctrl+E, paste | Rust implements Unicode-aware keyboard editing; Python additionally supports mouse focus/buttons |
@@ -271,9 +391,10 @@ map, and reloads a valid replacement map with `R` without partially applying inv
 | `--safe-mode` | Ignore `theme.tcss` for this launch | Built-in theme is already always used |
 | `--init-config` | No-clobber `config.toml` and `theme.tcss` templates | Same compatible templates |
 | `--config-path` | Print resolved config/theme paths | Same |
-| `--commands` | Full effective command, Files, global, editor, and preview reference | Same section structure and effective mappings; accurately states preview links are inert |
+| `--commands` | Effective TermDraft command, Files, global, editor-action, and preview-action reference | Same section structure and effective mappings; accurately states preview links are inert |
 | `--version` / `--help` | Python package identity/help | Rust package identity/help |
 | `--inspect TARGET` | Not available | Rust-only validation/index count without opening the TUI |
+| `termdraft-benchmark` | Installed Python-only CLI: `--semantic-kib`, `--tab-kib`, `--tabs`, `--watch-kib`, `--iterations`, `--warmup`, `--help` | Not available | Developer measurement surface, not an editor command |
 
 The three utility flags `--init-config`, `--config-path`, and `--commands` are mutually exclusive in
 both implementations. Rust additionally exposes `--inspect`; it is a diagnostic, not an editor
@@ -281,7 +402,7 @@ feature.
 
 ## Verification
 
-Current code checkpoint: `1367cc0`.
+Current code checkpoint: `889215d`.
 
 ```bash
 cargo fmt --all -- --check
@@ -293,7 +414,7 @@ cargo test --locked --release
 
 Results at this checkpoint:
 
-- 153 Rust library tests and 3 Rust binary tests pass;
+- 155 Rust library tests and 3 Rust binary tests pass;
 - strict Clippy and rustfmt pass;
 - the Python suite passes 681 tests with 2 expected platform skips;
 - source-format and documentation diff checks pass.
@@ -302,7 +423,7 @@ Results at this checkpoint:
 
 The following numbers are preserved from the earlier `987cafc` checkpoint, before the recent
 search, Files, mouse, keymap, diagnostics, mixed-ending, conflict, and Recovery Manager parity work.
-They were **not rerun for `1367cc0`** and must not be presented as current benchmark results. They do
+They were **not rerun for `889215d`** and must not be presented as current benchmark results. They do
 explain why the Rust build can feel more fluid, especially at process start and first frame.
 
 Environment at that historical checkpoint: macOS 26.5.2 on arm64, Python 3.12.13 / TermDraft 1.2.0,
