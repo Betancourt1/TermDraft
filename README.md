@@ -1,13 +1,13 @@
-# TermDraft Rust port
+# TermDraft
 
-**A local-first Markdown editor for the terminal, ported from Python/Textual to Rust.**
+**A local-first Markdown editor for the terminal, built in Rust.**
 
-This README describes the `rust-port` branch. The Rust binary is `termdraft-rs`; it edits the same
-ordinary `.md`, `.markdown`, and `.txt` files as the released Python application and preserves its
-keyboard-first workbench without requiring Python or Textual at runtime.
+Rust is the primary implementation on `main`. The `termdraft-rs` binary edits ordinary `.md`,
+`.markdown`, and `.txt` files through the keyboard-first workbench without requiring Python or
+Textual at runtime.
 
 ```text
-┌ TermDraft · ~/notes                                      RUST PORT ┐
+┌ TermDraft · ~/notes                                                ┐
 │ journal/2026-07-11.md │ ● projects/termdraft.md                    │
 │ Files                    │ Friday                                   │
 │  journal/                │                                          │
@@ -19,20 +19,16 @@ keyboard-first workbench without requiring Python or Textual at runtime.
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-The published `termdraft` command and Homebrew formula still install the Python 1.2 application.
-See [RUST_PORT.md](RUST_PORT.md) for the measured comparison and the exact parity boundary.
-
-Rust is now the likely primary direction because the preserved workflow feels more immediate and
-the remaining gaps are concentrated in rich preview interaction, unavailable-source recovery,
-theme support, and a few deeper platform safeguards. Python remains the public release and product
-oracle until that promotion is made explicitly.
+The published `termdraft` command and Homebrew formula still install the Python 1.2 application
+until the Rust distribution work is completed. See [RUST_PORT.md](RUST_PORT.md) for the measured
+comparison and the remaining parity boundary.
 
 ## Quick start
 
 Rust 1.88 or newer is required.
 
 ```bash
-git clone --branch rust-port --single-branch https://github.com/Betancourt1/TermDraft.git
+git clone https://github.com/Betancourt1/TermDraft.git
 cd TermDraft
 cargo run --release --locked -- ~/Documents/notes
 ```
@@ -43,16 +39,15 @@ Open one file directly:
 cargo run --release --locked -- essay.md
 ```
 
-Or install the branch-local binary in your Cargo bin directory:
+Or install the Rust binary in your Cargo bin directory:
 
 ```bash
 cargo install --path . --locked
 termdraft-rs ~/Documents/notes
 ```
 
-No Rust package or Homebrew formula is published for this comparison branch. The Files pane uses
-the same Yazi-style Nerd Font folder and Markdown icons as the Python application, so a Nerd Font is
-recommended for the intended interface.
+No Rust package or Homebrew formula is published yet. The Files pane uses Yazi-style Nerd Font
+folder and Markdown icons, so a Nerd Font is recommended for the intended interface.
 
 On macOS, you can try the interface in [Server Mono](https://github.com/internet-development/www-server-mono)
 without changing your global Ghostty configuration. Server Mono supplies the text glyphs and
@@ -188,7 +183,7 @@ recovery locks still differ. For a fully isolated comparison, set
 - [Semantic editing](docs/semantic-editing.md) — future block-aware editing boundary for Rust
 - [Design QA](design-qa.md) — current Ratatui frontend acceptance checks
 - [Release guide](docs/releasing.md) — branch verification and the boundary with Python releases
-- [Changelog](CHANGELOG.md) — released Python history and this branch's additions
+- [Changelog](CHANGELOG.md) — released Python history and Rust implementation additions
 
 ## Development
 

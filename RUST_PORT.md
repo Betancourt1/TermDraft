@@ -1,28 +1,28 @@
-# TermDraft Python/Rust parity inventory
+# TermDraft Python/Rust implementation inventory
 
-This branch compares the released Python/Textual application with a standalone Rust/Ratatui
-frontend. Both edit the same ordinary `.md`, `.markdown`, and `.txt` files and use compatible
+This document compares the released Python/Textual application with the primary Rust/Ratatui
+implementation on `main`. Both edit the same ordinary `.md`, `.markdown`, and `.txt` files and use compatible
 configuration, session, and recovery formats. Their default state locations align on macOS and
 Linux/XDG; Windows differences are inventoried below.
 
-Rust is now the likely primary direction: it preserves nearly all of the keyboard-first workflow,
-the current branch feels materially more immediate in use, and the historical measurements below
-show much lower process-start and first-frame latency. That is a direction, not a release switch.
-The published `termdraft` command and Homebrew formula still install Python 1.2; Rust remains the
-branch-local `termdraft-rs` binary until its remaining gaps and distribution work are accepted.
+Rust is now the primary source implementation: it preserves nearly all of the keyboard-first
+workflow, feels materially more immediate in use, and the historical measurements below show much
+lower process-start and first-frame latency. This source promotion is not yet a distribution
+release. The published `termdraft` command and Homebrew formula still install Python 1.2;
+the Rust executable remains `termdraft-rs` until the distribution work is completed.
 
 ## Run either implementation
 
 Rust 1.88 or newer is required.
 
 ```bash
-git clone --branch rust-port --single-branch https://github.com/Betancourt1/TermDraft.git
+git clone https://github.com/Betancourt1/TermDraft.git
 cd TermDraft
 cargo run --release --locked -- ~/Documents/notes
 cargo run --release --locked -- essay.md
 ```
 
-To install only the branch-local executable:
+To install the Rust executable:
 
 ```bash
 cargo install --path . --locked
@@ -39,7 +39,7 @@ For an isolated Rust comparison, set `XDG_STATE_HOME=/tmp/termdraft-rs-state` an
 
 ## Inventory snapshot
 
-This inventory was recounted from the Python source and the current Rust branch:
+This inventory was recounted from the Python source and the current Rust implementation:
 
 - both command palettes contain exactly **32 actions** in the same six groups and order;
 - both configuration contracts contain exactly **52 binding IDs**, all of which reach implemented
@@ -86,7 +86,7 @@ menu; the focused Files key layer is a second contextual menu.
 | Area | Python/Textual | Rust/Ratatui | User-visible effect |
 | --- | --- | --- | --- |
 | Executable and runtime | Published `termdraft`; Python/Textual and Nerd Font icons | Branch-local `termdraft-rs`; one native executable with the same Files icons | Rust starts with less runtime overhead; both interfaces expect a Nerd Font for the intended icons |
-| Shell chrome | Textual styling and Nerd Font glyphs | Monochrome Ratatui chrome, `RUST PORT` badge, and Yazi-style Nerd Font glyphs | Same hierarchy and Files icon language, not pixel parity |
+| Shell chrome | Textual styling and Nerd Font glyphs | Monochrome Ratatui chrome and Yazi-style Nerd Font glyphs | Same hierarchy and Files icon language, not pixel parity |
 | Palette layout | Responsive grouped two-column cheatsheet that stacks when narrow; descriptions below | Searchable grouped two-column grid with descriptions and a compact narrow fallback | Actions, order, shortcuts, and explanatory copy match |
 | Shortcut help | Generated TermDraft-action reference | Scrollable 27-row action summary | Rust `--commands` is the fuller TermDraft-action reference; `?` is intentionally more compact |
 | Preview engine | `markdown-it-py`/Textual with tables, tasks, alerts, footnotes, definitions, link selection, and internal footnote navigation | Active-line source plus rendered inactive lines by default; semantic `pulldown-cmark` split preview with headings, inline styles, links, code, lists/tasks, quotes, horizontally scrollable tables, footnotes, and definitions | Source remains authoritative in both; interactive link/footnote navigation and alerts remain Python-only |
@@ -145,7 +145,7 @@ These are current gaps, not items that were merely absent in the early port:
 
 | Surface | Python/Textual | Rust/Ratatui | Status |
 | --- | --- | --- | --- |
-| Title | App/workspace title | Same plus `RUST PORT` | Deliberate badge |
+| Title | App/workspace title | Same title | Parity |
 | Tabs | Clickable Textual tabs with modified/conflict state | Keyboard tabs with `●` modified and `!` conflict indicators | Keyboard parity; mouse gap |
 | Files | Collapsible tree, icons, click and keyboard | Always-expanded snapshot, matching Nerd Font icons, click/double-click, keyboard, and keyboard/mouse resizing | Different tree model |
 | Workbench | Inline editor or resizable split source/preview | Active-line source plus rendered inactive lines, or resizable split source/semantic preview | Presentation and layout parity for common Markdown |
@@ -402,7 +402,7 @@ feature.
 
 ## Verification
 
-Current code state: this `rust-port` branch.
+Current code state: the primary Rust implementation on `main`.
 
 ```bash
 cargo fmt --all -- --check
@@ -423,7 +423,7 @@ Results at this checkpoint:
 
 The following numbers are preserved from the earlier `987cafc` checkpoint, before the recent
 search, Files, mouse, keymap, diagnostics, mixed-ending, conflict, and Recovery Manager parity work.
-They were **not rerun for the current branch** and must not be presented as current benchmark results. They do
+They were **not rerun for the current implementation** and must not be presented as current benchmark results. They do
 explain why the Rust build can feel more fluid, especially at process start and first frame.
 
 Environment at that historical checkpoint: macOS 26.5.2 on arm64, Python 3.12.13 / TermDraft 1.2.0,
@@ -445,8 +445,7 @@ Python drew while indexing asynchronously; Rust completed its synchronous scan b
 The one-off harness was not committed, so this table is evidence from that checkpoint rather than a
 reproducible current benchmark suite.
 
-## Branch history
+## Port history
 
-The port remains split into reviewable checkpoints. The current history is available in GitHub's
-[main-to-rust-port comparison](https://github.com/Betancourt1/TermDraft/compare/main...rust-port)
-without freezing another soon-stale commit list here.
+The port remains split into reviewable commits that now live directly on `main`; the Git history is
+the durable record without freezing another soon-stale commit list here.

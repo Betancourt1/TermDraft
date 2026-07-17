@@ -69,7 +69,6 @@ fn draw_title(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled("TermDraft", Style::new().fg(BRIGHT).bold()),
         Span::styled(" · ", Style::new().fg(MUTED)),
         Span::styled(root.to_string(), Style::new().fg(TEXT)),
-        Span::styled("  RUST PORT", Style::new().fg(MUTED).bold()),
     ]);
     frame.render_widget(
         Paragraph::new(title)
@@ -2337,7 +2336,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(rendered.contains("TermDraft"));
-        assert!(rendered.contains("RUST PORT"));
+        assert!(!rendered.contains("RUST PORT"));
         assert!(rendered.contains("Files"));
         assert!(rendered.contains("COMMAND"));
         assert!(rendered.contains(FOLDER_ICON));
