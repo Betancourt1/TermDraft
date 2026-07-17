@@ -4710,16 +4710,13 @@ fn retargeted_path(path: &Path, source: &Path, target: &Path) -> PathBuf {
 
 #[must_use]
 pub fn command_candidates(query: &str) -> Vec<CommandSpec> {
-    let mut commands = COMMANDS
+    COMMANDS
         .iter()
         .copied()
-        .filter_map(|command| {
-            fuzzy_score(query, &format!("{} {}", command.group, command.label))
-                .map(|score| (score, command))
+        .filter(|command| {
+            fuzzy_score(query, &format!("{} {}", command.group, command.label)).is_some()
         })
-        .collect::<Vec<_>>();
-    commands.sort_by(|(left_score, _), (right_score, _)| right_score.cmp(left_score));
-    commands.into_iter().map(|(_, command)| command).collect()
+        .collect()
 }
 
 /// Run the full-screen Rust application and always restore terminal state.

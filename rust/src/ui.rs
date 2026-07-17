@@ -8,9 +8,10 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph
 use time::{Duration as TimeDuration, OffsetDateTime};
 
 use crate::app::{
-    App, ConfirmAction, ConflictKind, EXPLORER_MAX_WIDTH, EXPLORER_MIN_WIDTH, FileFinderFocus,
-    FindFocus, Focus, MixedLineEndingContext, Mode, Overlay, RecoveryManagerFocus, TextInput,
-    UiRegions, ViewMode, WorkspaceSearchFocus, command_candidates, text_search_mode_label,
+    App, CommandAction, CommandSpec, ConfirmAction, ConflictKind, EXPLORER_MAX_WIDTH,
+    EXPLORER_MIN_WIDTH, FileFinderFocus, FindFocus, Focus, MixedLineEndingContext, Mode, Overlay,
+    RecoveryManagerFocus, TextInput, UiRegions, ViewMode, WorkspaceSearchFocus, command_candidates,
+    text_search_mode_label,
 };
 use crate::coordinate_diagnostic::CoordinateDiagnostic;
 use crate::document::LineEnding;
@@ -378,11 +379,10 @@ fn update_help_scroll_bounds(frame_area: Rect, overlay: &mut Option<Overlay>) {
 fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
     let area = match overlay {
         Overlay::Help { .. } => popup(frame.area(), 78, 30),
-        Overlay::MarkdownHelp { .. } => popup(frame.area(), 76, 30),
+        Overlay::MarkdownHelp { .. } | Overlay::Palette { .. } => popup(frame.area(), 76, 30),
         Overlay::SemanticInspector { .. } => popup(frame.area(), 82, 34),
         Overlay::SemanticReader { .. } => popup(frame.area(), 82, 36),
         Overlay::CoordinateInspector { .. } => popup(frame.area(), 76, 16),
-        Overlay::Palette { .. } => popup(frame.area(), 76, 22),
         Overlay::FileFinder { .. } => popup(frame.area(), 76, 23),
         Overlay::RecentDocuments { .. }
         | Overlay::SearchResults { .. }
@@ -422,31 +422,7 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
             draw_coordinate_inspector(frame, area, block, diagnostic, *screen_position);
         }
         Overlay::Palette { input, selected } => {
-            let commands = command_candidates(&input.value);
-            let items = commands
-                .iter()
-                .map(|command| {
-                    Line::from(vec![
-                        Span::styled(
-                            format!("{:<10}", command.group),
-                            Style::new().fg(MUTED).bold(),
-                        ),
-                        Span::styled(command.label, Style::new().fg(TEXT)),
-                        Span::styled(
-                            format!("  {}", command_shortcut(app, command.action)),
-                            Style::new().fg(MUTED),
-                        ),
-                    ])
-                })
-                .collect();
-            draw_picker(
-                frame,
-                area,
-                block.title(" Commands "),
-                Some(input),
-                items,
-                *selected,
-            );
+            draw_command_palette(frame, app, area, block, input, *selected);
         }
         Overlay::FileFinder {
             query,
@@ -1911,6 +1887,192 @@ fn help_line(group: &str, key: impl Into<String>, label: &str) -> Line<'static> 
     ])
 }
 
+const COMMAND_GROUP_ROWS: [[&str; 2]; 3] = [
+    ["DOCUMENT", "NAVIGATE"],
+    ["FILES", "MODE"],
+    ["EDIT", "VIEW"],
+];
+
+fn draw_command_palette(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    block: Block<'_>,
+    input: &TextInput,
+    selected: usize,
+) {
+    let inner = block.inner(area);
+    frame.render_widget(block.title(" Commands "), area);
+    let [input_area, results, description_area, footer] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Min(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    frame.render_widget(Paragraph::new(input_line(input)), input_area);
+
+    let commands = command_candidates(&input.value);
+    if commands.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No matching commands")
+                .style(Style::new().fg(MUTED))
+                .alignment(Alignment::Center),
+            results,
+        );
+    } else if results.width >= 58 && results.height >= 24 {
+        draw_command_grid(frame, app, results, &commands, selected);
+    } else {
+        draw_compact_command_list(frame, app, results, &commands, selected);
+    }
+
+    let description = commands
+        .get(selected)
+        .map_or("Type to filter commands", |command| {
+            command_description(command.action)
+        });
+    frame.render_widget(
+        Paragraph::new(description).style(Style::new().fg(MUTED)),
+        description_area,
+    );
+    frame.render_widget(
+        Paragraph::new("↑↓ select · Enter open · Esc close").style(Style::new().fg(MUTED)),
+        footer,
+    );
+}
+
+fn draw_command_grid(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    commands: &[CommandSpec],
+    selected: usize,
+) {
+    let [first, _, second, _, third] = Layout::vertical([
+        Constraint::Length(7),
+        Constraint::Length(1),
+        Constraint::Length(8),
+        Constraint::Length(1),
+        Constraint::Min(7),
+    ])
+    .areas(area);
+    for (row_area, groups) in [first, second, third].into_iter().zip(COMMAND_GROUP_ROWS) {
+        let [left, _, right] = Layout::horizontal([
+            Constraint::Fill(1),
+            Constraint::Length(2),
+            Constraint::Fill(1),
+        ])
+        .areas(row_area);
+        draw_command_group(frame, app, left, groups[0], commands, selected);
+        draw_command_group(frame, app, right, groups[1], commands, selected);
+    }
+}
+
+fn draw_command_group(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    group: &str,
+    commands: &[CommandSpec],
+    selected: usize,
+) {
+    let grouped = commands
+        .iter()
+        .enumerate()
+        .filter(|(_, command)| command.group == group)
+        .collect::<Vec<_>>();
+    if grouped.is_empty() {
+        return;
+    }
+    let mut lines = vec![Line::from(format!(" {group}")).style(Style::new().fg(MUTED).bold())];
+    for (index, command) in grouped {
+        let selected_style = if index == selected {
+            Style::new().fg(BRIGHT).bg(Color::Rgb(44, 44, 44)).bold()
+        } else {
+            Style::new()
+        };
+        let shortcut = format!(" {:<10}", command_shortcut(app, command.action));
+        let used = shortcut.chars().count() + command.label.chars().count();
+        let trailing = usize::from(area.width).saturating_sub(used);
+        lines.push(Line::from(vec![
+            Span::styled(
+                shortcut,
+                selected_style.patch(Style::new().fg(BRIGHT).bold()),
+            ),
+            Span::styled(command.label, selected_style.patch(Style::new().fg(TEXT))),
+            Span::styled(" ".repeat(trailing), selected_style),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn draw_compact_command_list(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    commands: &[CommandSpec],
+    selected: usize,
+) {
+    let items = commands.iter().map(|command| {
+        ListItem::new(Line::from(vec![
+            Span::styled(
+                format!("{:<10}", command.group),
+                Style::new().fg(MUTED).bold(),
+            ),
+            Span::styled(
+                format!("{:<10}", command_shortcut(app, command.action)),
+                Style::new().fg(BRIGHT).bold(),
+            ),
+            Span::styled(command.label, Style::new().fg(TEXT)),
+        ]))
+    });
+    let list = List::new(items)
+        .highlight_symbol("› ")
+        .highlight_style(Style::new().bg(Color::Rgb(44, 44, 44)).fg(BRIGHT).bold());
+    let selected = selected.min(commands.len().saturating_sub(1));
+    let mut state = ratatui::widgets::ListState::default().with_selected(Some(selected));
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
+const fn command_description(action: CommandAction) -> &'static str {
+    match action {
+        CommandAction::Save => "Save the open Markdown source",
+        CommandAction::SaveAs => "Save to a new path and retarget the active tab",
+        CommandAction::Duplicate => "Write a copy without changing the active tab",
+        CommandAction::Create => "Create a file or folder at the selected location",
+        CommandAction::CopyEntry => "Copy the selected workspace entry",
+        CommandAction::CutEntry => "Cut the selected entry for moving",
+        CommandAction::PasteEntry => "Paste beside the selected file or into the folder",
+        CommandAction::RenameEntry => "Rename the selected workspace entry",
+        CommandAction::MoveEntry => "Move the selected entry to a new path",
+        CommandAction::TrashEntry => "Move the selected workspace entry to Trash",
+        CommandAction::CloseTab => "Close the active buffer with save protection",
+        CommandAction::Quit => "Prompt before discarding changes",
+        CommandAction::FileFinder => "Search editable text files in the workspace",
+        CommandAction::RecentDocuments => "Switch to a recently used document",
+        CommandAction::NextTab => "Activate the next open Markdown buffer",
+        CommandAction::PreviousTab => "Activate the previous open Markdown buffer",
+        CommandAction::WorkspaceSearch => "Search Markdown source across the workspace",
+        CommandAction::Find => "Find and replace in the active document",
+        CommandAction::Outline => "Filter headings and jump to the source line",
+        CommandAction::ToggleExplorer => "Show or hide the workspace tree",
+        CommandAction::TogglePreview => "Show, hide, or switch to the rendered preview",
+        CommandAction::WriteMode => "Edit the active Markdown source",
+        CommandAction::CommandMode => "Use single-key application commands",
+        CommandAction::Undo => "Undo the last editor change",
+        CommandAction::Redo => "Redo the last undone editor change",
+        CommandAction::ReloadConfig => "Reload keybindings, editor, and retention options",
+        CommandAction::ManageRecovery => "Restore, retarget, export, or clean recovery drafts",
+        CommandAction::MarkdownHelp => "Show supported Markdown syntax and examples",
+        CommandAction::InspectSemanticBlocks => "Inspect parser ranges for the active source",
+        CommandAction::ReadSemanticBlocks => "Read semantic blocks with source fallbacks",
+        CommandAction::InspectCursorCoordinates => {
+            "Compare source, UTF-8, wrap, and screen positions"
+        }
+        CommandAction::Help => "Show the effective keyboard shortcuts",
+    }
+}
+
 fn draw_picker(
     frame: &mut Frame,
     area: Rect,
@@ -2161,6 +2323,44 @@ mod tests {
             command_shortcut(&app, crate::app::CommandAction::ManageRecovery),
             "alt+m"
         );
+    }
+
+    #[test]
+    fn command_palette_uses_the_python_grouped_menu_and_descriptions() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.overlay = Some(Overlay::Palette {
+            input: TextInput::default(),
+            selected: 0,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(100, 34)).unwrap();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let screen = rendered(&terminal);
+        for group in ["DOCUMENT", "NAVIGATE", "FILES", "MODE", "EDIT", "VIEW"] {
+            assert!(screen.contains(group));
+        }
+        assert!(screen.contains("Save the open Markdown source"));
+        let first_row = screen
+            .lines()
+            .find(|line| line.contains("DOCUMENT"))
+            .unwrap();
+        assert!(first_row.contains("NAVIGATE"));
+
+        app.overlay = Some(Overlay::Palette {
+            input: TextInput {
+                value: "trash".to_owned(),
+                cursor: 5,
+            },
+            selected: 0,
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let filtered = rendered(&terminal);
+        assert!(filtered.contains("FILES"));
+        assert!(filtered.contains("Trash"));
+        assert!(filtered.contains("Move the selected workspace entry to Trash"));
+        assert!(!filtered.contains("DOCUMENT"));
     }
 
     #[test]
