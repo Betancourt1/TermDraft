@@ -2299,7 +2299,7 @@ mod tests {
     fn default_editor_keeps_the_cursor_line_raw_and_renders_the_rest() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("note.md");
-        let source = "# Current source\n\nInactive **bold** [link](https://example.com)";
+        let source = "# Current source\n\nInactive **bold** [link](https://example.com)\n\n- Parent\n  - Child\n\n| Name | Count |\n| :--- | ---: |\n| Ada | 7 |\n\n```bash\necho hello\n```";
         fs::write(&path, source).unwrap();
         let workspace = Workspace::from_target(&path).unwrap();
         let mut app = App::new(workspace).unwrap();
@@ -2311,6 +2311,11 @@ mod tests {
         let editor = rendered_area(&terminal, app.ui_regions.editor.unwrap());
         assert!(editor.contains("# Current source"));
         assert!(editor.contains("Inactive bold link"));
+        assert!(editor.contains("  • Child"));
+        assert!(editor.contains("│ Name │ Count │"));
+        assert!(editor.contains("│ Ada  │     7 │"));
+        assert!(editor.contains("┌─ BASH"));
+        assert!(editor.contains("│ echo hello"));
         assert!(!editor.contains("**"));
         assert!(!editor.contains("https://example.com"));
         assert_eq!(app.active_tab().unwrap().document.text, source);
@@ -2426,7 +2431,8 @@ mod tests {
         assert!(!preview.contains("# Note"));
         assert!(preview.contains("A bold paragraph."));
         assert!(!preview.contains("**"));
-        assert!(preview.contains("let x = 1;"));
+        assert!(preview.contains("┌─ CODE · RUST"));
+        assert!(preview.contains("│ let x = 1;"));
         assert!(!preview.contains("```"));
     }
 
