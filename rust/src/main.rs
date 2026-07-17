@@ -103,9 +103,9 @@ const CONFIGURED_ROWS: &[(&str, &str)] = &[
 #[derive(Debug, Parser)]
 #[allow(clippy::struct_excessive_bools)]
 #[command(
-    name = "termdraft-rs",
+    name = "termdraft",
     version,
-    about = "Experimental Rust port of TermDraft"
+    about = "A local-first Markdown editor for the terminal"
 )]
 struct Arguments {
     #[arg(default_value = ".")]
@@ -325,9 +325,18 @@ fn display_key(key: &str) -> String {
 mod tests {
     use std::collections::BTreeMap;
 
+    use clap::CommandFactory;
     use termdraft::bindings::Keymap;
 
     use super::*;
+
+    #[test]
+    fn cli_uses_the_canonical_product_name_and_package_version() {
+        let command = Arguments::command();
+
+        assert_eq!(command.get_name(), "termdraft");
+        assert_eq!(command.get_version(), Some(env!("CARGO_PKG_VERSION")));
+    }
 
     #[test]
     fn command_help_matches_the_user_facing_python_sections() {

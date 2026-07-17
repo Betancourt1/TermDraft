@@ -2,7 +2,7 @@
 
 **A local-first Markdown editor for the terminal, built in Rust.**
 
-Rust is the primary implementation on `main`. The `termdraft-rs` binary edits ordinary `.md`,
+Rust is the primary implementation on `main`. The `termdraft` binary edits ordinary `.md`,
 `.markdown`, and `.txt` files through the keyboard-first workbench without requiring Python or
 Textual at runtime.
 
@@ -19,13 +19,20 @@ Textual at runtime.
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-The published `termdraft` command and Homebrew formula still install the Python 1.2 application
-until the Rust distribution work is completed. See [RUST_PORT.md](RUST_PORT.md) for the measured
-comparison and the remaining parity boundary.
+TermDraft 2.0 replaces the Python/Textual runtime with the Rust/Ratatui application. Python 1.2
+remains available as a legacy release and compatibility reference. See
+[RUST_PORT.md](RUST_PORT.md) for the measured comparison and accepted parity boundary.
 
 ## Quick start
 
-Rust 1.88 or newer is required.
+Install the current release with Homebrew:
+
+```bash
+brew install Betancourt1/tap/termdraft
+termdraft ~/Documents/notes
+```
+
+Rust 1.88 or newer is required when building from source:
 
 ```bash
 git clone https://github.com/Betancourt1/TermDraft.git
@@ -43,11 +50,11 @@ Or install the Rust binary in your Cargo bin directory:
 
 ```bash
 cargo install --path . --locked
-termdraft-rs ~/Documents/notes
+termdraft ~/Documents/notes
 ```
 
-No Rust package or Homebrew formula is published yet. The Files pane uses Yazi-style Nerd Font
-folder and Markdown icons, so a Nerd Font is recommended for the intended interface.
+The Files pane uses Yazi-style Nerd Font folder and Markdown icons, so a Nerd Font is recommended
+for the intended interface.
 
 On macOS, you can try the interface in [Server Mono](https://github.com/internet-development/www-server-mono)
 without changing your global Ghostty configuration. Server Mono supplies the text glyphs and
@@ -65,13 +72,13 @@ open -na Ghostty.app --args \
 Useful non-interactive commands:
 
 ```bash
-termdraft-rs --version
-termdraft-rs --help
-termdraft-rs --commands
-termdraft-rs --inspect ~/Documents/notes
+termdraft --version
+termdraft --help
+termdraft --commands
+termdraft --inspect ~/Documents/notes
 ```
 
-When running without `cargo install`, replace `termdraft-rs` with
+When running without `cargo install`, replace `termdraft` with
 `cargo run --release --locked --`, keeping the extra `--` before application arguments.
 
 ## Basic workflow
@@ -107,7 +114,7 @@ also be dragged with the mouse.
 Global shortcuts include `Ctrl+S`, `Ctrl+Q`, `Ctrl+P`, `Ctrl+F`, `Ctrl+B`, `Ctrl+E`, and
 `Ctrl+PageUp` / `Ctrl+PageDown`.
 
-Run `termdraft-rs --commands` for the effective TermDraft COMMAND, Files, global, editor-action, and
+Run `termdraft --commands` for the effective TermDraft COMMAND, Files, global, editor-action, and
 preview-action reference. Press `?` inside the application for a compact scrollable 27-row runtime
 summary. In the focused preview, `Left`/`Right` or `h`/`l` scroll wide tables horizontally; `0` and
 `$` jump to their edges. [RUST_PORT.md](RUST_PORT.md) also inventories the fixed underlying editor
@@ -140,15 +147,15 @@ commands.
 The exact inventories are in [RUST_PORT.md](RUST_PORT.md). The largest remaining gaps are the richer
 Python preview and link/footnote interactions, outline filtering/preview reveal, collapsible/lazy
 Files and inactive-tab monitoring, full mouse/overlay input, direct opening of missing/orphan
-recovery drafts, session scroll restoration, TCSS themes, and public Rust distribution.
+recovery drafts, session scroll restoration, and TCSS themes.
 
 ## Configuration
 
 Create the compatible configuration templates without replacing existing files:
 
 ```bash
-termdraft-rs --init-config
-termdraft-rs --config-path
+termdraft --init-config
+termdraft --config-path
 ```
 
 The default paths are `~/.termdraft/config.toml` and `~/.termdraft/theme.tcss`. The Rust frontend
@@ -172,8 +179,8 @@ its built-in theme, and requires Python for theme watching. Use `--config-dir PA
 Sessions remain content-free. Crash-recovery journals contain dirty source, and their v2 data formats
 are shared with Python. Default state locations align on macOS and Linux/XDG; Windows paths and
 recovery locks still differ. For a fully isolated comparison, set
-`XDG_STATE_HOME=/tmp/termdraft-rs-state` and pass
-`--config-dir /tmp/termdraft-rs-config`.
+`XDG_STATE_HOME=/tmp/termdraft-test-state` and pass
+`--config-dir /tmp/termdraft-test-config`.
 
 ## Documentation
 
@@ -182,8 +189,8 @@ recovery locks still differ. For a fully isolated comparison, set
 - [Markdown gallery](docs/markdown-gallery.md) — exercise the current inline and split renderers
 - [Semantic editing](docs/semantic-editing.md) — future block-aware editing boundary for Rust
 - [Design QA](design-qa.md) — current Ratatui frontend acceptance checks
-- [Release guide](docs/releasing.md) — branch verification and the boundary with Python releases
-- [Changelog](CHANGELOG.md) — released Python history and Rust implementation additions
+- [Release guide](docs/releasing.md) — native artifact, GitHub, and Homebrew release checklist
+- [Changelog](CHANGELOG.md) — Rust 2.x and legacy Python 1.x release history
 
 ## Development
 
@@ -197,7 +204,7 @@ cargo test --locked --release
 ```
 
 The Python implementation remains in `src/termdraft` as a reference and regression oracle. Its test
-suite can still be run from the prepared development environment with `.venv/bin/pytest -q`; the
-current GitHub workflows continue to package and release only that Python app.
+suite can still be run from the prepared development environment with `.venv/bin/pytest -q`; public
+2.x releases package only the Rust application.
 
 TermDraft is released under the [MIT License](LICENSE).

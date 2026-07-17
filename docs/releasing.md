@@ -1,113 +1,107 @@
-# Verifying and publishing the Rust comparison
+# Releasing TermDraft
 
-This document describes the `rust-port` branch. It is not the public TermDraft release checklist:
-the existing GitHub release workflow, Python package, GitHub artifacts, and Homebrew formula still
-publish the Python application from `main`.
+This checklist publishes the Rust application as the canonical `termdraft` executable. TermDraft
+1.2.0 remains the final Python release and rollback point; 2.x releases do not publish to PyPI.
 
-Do not create a `vX.Y.Z` tag from this branch. The current release workflow interprets those tags as
-Python releases and validates them against `pyproject.toml` and `src/termdraft/__init__.py`.
+## Distribution boundary
 
-## Verify a Rust checkpoint
+- `Cargo.toml` is the authoritative package name and version source.
+- Stable `vMAJOR.MINOR.PATCH` tags trigger `.github/workflows/release.yml`.
+- The release workflow verifies Rust formatting, Clippy, debug tests, and release tests before
+  building native archives for Linux and macOS on x86_64 and arm64.
+- A successful workflow creates a draft GitHub release with four archives and `SHA256SUMS`.
+- `Betancourt1/homebrew-tap` is updated only after that immutable GitHub release is verified.
+- The Python package under `src/termdraft` remains a compatibility oracle, not a 2.x artifact.
 
-Start from a clean `rust-port` checkout with the committed lockfile:
+The Cargo package is intentionally not published to crates.io. Supported installations are the
+Homebrew formula, GitHub release archives, or `cargo install --path . --locked` from a checkout.
+
+## Prepare the release commit
+
+Start from a clean `main` synchronized with `origin/main`:
 
 ```bash
 git status --short --branch
+git fetch --prune --tags origin
+git rev-parse main origin/main
+```
+
+Then:
+
+1. set `package.version` in `Cargo.toml`;
+2. move the release notes into a dated section in `CHANGELOG.md`;
+3. update any versioned installation or compatibility language;
+4. regenerate `Cargo.lock` if the package metadata changed;
+5. confirm that the release tag does not already exist locally or remotely.
+
+Run the complete local gates:
+
+```bash
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets
 cargo test --locked --release
 cargo build --locked --release
+./target/release/termdraft --version
+./target/release/termdraft --help
+./target/release/termdraft --commands
+./target/release/termdraft --inspect .
+.venv/bin/pytest -q
 ```
 
-Smoke-test the built binary without invoking Cargo again:
+The Python suite is a regression check only. Do not build or upload Python wheels for a 2.x tag.
+
+Commit and push the release change, then wait for every hosted CI job on that exact commit. Local
+success is not a substitute for hosted macOS and Linux verification.
+
+## Tag and verify the draft
+
+Create one annotated tag only after hosted CI passes:
 
 ```bash
-./target/release/termdraft-rs --version
-./target/release/termdraft-rs --help
-./target/release/termdraft-rs --commands
-./target/release/termdraft-rs --inspect .
+git tag -a vX.Y.Z -m "TermDraft X.Y.Z"
+git push origin vX.Y.Z
 ```
 
-Then launch a disposable Markdown fixture in a real PTY and verify:
+The tag starts the native release workflow. Wait for it to finish, then confirm that the draft
+contains these assets:
 
-1. the title, Files pane, editor, and status line render;
-2. `i` enters WRITE and `Esc` returns to COMMAND;
-3. Unicode source can be typed and saved exactly;
-4. `v` switches editor/preview in Inline, or shows/hides preview in wide Split, without changing
-   file bytes;
-5. `:`, `?`, `f`, `o`, `/`, `s`, `S`, `K`, `b`, `B`, `I`, and `M` open the expected keyboard
-   surfaces, and the palette contains 32 actions in six groups;
-6. Files supports create/copy/cut/paste/rename/move/Trash, including directory destinations and
-   cancel-default Trash confirmation;
-7. mixed line endings require consent, remain exact without an edit, and disclose their
-   normalization target;
-8. an external conflict offers only the safe Save local as / Reload / Continue / Cancel actions for
-   its state;
-9. dirty close/quit traverses documents individually and Enter cannot discard;
-10. Files selection/double-click, wheel scrolling, and both divider drags work while overlay mouse
-    input remains intentionally unsupported;
-11. the alternate screen, cursor, raw mode, and mouse reporting are restored after exit.
+```text
+termdraft-X.Y.Z-aarch64-apple-darwin.tar.gz
+termdraft-X.Y.Z-x86_64-apple-darwin.tar.gz
+termdraft-X.Y.Z-aarch64-unknown-linux-gnu.tar.gz
+termdraft-X.Y.Z-x86_64-unknown-linux-gnu.tar.gz
+SHA256SUMS
+```
 
-For isolated state during manual tests:
+Download the draft assets into a new temporary directory, verify every checksum, unpack the archive
+for the current machine, and rerun `--version`, `--help`, `--commands`, and `--inspect` from the
+downloaded executable. Launch that executable in a real terminal against a disposable Markdown
+fixture before publication.
+
+Never move or reuse a public tag. If the workflow or smoke test fails, delete only the unpublished
+draft and tag, fix the release commit, and choose a new patch version if the tag became public.
+
+## Publish and update Homebrew
+
+Publish the verified draft as the latest GitHub release. Then update
+`Betancourt1/homebrew-tap/Formula/termdraft.rb` to the tagged source archive and its exact SHA-256.
+The formula must build with Rust and install the `termdraft` executable.
+
+Before pushing the tap change, run:
 
 ```bash
-mkdir -p /tmp/termdraft-rs-fixture
-printf '# QA\n\nCafé 日本語\n' > /tmp/termdraft-rs-fixture/note.md
-XDG_STATE_HOME=/tmp/termdraft-rs-state \
-  ./target/release/termdraft-rs \
-  --config-dir /tmp/termdraft-rs-config \
-  /tmp/termdraft-rs-fixture
+brew audit --strict --online Betancourt1/tap/termdraft
+brew reinstall --build-from-source Betancourt1/tap/termdraft
+brew test Betancourt1/tap/termdraft
+termdraft --version
 ```
 
-The Python suite remains a compatibility oracle. If its development environment is already
-prepared, run `.venv/bin/pytest -q`; do not install or alter Python tooling merely to produce a Rust
-binary.
-
-## Current distribution boundary
-
-The Rust comparison currently has:
-
-- a branch-local Cargo package named `termdraft-rs`;
-- one release-profile executable at `target/release/termdraft-rs`;
-- no published crates.io package;
-- no Rust GitHub release workflow or downloadable binary artifact;
-- no Rust Homebrew formula;
-- no published stable Rust release or Rust-specific tag namespace.
-
-`cargo install --path . --locked` is the supported local installation path. It installs into the
-user's Cargo bin directory and can be removed with `cargo uninstall termdraft-rs`.
-
-## Before promoting Rust to a release
-
-Rust is the likely primary direction, but promotion must still be an explicit product decision
-rather than an incidental tag. At minimum:
-
-1. Decide whether Rust replaces `termdraft` or remains `termdraft-rs`.
-2. Resolve or formally accept the parity gaps in [RUST_PORT.md](../RUST_PORT.md).
-3. Choose one authoritative version source and a tag namespace that cannot trigger the Python
-   workflow accidentally.
-4. Add Rust formatting, Clippy, tests, and builds to hosted CI on macOS and Linux.
-5. Build release binaries on clean runners and verify their checksums and PTY startup.
-6. Add a Rust-specific release workflow before publishing any tag.
-7. Update Homebrew only after a public immutable artifact has passed installation and rollback
-   tests.
-
-The branch intentionally does not add those release mechanics yet. Feature parity is now broad
-enough to make Rust the likely successor, but the public distribution should not change before the
-remaining accepted gaps and rollback path are documented and tested.
-
-## Python release reference
-
-The canonical 1.x [Python release guide](https://github.com/Betancourt1/TermDraft/blob/main/docs/releasing.md)
-remains on `main`.
-
-It updates `pyproject.toml` and `src/termdraft/__init__.py`, runs Ruff, mypy, pytest, build, and
-Twine checks, publishes Python source/wheel artifacts, and then updates
-`Betancourt1/homebrew-tap`. Run that process only from a clean `main` checkout.
+Finally, verify the published GitHub release, the tap commit, and a fresh Homebrew installation. The
+release is complete only when all three point to the same TermDraft version.
 
 ## Rollback
 
-A local Rust comparison has no remote artifact to roll back. Remove the installed executable with
-`cargo uninstall termdraft-rs` or return to the previous branch commit. Never move or reuse a public
-Python tag to represent a Rust build.
+GitHub releases and tags are immutable. A Homebrew regression is rolled back with a new tap commit
+that restores the previous verified formula; do not rewrite the release tag. Python 1.2.0 remains
+available from its original GitHub/PyPI artifacts but is not republished under a 2.x version.

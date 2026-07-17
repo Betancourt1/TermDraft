@@ -1,8 +1,8 @@
 # TermDraft Rust architecture
 
-This document describes the implementation on the `rust-port` branch. The released
-[Python/Textual architecture](https://github.com/Betancourt1/TermDraft/blob/main/docs/architecture.md)
-remains the reference for the public `termdraft` package.
+This document describes the Rust implementation distributed as TermDraft 2.x. The Python/Textual
+implementation under `src/termdraft` remains a compatibility and regression reference for the
+legacy 1.x releases.
 
 The Rust port keeps the same product boundary: ordinary files are authoritative, workspace content
 cannot define commands or visual rules, the terminal owns only live editing state, and uncertain
@@ -270,6 +270,6 @@ cargo test --locked --all-targets
 cargo test --locked --release
 ```
 
-On the current branch, 159 Rust library tests and 3 Rust binary tests pass. The Python suite remains
-the product oracle and passes 681 tests with 2 expected platform skips. The exhaustive interface and
-gap inventory, plus the explicitly historical benchmark, live in [RUST_PORT.md](../RUST_PORT.md).
+On the 2.0 release commit, 170 Rust library tests and 4 Rust binary tests pass. The Python reference
+suite passes 681 tests with 2 expected platform skips. The exhaustive interface and gap inventory,
+plus the explicitly historical benchmark, live in [RUST_PORT.md](../RUST_PORT.md).

@@ -1,17 +1,19 @@
 [package]
-name = "termdraft-rs"
-version = "0.1.0"
+name = "termdraft"
+version = "2.0.0"
 edition = "2024"
 rust-version = "1.88"
-description = "Experimental Rust port of the TermDraft terminal Markdown editor"
+description = "A local-first Markdown editor for the terminal"
 license = "MIT"
+repository = "https://github.com/Betancourt1/TermDraft"
+publish = false
 
 [lib]
 name = "termdraft"
 path = "rust/src/lib.rs"
 
 [[bin]]
-name = "termdraft-rs"
+name = "termdraft"
 path = "rust/src/main.rs"
 
 [dependencies]

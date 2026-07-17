@@ -1,8 +1,8 @@
 # Future semantic block editing in Rust
 
-This document describes editable semantic blocks beyond the `rust-port` branch's current read-only
-diagnostics. Rust now contains the Python semantic-block inspector, coordinate diagnostic, and
-experimental block reader; none of them can update `Document` or replace the full-source editor.
+This document describes editable semantic blocks beyond TermDraft's current read-only diagnostics.
+The Rust application contains the legacy Python semantic-block inspector, coordinate diagnostic,
+and experimental block reader; none of them can update `Document` or replace the full-source editor.
 
 Today, one full-source `tui-textarea-2` editor remains authoritative. Inactive lines can hide or
 style common Markdown markers, but those styles do not change character positions or write rendered

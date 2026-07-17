@@ -13,29 +13,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Verify and draft release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
+  verify:
+    name: Verify release
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.14"
-
-      - name: Validate tag and package versions
+      - name: Install Rust 1.88
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component rustfmt,clippy
+          rustup default 1.88.0
+      - name: Validate tag, package, and executable
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           python - <<'PY'
           import os
           import re
-          import sys
           import tomllib
           from pathlib import Path
 
@@ -44,64 +38,101 @@ jobs:
               raise SystemExit(f"Release tag must be a stable vMAJOR.MINOR.PATCH tag, got {tag!r}")
 
           expected = tag.removeprefix("v")
-          project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-          project_version = project["project"]["version"]
+          manifest = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))
+          package = manifest["package"]
+          binaries = [target["name"] for target in manifest.get("bin", [])]
+          if package["name"] != "termdraft" or binaries != ["termdraft"]:
+              raise SystemExit("Cargo package and executable must both be named 'termdraft'")
+          if package["version"] != expected:
+              raise SystemExit(
+                  f"Tag {tag!r} expects Cargo version {expected!r}, got {package['version']!r}"
+              )
 
-          sys.path.insert(0, str(Path("src").resolve()))
-          import termdraft
-
-          versions = {
-              "pyproject.toml project.version": project_version,
-              "termdraft.__version__": termdraft.__version__,
-          }
-          mismatches = {source: version for source, version in versions.items() if version != expected}
-          if mismatches:
-              details = ", ".join(f"{source}={version!r}" for source, version in mismatches.items())
-              raise SystemExit(f"Tag {tag!r} expects version {expected!r}; {details}")
-
-          print(f"Validated {tag}: project and package versions are {expected}")
+          print(f"Validated {tag}: package and executable are termdraft {expected}")
           PY
-
-      - name: Install release tooling and development dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install ".[dev]" build twine
-
       - name: Run quality gates
         run: |
-          ruff format --check .
-          ruff check .
-          mypy --strict src tests
-          pytest
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo test --locked --all-targets
+          cargo test --locked --release
 
-      - name: Build and verify distributions
+  build:
+    name: Build ${{ matrix.target }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install Rust 1.88
         run: |
-          python -m build
-          python -m twine check --strict dist/*
-
-      - name: Smoke-test wheel in a clean environment
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup default 1.88.0
+          rustup target add "${{ matrix.target }}"
+      - name: Build release executable
+        run: cargo build --locked --release --target "${{ matrix.target }}"
+      - name: Smoke-test executable
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          python -m venv "$RUNNER_TEMP/termdraft-release-smoke"
-          "$RUNNER_TEMP/termdraft-release-smoke/bin/python" -m pip install dist/*.whl
-          "$RUNNER_TEMP/termdraft-release-smoke/bin/termdraft" --version
-          "$RUNNER_TEMP/termdraft-release-smoke/bin/python" -m termdraft --version
-          "$RUNNER_TEMP/termdraft-release-smoke/bin/termdraft" --help
-          "$RUNNER_TEMP/termdraft-release-smoke/bin/termdraft" --commands
-          "$RUNNER_TEMP/termdraft-release-smoke/bin/termdraft-benchmark" --help
-          "$RUNNER_TEMP/termdraft-release-smoke/bin/python" -m pip check
+          binary="target/${{ matrix.target }}/release/termdraft"
+          version="${RELEASE_TAG#v}"
+          "$binary" --version | grep -F "termdraft $version"
+          "$binary" --help
+          "$binary" --commands
+          "$binary" --inspect .
+      - name: Package executable
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          archive="termdraft-${version}-${{ matrix.target }}"
+          mkdir -p "dist/$archive"
+          cp "target/${{ matrix.target }}/release/termdraft" "dist/$archive/"
+          cp README.md LICENSE "dist/$archive/"
+          tar -C dist -czf "dist/$archive.tar.gz" "$archive"
+      - name: Upload release archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
 
+  release:
+    name: Draft GitHub release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download release archives
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum -- *.tar.gz *.whl > SHA256SUMS
-
+          sha256sum -- *.tar.gz > SHA256SUMS
       - name: Create draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
             dist/*.tar.gz \
-            dist/*.whl \
             dist/SHA256SUMS \
             --draft \
             --verify-tag \

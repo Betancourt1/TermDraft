@@ -1,15 +1,14 @@
-# TermDraft Python/Rust implementation inventory
+# TermDraft implementation inventory
 
-This document compares the released Python/Textual application with the primary Rust/Ratatui
-implementation on `main`. Both edit the same ordinary `.md`, `.markdown`, and `.txt` files and use compatible
-configuration, session, and recovery formats. Their default state locations align on macOS and
-Linux/XDG; Windows differences are inventoried below.
+This document compares the legacy Python/Textual 1.x application with the Rust/Ratatui application
+distributed as TermDraft 2.x. Both edit the same ordinary `.md`, `.markdown`, and `.txt` files and
+use compatible configuration, session, and recovery formats. Their default state locations align
+on macOS and Linux/XDG; Windows differences are inventoried below.
 
 Rust is now the primary source implementation: it preserves nearly all of the keyboard-first
 workflow, feels materially more immediate in use, and the historical measurements below show much
-lower process-start and first-frame latency. This source promotion is not yet a distribution
-release. The published `termdraft` command and Homebrew formula still install Python 1.2;
-the Rust executable remains `termdraft-rs` until the distribution work is completed.
+lower process-start and first-frame latency. TermDraft 2.0 makes this implementation the public
+`termdraft` command and Homebrew package. Python 1.2 remains an immutable legacy release.
 
 ## Run either implementation
 
@@ -26,16 +25,15 @@ To install the Rust executable:
 
 ```bash
 cargo install --path . --locked
-termdraft-rs ~/Documents/notes
+termdraft ~/Documents/notes
 ```
 
-The Python reference remains available from a prepared checkout as `termdraft` or
-`.venv/bin/termdraft`.
+The Python reference remains available from a prepared checkout as `.venv/bin/termdraft`.
 
 On macOS and Linux/XDG, both implementations normally share compatible configuration, session, and
 recovery locations. Sessions contain no Markdown; recovery journals contain private dirty source.
-For an isolated Rust comparison, set `XDG_STATE_HOME=/tmp/termdraft-rs-state` and pass
-`--config-dir /tmp/termdraft-rs-config`.
+For an isolated comparison, set `XDG_STATE_HOME=/tmp/termdraft-test-state` and pass
+`--config-dir /tmp/termdraft-test-config`.
 
 ## Inventory snapshot
 
@@ -49,7 +47,7 @@ This inventory was recounted from the Python source and the current Rust impleme
   **21 overlay types are currently user-reachable**;
 - shared dialog types serve several workflows, so the operation-by-operation popup matrix below is
   the authoritative interface comparison;
-- the Rust suite passes **159 library tests plus 3 binary tests**; the Python suite passes
+- the Rust suite passes **170 library tests plus 4 binary tests**; the Python suite passes
   **681 tests with 2 platform skips**.
 
 Neither frontend has a native menu bar. In both, the searchable command palette is the application
@@ -85,7 +83,7 @@ menu; the focused Files key layer is a second contextual menu.
 
 | Area | Python/Textual | Rust/Ratatui | User-visible effect |
 | --- | --- | --- | --- |
-| Executable and runtime | Published `termdraft`; Python/Textual and Nerd Font icons | Branch-local `termdraft-rs`; one native executable with the same Files icons | Rust starts with less runtime overhead; both interfaces expect a Nerd Font for the intended icons |
+| Executable and runtime | Legacy `termdraft`; Python/Textual and Nerd Font icons | Published `termdraft`; one native executable with the same Files icons | Rust starts with less runtime overhead; both interfaces expect a Nerd Font for the intended icons |
 | Shell chrome | Textual styling and Nerd Font glyphs | Monochrome Ratatui chrome and Yazi-style Nerd Font glyphs | Same hierarchy and Files icon language, not pixel parity |
 | Palette layout | Responsive grouped two-column cheatsheet that stacks when narrow; descriptions below | Searchable grouped two-column grid with descriptions and a compact narrow fallback | Actions, order, shortcuts, and explanatory copy match |
 | Shortcut help | Generated TermDraft-action reference | Scrollable 27-row action summary | Rust `--commands` is the fuller TermDraft-action reference; `?` is intentionally more compact |
@@ -136,9 +134,7 @@ These are current gaps, not items that were merely absent in the early port:
 10. **The deepest Python persistence guarantees.** Rust does not bind publication to an open parent
     descriptor, retry a moving read, or verify the final published digest with Python's uncertainty
     reporting.
-11. **Public distribution.** There is no Rust release workflow, downloadable artifact, crates.io
-    package, Homebrew formula, or stable Rust tag namespace yet.
-12. **Windows state-path and lock compatibility.** Rust does not yet use Python's LocalAppData state
+11. **Windows state-path and lock compatibility.** Rust does not yet use Python's LocalAppData state
     root or its Windows recovery locking implementation.
 
 ## Main interface comparison
@@ -384,7 +380,7 @@ configurable `h`/`j`/`k`/`l`, `0`/`$`, and `g`/`G` commands provide its Yazi/Vim
 
 ## Complete CLI comparison
 
-| CLI surface | Python `termdraft` | Rust `termdraft-rs` |
+| CLI surface | Legacy Python `termdraft` | TermDraft 2.x `termdraft` |
 | --- | --- | --- |
 | Positional `TARGET` | Directory or editable file; defaults to `.` | Same |
 | `--config-dir PATH` | Select configuration root | Same |
@@ -414,7 +410,7 @@ cargo test --locked --release
 
 Results at this checkpoint:
 
-- 159 Rust library tests and 3 Rust binary tests pass;
+- 170 Rust library tests and 4 Rust binary tests pass;
 - strict Clippy and rustfmt pass;
 - the Python suite passes 681 tests with 2 expected platform skips;
 - source-format and documentation diff checks pass.

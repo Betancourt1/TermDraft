@@ -1,6 +1,6 @@
 # TermDraft Markdown gallery
 
-Open this file in the Rust port. With the default Inline configuration, `v` switches between the
+Open this file in TermDraft. With the default Inline configuration, `v` switches between the
 source editor and rendered preview. With `editor.view_mode = "split"` in a wide terminal, `v`
 shows or hides the preview beside the source editor:
 
@@ -8,7 +8,7 @@ shows or hides the preview beside the source editor:
 cargo run --release --locked -- docs/markdown-gallery.md
 ```
 
-If `termdraft-rs` is installed, use `termdraft-rs docs/markdown-gallery.md` instead. The Markdown
+If `termdraft` is installed, use `termdraft docs/markdown-gallery.md` instead. The Markdown
 source is always the document. Inline styles and the split preview only present it; neither rewrites
 this file.
 

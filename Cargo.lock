@@ -1778,8 +1778,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "termdraft-rs"
-version = "0.1.0"
+name = "termdraft"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "clap",

@@ -1,14 +1,14 @@
 # Rust terminal frontend QA
 
-This checklist covers the current Ratatui frontend on the `rust-port` branch. The
-goal is to preserve the Python application's recognizable keyboard-first writing hierarchy with the
-fewest interface changes practical, not to claim pixel parity with Textual.
+This checklist covers the current Ratatui frontend on `main`. The goal is to preserve the legacy
+Python application's recognizable keyboard-first writing hierarchy with the fewest interface
+changes practical, not to claim pixel parity with Textual.
 
 ## Preserved visual contract
 
 | Surface | Rust acceptance |
 | --- | --- |
-| Shell | One-line title with `RUST PORT`, optional tabs, Files pane, centered workbench, and compact status line |
+| Shell | One-line title, optional tabs, Files pane, centered workbench, and compact status line |
 | Hierarchy | Monochrome borders/text; brightness and weight identify focus without decorative color |
 | Modes | COMMAND uses a block cursor; WRITE uses a bar cursor; both remain visible in status |
 | Editor | Inline keeps the active line as exact source; configured Split shows source and preview side by side |
@@ -56,19 +56,19 @@ cargo test --locked --all-targets
 cargo test --locked --release
 ```
 
-On the current branch, 159 library tests and 3 binary tests pass.
+On the current release commit, 170 library tests and 4 binary tests pass.
 
 ## Manual PTY check
 
 Launch a disposable UTF-8 fixture at a minimum of 100×24:
 
 ```bash
-mkdir -p /tmp/termdraft-rs-fixture
-printf '# QA\n\nCafé 日本語\n' > /tmp/termdraft-rs-fixture/note.md
-XDG_STATE_HOME=/tmp/termdraft-rs-state \
+mkdir -p /tmp/termdraft-fixture
+printf '# QA\n\nCafé 日本語\n' > /tmp/termdraft-fixture/note.md
+XDG_STATE_HOME=/tmp/termdraft-test-state \
   cargo run --release --locked -- \
-  --config-dir /tmp/termdraft-rs-config \
-  /tmp/termdraft-rs-fixture/note.md
+  --config-dir /tmp/termdraft-test-config \
+  /tmp/termdraft-fixture/note.md
 ```
 
 Verify in order:

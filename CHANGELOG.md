@@ -3,14 +3,23 @@
 Notable changes to TermDraft are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use semantic versioning.
 
-The numbered 1.x releases below describe the Python application on `main`. The Rust comparison is a
-branch checkpoint, not a published TermDraft release.
+The 1.x releases describe the legacy Python/Textual application. TermDraft 2.x is the native
+Rust/Ratatui application.
 
-## [Rust port 0.1.0][Rust port comparison] - 2026-07-16
+## [2.0.0] - 2026-07-16
+
+### Changed
+
+- Replaced the Python/Textual public application with the native Rust/Ratatui implementation while
+  keeping ordinary files, compatible configuration, sessions, and recovery journals authoritative.
+- Renamed the experimental `termdraft-rs` package and executable to the canonical `termdraft`
+  version 2.0.0.
+- Replaced Python wheel releases with native macOS and Linux archives for arm64 and x86_64, plus a
+  Rust-built Homebrew formula. Python 1.2.0 remains available as the legacy rollback release.
 
 ### Added
 
-- Added the standalone `termdraft-rs` Ratatui/Crossterm workbench with preserved COMMAND/WRITE
+- Added the standalone Ratatui/Crossterm workbench with preserved COMMAND/WRITE
   modes, tabs, Files, Inline/Split behavior, outline, and keyboard overlays.
 - Ported fuzzy file finding, recent documents, four-mode workspace search, active-document find and
   replace, all workspace create/copy/cut/paste/rename/move/Trash actions, and no-clobber Save As and
@@ -23,17 +32,11 @@ branch checkpoint, not a published TermDraft release.
   Python palette contract, Markdown help, semantic diagnostics, and cursor-coordinate diagnostics.
 - Added main-workbench mouse focus, Files selection/double-click, wheel scrolling, and resizable
   Files and Split dividers.
-- Updated branch-facing documentation with the exhaustive Python/Rust feature, interface, menu,
+- Added aligned bordered Markdown tables with horizontal preview scrolling when a table exceeds the
+  reading width.
+- Updated the documentation with the exhaustive Python/Rust feature, interface, menu,
   popup, command, safety, verification, and historical-performance inventories in
   [RUST_PORT.md](RUST_PORT.md).
-
-## [Unreleased] — Python reference
-
-### Added
-
-- Render GFM table rows with terminal borders in the default inline editor while keeping the active
-  row as exact Markdown source. This change belongs to the Python frontend; the Rust inline view
-  currently styles table separators without reconstructing bordered rows.
 
 ## [1.2.0] - 2026-07-16
 
@@ -124,8 +127,8 @@ branch checkpoint, not a published TermDraft release.
 - Established the local-first terminal writing loop with a file explorer, Markdown source editor,
   rendered preview, protected saves, and crash-recovery journals.
 
-[Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v1.2.0...HEAD
-[Rust port comparison]: https://github.com/Betancourt1/TermDraft/compare/main...rust-port
+[Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/Betancourt1/TermDraft/compare/v1.2.0...v2.0.0
 [1.2.0]: https://github.com/Betancourt1/TermDraft/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/Betancourt1/TermDraft/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Betancourt1/TermDraft/compare/v1.0.0...v1.1.0
