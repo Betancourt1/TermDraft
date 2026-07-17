@@ -8,9 +8,9 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph
 use time::{Duration as TimeDuration, OffsetDateTime};
 
 use crate::app::{
-    App, ConfirmAction, ConflictKind, FileFinderFocus, FindFocus, Focus, MixedLineEndingContext,
-    Mode, Overlay, RecoveryManagerFocus, TextInput, UiRegions, ViewMode, WorkspaceSearchFocus,
-    command_candidates, text_search_mode_label,
+    App, ConfirmAction, ConflictKind, EXPLORER_MAX_WIDTH, EXPLORER_MIN_WIDTH, FileFinderFocus,
+    FindFocus, Focus, MixedLineEndingContext, Mode, Overlay, RecoveryManagerFocus, TextInput,
+    UiRegions, ViewMode, WorkspaceSearchFocus, command_candidates, text_search_mode_label,
 };
 use crate::coordinate_diagnostic::CoordinateDiagnostic;
 use crate::document::LineEnding;
@@ -28,7 +28,9 @@ const BORDER: Color = Color::Rgb(58, 58, 58);
 const TEXT: Color = Color::Rgb(218, 218, 218);
 const MUTED: Color = Color::Rgb(118, 118, 118);
 const BRIGHT: Color = Color::Rgb(242, 242, 242);
-const SHORTCUT_HELP_LINE_COUNT: u16 = 25;
+const SHORTCUT_HELP_LINE_COUNT: u16 = 26;
+const MARKDOWN_ICON: &str = "";
+const FOLDER_ICON: &str = "";
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     app.update_viewport_width(frame.area().width);
@@ -120,8 +122,11 @@ pub fn workspace_regions(app: &App, area: Rect) -> UiRegions {
         ..UiRegions::default()
     };
     if app.show_explorer {
-        let maximum = area.width.saturating_sub(20).min(48);
-        let minimum = 20.min(maximum);
+        let maximum = area
+            .width
+            .saturating_sub(EXPLORER_MIN_WIDTH)
+            .min(EXPLORER_MAX_WIDTH);
+        let minimum = EXPLORER_MIN_WIDTH.min(maximum);
         let explorer_width = app.explorer_width.clamp(minimum, maximum);
         let [explorer, divider, workbench] = Layout::horizontal([
             Constraint::Length(explorer_width),
@@ -179,7 +184,11 @@ fn draw_explorer(frame: &mut Frame, app: &mut App, area: Rect) {
         .style(Style::new().bg(SURFACE));
     let items = app.entries.iter().map(|entry| {
         let indent = "  ".repeat(entry.depth);
-        let icon = if entry.is_dir { "▸" } else { "◆" };
+        let icon = if entry.is_dir {
+            FOLDER_ICON
+        } else {
+            MARKDOWN_ICON
+        };
         let name = entry
             .relative
             .file_name()
@@ -1779,6 +1788,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, block: Block<'_>, scroll:
         help_line("FILES", "a", "Create a file or folder"),
         help_line("FILES", "c / x / p", "Copy / cut / paste"),
         help_line("FILES", "r / m / d", "Rename / move / Trash"),
+        help_line("FILES", "Shift+← / →", "Resize the Files pane"),
         help_line(
             "VIEW",
             shortcut(app, &["command_toggle_preview", "toggle_preview"]),
@@ -2017,6 +2027,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("note.md");
         fs::write(&path, "# Note\nbody").unwrap();
+        fs::create_dir(directory.path().join("journal")).unwrap();
         let workspace = Workspace::from_target(&path).unwrap();
         let mut app = App::new(workspace).unwrap();
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
@@ -2036,6 +2047,8 @@ mod tests {
         assert!(rendered.contains("RUST PORT"));
         assert!(rendered.contains("Files"));
         assert!(rendered.contains("COMMAND"));
+        assert!(rendered.contains(FOLDER_ICON));
+        assert!(rendered.contains(MARKDOWN_ICON));
         assert!(rendered.contains("note.md"));
         assert!(
             app.active_tab()
@@ -2065,7 +2078,7 @@ mod tests {
         let Some(Overlay::Help { scroll, max_scroll }) = &mut app.overlay else {
             panic!("shortcut help should remain open");
         };
-        assert_eq!(*max_scroll, 6);
+        assert_eq!(*max_scroll, 7);
         *scroll = *max_scroll;
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();

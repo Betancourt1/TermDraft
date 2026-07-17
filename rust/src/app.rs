@@ -52,6 +52,10 @@ use crate::workspace_entries::{
     copy_entry, create_file, create_folder, move_entry, move_to_trash, rename_entry,
 };
 
+pub const EXPLORER_DEFAULT_WIDTH: u16 = 34;
+pub const EXPLORER_MIN_WIDTH: u16 = 20;
+pub const EXPLORER_MAX_WIDTH: u16 = 48;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode {
     Command,
@@ -869,7 +873,7 @@ impl App {
             preview_max_scroll: 0,
             preview_page: 1,
             viewport_width: 100,
-            explorer_width: 34,
+            explorer_width: EXPLORER_DEFAULT_WIDTH,
             split_percent: 50,
             ui_regions: UiRegions::default(),
             narrow_pane: Focus::Editor,
@@ -3251,6 +3255,19 @@ impl App {
     }
 
     fn handle_explorer_key(&mut self, key: KeyEvent) -> bool {
+        if key.modifiers == KeyModifiers::SHIFT {
+            match key.code {
+                KeyCode::Left => {
+                    self.resize_explorer_by(-2);
+                    return true;
+                }
+                KeyCode::Right => {
+                    self.resize_explorer_by(2);
+                    return true;
+                }
+                _ => {}
+            }
+        }
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.move_explorer(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_explorer(1),
@@ -3339,10 +3356,26 @@ impl App {
 
     fn resize_explorer(&mut self, column: u16) {
         let workspace = self.ui_regions.workspace;
-        let maximum = workspace.width.saturating_sub(20).min(48);
-        let minimum = 20.min(maximum);
+        let maximum = workspace
+            .width
+            .saturating_sub(EXPLORER_MIN_WIDTH)
+            .min(EXPLORER_MAX_WIDTH);
+        let minimum = EXPLORER_MIN_WIDTH.min(maximum);
         let requested = column.saturating_sub(workspace.x);
         self.explorer_width = requested.clamp(minimum, maximum);
+    }
+
+    fn resize_explorer_by(&mut self, columns: i16) {
+        let workspace_width = self.ui_regions.workspace.width.max(self.viewport_width);
+        let maximum = workspace_width
+            .saturating_sub(EXPLORER_MIN_WIDTH)
+            .min(EXPLORER_MAX_WIDTH);
+        let minimum = EXPLORER_MIN_WIDTH.min(maximum);
+        self.explorer_width = self
+            .explorer_width
+            .saturating_add_signed(columns)
+            .clamp(minimum, maximum);
+        self.status_message = Some(format!("Files width · {} columns", self.explorer_width));
     }
 
     fn resize_workbench(&mut self, column: u16) {
@@ -5695,6 +5728,27 @@ command_manage_recovery = "Z"
         app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 80, 10));
         app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 80, 10));
         assert!(app.split_percent > 50);
+    }
+
+    #[test]
+    fn explorer_width_can_be_controlled_from_the_keyboard() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.focus = Focus::Explorer;
+        app.update_viewport_width(120);
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+        assert_eq!(app.explorer_width, EXPLORER_DEFAULT_WIDTH + 2);
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Files width · 36 columns")
+        );
+
+        for _ in 0..20 {
+            app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
+        }
+        assert_eq!(app.explorer_width, EXPLORER_MIN_WIDTH);
     }
 
     #[test]
