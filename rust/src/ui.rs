@@ -1842,6 +1842,8 @@ fn command_shortcut(app: &App, action: crate::app::CommandAction) -> String {
         CommandAction::Quit => &["command_quit", "quit"],
         CommandAction::FileFinder => &["command_find_file", "find_file"],
         CommandAction::RecentDocuments => &["command_recent_documents", "recent_documents"],
+        CommandAction::NextTab => &["command_next_tab", "next_tab"],
+        CommandAction::PreviousTab => &["command_previous_tab", "previous_tab"],
         CommandAction::WorkspaceSearch => &["command_search_text", "search_text"],
         CommandAction::Find => &["command_find_replace", "find_replace"],
         CommandAction::Outline => &["command_document_outline", "document_outline"],
@@ -1851,6 +1853,7 @@ fn command_shortcut(app: &App, action: crate::app::CommandAction) -> String {
         CommandAction::CommandMode => return "Esc".to_owned(),
         CommandAction::Undo => &["command_undo", "undo"],
         CommandAction::Redo => &["command_redo", "redo"],
+        CommandAction::ReloadConfig => &["command_reload_config"],
         CommandAction::ManageRecovery => &["command_manage_recovery"],
         CommandAction::MarkdownHelp => &["command_markdown_help"],
         CommandAction::InspectSemanticBlocks => &["command_inspect_semantic_blocks"],
@@ -2017,6 +2020,42 @@ mod tests {
                 .editor
                 .rendered_cursor_position()
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn palette_actions_preserve_configured_shortcut_mappings() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "note").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        let overrides = std::collections::BTreeMap::from([
+            ("command_next_tab".to_owned(), "alt+n".to_owned()),
+            ("next_tab".to_owned(), "alt+shift+n".to_owned()),
+            ("command_previous_tab".to_owned(), "alt+p".to_owned()),
+            ("previous_tab".to_owned(), "alt+shift+p".to_owned()),
+            ("command_reload_config".to_owned(), "alt+r".to_owned()),
+            ("command_manage_recovery".to_owned(), "alt+m".to_owned()),
+        ]);
+        app.config.keybindings = crate::bindings::Keymap::resolve(&overrides).unwrap();
+        app.config.keybinding_overrides = overrides;
+
+        assert_eq!(
+            command_shortcut(&app, crate::app::CommandAction::NextTab),
+            "alt+n / alt+shift+n"
+        );
+        assert_eq!(
+            command_shortcut(&app, crate::app::CommandAction::PreviousTab),
+            "alt+p / alt+shift+p"
+        );
+        assert_eq!(
+            command_shortcut(&app, crate::app::CommandAction::ReloadConfig),
+            "alt+r"
+        );
+        assert_eq!(
+            command_shortcut(&app, crate::app::CommandAction::ManageRecovery),
+            "alt+m"
         );
     }
 

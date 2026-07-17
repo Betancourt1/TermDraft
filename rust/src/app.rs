@@ -449,6 +449,8 @@ pub enum CommandAction {
     Quit,
     FileFinder,
     RecentDocuments,
+    NextTab,
+    PreviousTab,
     WorkspaceSearch,
     Find,
     Outline,
@@ -458,6 +460,7 @@ pub enum CommandAction {
     CommandMode,
     Undo,
     Redo,
+    ReloadConfig,
     ManageRecovery,
     MarkdownHelp,
     InspectSemanticBlocks,
@@ -477,15 +480,27 @@ pub struct CommandSpec {
 pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         group: "DOCUMENT",
+        label: "Save",
+        shortcut: "w",
+        action: CommandAction::Save,
+    },
+    CommandSpec {
+        group: "DOCUMENT",
         label: "Save as",
         shortcut: "W",
         action: CommandAction::SaveAs,
     },
     CommandSpec {
         group: "DOCUMENT",
-        label: "Duplicate document",
+        label: "Duplicate",
         shortcut: "D",
         action: CommandAction::Duplicate,
+    },
+    CommandSpec {
+        group: "DOCUMENT",
+        label: "Find file",
+        shortcut: "f",
+        action: CommandAction::FileFinder,
     },
     CommandSpec {
         group: "DOCUMENT",
@@ -495,27 +510,21 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         group: "DOCUMENT",
-        label: "Save",
-        shortcut: "w",
-        action: CommandAction::Save,
-    },
-    CommandSpec {
-        group: "DOCUMENT",
         label: "Close tab",
         shortcut: "C",
         action: CommandAction::CloseTab,
     },
     CommandSpec {
-        group: "DOCUMENT",
-        label: "Quit safely",
-        shortcut: "q",
-        action: CommandAction::Quit,
+        group: "NAVIGATE",
+        label: "Next tab",
+        shortcut: "]",
+        action: CommandAction::NextTab,
     },
     CommandSpec {
         group: "NAVIGATE",
-        label: "Find file",
-        shortcut: "f",
-        action: CommandAction::FileFinder,
+        label: "Previous tab",
+        shortcut: "[",
+        action: CommandAction::PreviousTab,
     },
     CommandSpec {
         group: "NAVIGATE",
@@ -525,75 +534,75 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         group: "NAVIGATE",
-        label: "Document outline",
+        label: "Find and replace",
+        shortcut: "s",
+        action: CommandAction::Find,
+    },
+    CommandSpec {
+        group: "NAVIGATE",
+        label: "Outline",
         shortcut: "S",
         action: CommandAction::Outline,
     },
     CommandSpec {
+        group: "NAVIGATE",
+        label: "Explorer",
+        shortcut: "e",
+        action: CommandAction::ToggleExplorer,
+    },
+    CommandSpec {
         group: "FILES",
-        label: "Create file or folder",
+        label: "Create",
         shortcut: "a",
         action: CommandAction::Create,
     },
     CommandSpec {
         group: "FILES",
-        label: "Copy selected entry",
+        label: "Copy",
         shortcut: "c",
         action: CommandAction::CopyEntry,
     },
     CommandSpec {
         group: "FILES",
-        label: "Cut selected entry",
+        label: "Cut",
         shortcut: "x",
         action: CommandAction::CutEntry,
     },
     CommandSpec {
         group: "FILES",
-        label: "Paste selected entry",
+        label: "Paste",
         shortcut: "p",
         action: CommandAction::PasteEntry,
     },
     CommandSpec {
         group: "FILES",
-        label: "Rename selected entry",
+        label: "Rename",
         shortcut: "r",
         action: CommandAction::RenameEntry,
     },
     CommandSpec {
         group: "FILES",
-        label: "Move selected entry",
+        label: "Move",
         shortcut: "m",
         action: CommandAction::MoveEntry,
     },
     CommandSpec {
         group: "FILES",
-        label: "Move selected entry to Trash",
+        label: "Trash",
         shortcut: "d",
         action: CommandAction::TrashEntry,
     },
     CommandSpec {
-        group: "FILES",
-        label: "Show or hide files",
-        shortcut: "e",
-        action: CommandAction::ToggleExplorer,
-    },
-    CommandSpec {
         group: "MODE",
-        label: "Enter WRITE mode",
+        label: "Write mode",
         shortcut: "i",
         action: CommandAction::WriteMode,
     },
     CommandSpec {
         group: "MODE",
-        label: "Enter COMMAND mode",
+        label: "Command mode",
         shortcut: "Esc",
         action: CommandAction::CommandMode,
-    },
-    CommandSpec {
-        group: "EDIT",
-        label: "Find in document",
-        shortcut: "s",
-        action: CommandAction::Find,
     },
     CommandSpec {
         group: "EDIT",
@@ -609,6 +618,12 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         group: "EDIT",
+        label: "Reload config",
+        shortcut: "R",
+        action: CommandAction::ReloadConfig,
+    },
+    CommandSpec {
+        group: "EDIT",
         label: "Inspect blocks",
         shortcut: "b",
         action: CommandAction::InspectSemanticBlocks,
@@ -621,21 +636,21 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         group: "VIEW",
-        label: "Show or hide preview",
+        label: "Preview",
         shortcut: "v",
         action: CommandAction::TogglePreview,
-    },
-    CommandSpec {
-        group: "VIEW",
-        label: "Show shortcuts",
-        shortcut: "?",
-        action: CommandAction::Help,
     },
     CommandSpec {
         group: "VIEW",
         label: "Recovery drafts",
         shortcut: "M",
         action: CommandAction::ManageRecovery,
+    },
+    CommandSpec {
+        group: "VIEW",
+        label: "Shortcut help",
+        shortcut: "?",
+        action: CommandAction::Help,
     },
     CommandSpec {
         group: "VIEW",
@@ -648,6 +663,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         label: "Cursor coordinates",
         shortcut: "I",
         action: CommandAction::InspectCursorCoordinates,
+    },
+    CommandSpec {
+        group: "VIEW",
+        label: "Quit",
+        shortcut: "q",
+        action: CommandAction::Quit,
     },
 ];
 
@@ -2090,8 +2111,8 @@ impl App {
             BindingAction::RecentDocuments => {
                 self.execute_command(CommandAction::RecentDocuments);
             }
-            BindingAction::NextTab => self.switch_tab(1),
-            BindingAction::PreviousTab => self.switch_tab(-1),
+            BindingAction::NextTab => self.execute_command(CommandAction::NextTab),
+            BindingAction::PreviousTab => self.execute_command(CommandAction::PreviousTab),
             BindingAction::CloseTab => self.execute_command(CommandAction::CloseTab),
             BindingAction::FindReplace => self.execute_command(CommandAction::Find),
             BindingAction::SearchText => self.execute_command(CommandAction::WorkspaceSearch),
@@ -2110,7 +2131,7 @@ impl App {
             }
             BindingAction::EnterWriteMode => self.execute_command(CommandAction::WriteMode),
             BindingAction::DuplicateDocument => self.execute_command(CommandAction::Duplicate),
-            BindingAction::ReloadConfig => self.reload_config(),
+            BindingAction::ReloadConfig => self.execute_command(CommandAction::ReloadConfig),
             BindingAction::ManageRecovery => self.execute_command(CommandAction::ManageRecovery),
             BindingAction::MarkdownHelp => self.execute_command(CommandAction::MarkdownHelp),
             BindingAction::InspectSemanticBlocks => {
@@ -2219,6 +2240,8 @@ impl App {
                 });
             }
             CommandAction::RecentDocuments => self.open_recent_documents(),
+            CommandAction::NextTab => self.switch_tab(1),
+            CommandAction::PreviousTab => self.switch_tab(-1),
             CommandAction::WorkspaceSearch => {
                 self.sync_active_document();
                 self.workspace_search_revision
@@ -2257,6 +2280,7 @@ impl App {
                     tab.redo();
                 }
             }
+            CommandAction::ReloadConfig => self.reload_config(),
             CommandAction::ManageRecovery => self.open_recovery_manager(),
             CommandAction::MarkdownHelp => {
                 self.overlay = Some(Overlay::MarkdownHelp { scroll: 0 });
@@ -4757,6 +4781,18 @@ impl Drop for TerminalExtrasGuard {
 mod tests {
     use super::*;
 
+    fn execute_palette_action(app: &mut App, action: CommandAction) {
+        let selected = command_candidates("")
+            .iter()
+            .position(|command| command.action == action)
+            .expect("palette action must be registered");
+        app.overlay = Some(Overlay::Palette {
+            input: TextInput::default(),
+            selected,
+        });
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    }
+
     fn finish_workspace_search(app: &mut App) {
         for _ in 0..200 {
             let _ = app.poll_workspace_search_results();
@@ -4772,22 +4808,42 @@ mod tests {
     }
 
     #[test]
-    fn command_groups_preserve_frontend_contract() {
-        let groups = COMMANDS
-            .iter()
-            .map(|command| command.group)
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(
-            groups,
-            std::collections::BTreeSet::from([
-                "DOCUMENT", "EDIT", "FILES", "MODE", "NAVIGATE", "VIEW"
-            ])
-        );
-    }
-
-    #[test]
-    fn diagnostic_commands_preserve_official_groups_labels_and_keys() {
+    fn command_palette_matches_official_python_order() {
         let expected = [
+            ("DOCUMENT", "Save", "w", CommandAction::Save),
+            ("DOCUMENT", "Save as", "W", CommandAction::SaveAs),
+            ("DOCUMENT", "Duplicate", "D", CommandAction::Duplicate),
+            ("DOCUMENT", "Find file", "f", CommandAction::FileFinder),
+            (
+                "DOCUMENT",
+                "Recent documents",
+                "o",
+                CommandAction::RecentDocuments,
+            ),
+            ("DOCUMENT", "Close tab", "C", CommandAction::CloseTab),
+            ("NAVIGATE", "Next tab", "]", CommandAction::NextTab),
+            ("NAVIGATE", "Previous tab", "[", CommandAction::PreviousTab),
+            (
+                "NAVIGATE",
+                "Search workspace",
+                "/",
+                CommandAction::WorkspaceSearch,
+            ),
+            ("NAVIGATE", "Find and replace", "s", CommandAction::Find),
+            ("NAVIGATE", "Outline", "S", CommandAction::Outline),
+            ("NAVIGATE", "Explorer", "e", CommandAction::ToggleExplorer),
+            ("FILES", "Create", "a", CommandAction::Create),
+            ("FILES", "Copy", "c", CommandAction::CopyEntry),
+            ("FILES", "Cut", "x", CommandAction::CutEntry),
+            ("FILES", "Paste", "p", CommandAction::PasteEntry),
+            ("FILES", "Rename", "r", CommandAction::RenameEntry),
+            ("FILES", "Move", "m", CommandAction::MoveEntry),
+            ("FILES", "Trash", "d", CommandAction::TrashEntry),
+            ("MODE", "Write mode", "i", CommandAction::WriteMode),
+            ("MODE", "Command mode", "Esc", CommandAction::CommandMode),
+            ("EDIT", "Undo", "u", CommandAction::Undo),
+            ("EDIT", "Redo", "U", CommandAction::Redo),
+            ("EDIT", "Reload config", "R", CommandAction::ReloadConfig),
             (
                 "EDIT",
                 "Inspect blocks",
@@ -4800,6 +4856,14 @@ mod tests {
                 "B",
                 CommandAction::ReadSemanticBlocks,
             ),
+            ("VIEW", "Preview", "v", CommandAction::TogglePreview),
+            (
+                "VIEW",
+                "Recovery drafts",
+                "M",
+                CommandAction::ManageRecovery,
+            ),
+            ("VIEW", "Shortcut help", "?", CommandAction::Help),
             ("VIEW", "Markdown help", "K", CommandAction::MarkdownHelp),
             (
                 "VIEW",
@@ -4807,15 +4871,124 @@ mod tests {
                 "I",
                 CommandAction::InspectCursorCoordinates,
             ),
+            ("VIEW", "Quit", "q", CommandAction::Quit),
         ];
-        for (group, label, shortcut, action) in expected {
-            assert!(COMMANDS.iter().any(|command| {
-                command.group == group
-                    && command.label == label
-                    && command.shortcut == shortcut
-                    && command.action == action
-            }));
-        }
+        let commands = command_candidates("")
+            .iter()
+            .map(|command| {
+                (
+                    command.group,
+                    command.label,
+                    command.shortcut,
+                    command.action,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(commands, expected);
+    }
+
+    #[test]
+    fn palette_tab_navigation_wraps_both_directions() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.md");
+        let second = directory.path().join("second.md");
+        let third = directory.path().join("third.md");
+        fs::write(&first, "first").unwrap();
+        fs::write(&second, "second").unwrap();
+        fs::write(&third, "third").unwrap();
+        let first = first.canonicalize().unwrap();
+        let second = second.canonicalize().unwrap();
+        let third = third.canonicalize().unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let mut app = App::with_state_services(workspace, Config::default(), None, None).unwrap();
+        app.open_document(&first).unwrap();
+        app.open_document(&second).unwrap();
+        app.open_document(&third).unwrap();
+        app.active_tab = Some(1);
+
+        execute_palette_action(&mut app, CommandAction::NextTab);
+        assert_eq!(app.active_tab().unwrap().document.path, third);
+        assert!(app.overlay.is_none());
+        execute_palette_action(&mut app, CommandAction::NextTab);
+        assert_eq!(app.active_tab().unwrap().document.path, first);
+        execute_palette_action(&mut app, CommandAction::PreviousTab);
+        assert_eq!(app.active_tab().unwrap().document.path, third);
+    }
+
+    #[test]
+    fn palette_reload_config_is_atomic_for_valid_and_invalid_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        let config_root = directory.path().join("config");
+        fs::create_dir(&config_root).unwrap();
+        fs::write(&path, "note").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut config = Config::default();
+        config.root.clone_from(&config_root);
+        let mut app = App::with_state_services(workspace, config, None, None).unwrap();
+
+        fs::write(
+            config_root.join(config::CONFIG_FILE_NAME),
+            r#"[editor]
+soft_wrap = false
+show_line_numbers = false
+view_mode = "split"
+
+[recovery]
+retention_days = 45
+
+[keybindings]
+command_manage_recovery = "Z"
+"#,
+        )
+        .unwrap();
+        execute_palette_action(&mut app, CommandAction::ReloadConfig);
+
+        assert!(!app.config.editor.soft_wrap);
+        assert!(!app.config.editor.show_line_numbers);
+        assert_eq!(app.config.editor.view_mode, StartupView::Split);
+        assert_eq!(app.config.recovery.retention_days, 45);
+        assert_eq!(
+            app.config
+                .keybindings
+                .binding("command_manage_recovery")
+                .unwrap()
+                .text,
+            "Z"
+        );
+        assert_eq!(app.view_mode, ViewMode::Split);
+        assert!(
+            app.status_message
+                .as_deref()
+                .is_some_and(|message| message.starts_with("Reloaded config.toml"))
+        );
+
+        let accepted_editor = app.config.editor.clone();
+        let accepted_recovery = app.config.recovery.clone();
+        fs::write(
+            config_root.join(config::CONFIG_FILE_NAME),
+            "[editor]\nview_mode = \"broken\"\n",
+        )
+        .unwrap();
+        execute_palette_action(&mut app, CommandAction::ReloadConfig);
+
+        assert_eq!(app.config.editor, accepted_editor);
+        assert_eq!(app.config.recovery, accepted_recovery);
+        assert_eq!(
+            app.config
+                .keybindings
+                .binding("command_manage_recovery")
+                .unwrap()
+                .text,
+            "Z"
+        );
+        assert_eq!(app.view_mode, ViewMode::Split);
+        assert!(
+            app.status_message
+                .as_deref()
+                .is_some_and(|message| message.starts_with("Configuration not reloaded"))
+        );
     }
 
     #[test]
@@ -6256,7 +6429,7 @@ mod tests {
     }
 
     #[test]
-    fn recovery_manager_lists_and_protects_every_dirty_open_document() {
+    fn recovery_manager_is_identical_from_binding_and_palette() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
         let first = root.join("first.md");
@@ -6276,23 +6449,43 @@ mod tests {
         app.open_document(&second).unwrap();
         app.active_tab_mut().unwrap().editor.insert_str("draft ");
         app.execute_binding_action(BindingAction::ManageRecovery);
+        let binding_overlay = app.overlay.take().unwrap();
+        execute_palette_action(&mut app, CommandAction::ManageRecovery);
 
-        assert!(COMMANDS.iter().any(|command| {
-            command.group == "VIEW"
-                && command.label == "Recovery drafts"
-                && command.shortcut == "M"
-                && command.action == CommandAction::ManageRecovery
-        }));
+        let Overlay::RecoveryManager {
+            records: binding_records,
+            selected: binding_selected,
+            focus: binding_focus,
+            target: binding_target,
+            protected_journals: binding_journals,
+            protected_documents: binding_documents,
+            retention_days: binding_retention,
+            status: binding_status,
+        } = binding_overlay
+        else {
+            panic!("recovery binding did not open the manager");
+        };
         let Some(Overlay::RecoveryManager {
             records,
+            selected,
+            focus,
+            target,
             protected_journals,
             protected_documents,
             retention_days,
-            ..
+            status,
         }) = &app.overlay
         else {
-            panic!("recovery manager did not open");
+            panic!("recovery palette action did not open the manager");
         };
+        assert_eq!(records, &binding_records);
+        assert_eq!(*selected, binding_selected);
+        assert_eq!(*focus, binding_focus);
+        assert_eq!(target, &binding_target);
+        assert_eq!(protected_journals, &binding_journals);
+        assert_eq!(protected_documents, &binding_documents);
+        assert_eq!(*retention_days, binding_retention);
+        assert_eq!(status, &binding_status);
         assert_eq!(records.len(), 2);
         assert!(protected_documents.contains(&first));
         assert!(protected_documents.contains(&second));
