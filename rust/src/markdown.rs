@@ -1,6 +1,6 @@
 //! Semantic Markdown rendering for the read-only preview pane.
 
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use unicode_width::UnicodeWidthStr;
@@ -17,6 +17,7 @@ struct ListState {
 
 #[derive(Debug, Default)]
 struct TableState {
+    alignments: Vec<Alignment>,
     rows: Vec<Vec<String>>,
     row: Vec<String>,
     cell: String,
@@ -129,9 +130,12 @@ impl MarkdownRenderer {
                 self.flush_line();
                 self.push_styled("  ", Style::new());
             }
-            Tag::Table(_) => {
+            Tag::Table(alignments) => {
                 self.separate_block();
-                self.table = Some(TableState::default());
+                self.table = Some(TableState {
+                    alignments,
+                    ..TableState::default()
+                });
             }
             Tag::TableHead | Tag::TableRow => {
                 if let Some(table) = &mut self.table {
@@ -322,16 +326,17 @@ impl MarkdownRenderer {
             let mut spans = vec![Span::styled("│ ", Style::new().fg(MUTED))];
             for (column, width) in widths.iter().enumerate().take(columns) {
                 let cell = row.get(column).map_or("", String::as_str);
-                let padding = width.saturating_sub(UnicodeWidthStr::width(cell));
                 let style = if index < table.header_rows {
                     Style::new().fg(BRIGHT).bold()
                 } else {
                     Style::new().fg(TEXT)
                 };
-                spans.push(Span::styled(
-                    format!("{cell}{}", " ".repeat(padding)),
-                    style,
-                ));
+                let alignment = table
+                    .alignments
+                    .get(column)
+                    .copied()
+                    .unwrap_or(Alignment::None);
+                spans.push(Span::styled(align_cell(cell, *width, alignment), style));
                 spans.push(Span::styled(" │ ", Style::new().fg(MUTED)));
             }
             self.lines.push(Line::from(spans));
@@ -341,6 +346,16 @@ impl MarkdownRenderer {
         }
         self.lines.push(table_border('└', '┴', '┘', &widths));
     }
+}
+
+fn align_cell(cell: &str, width: usize, alignment: Alignment) -> String {
+    let padding = width.saturating_sub(UnicodeWidthStr::width(cell));
+    let (left, right) = match alignment {
+        Alignment::Right => (padding, 0),
+        Alignment::Center => (padding / 2, padding - (padding / 2)),
+        Alignment::None | Alignment::Left => (0, padding),
+    };
+    format!("{}{cell}{}", " ".repeat(left), " ".repeat(right))
 }
 
 fn heading_style(level: HeadingLevel) -> Style {
@@ -399,5 +414,16 @@ mod tests {
         assert!(screen.contains("• ☑ done"));
         assert!(screen.contains("│ Name │ Role   │"));
         assert!(screen.contains("│ Ada  │ Writer │"));
+    }
+
+    #[test]
+    fn preview_aligns_table_columns_from_the_complete_table() {
+        let rendered =
+            render_markdown("| Name | Count | Note |\n| :--- | ---: | :---: |\n| Ada | 7 | Hi |");
+        let screen = plain(&rendered);
+
+        assert!(screen.contains("│ Name │ Count │ Note │"));
+        assert!(screen.contains("├──────┼───────┼──────┤"));
+        assert!(screen.contains("│ Ada  │     7 │  Hi  │"));
     }
 }

@@ -62,9 +62,7 @@ pub fn source_from_textarea(editor: &TextArea<'_>) -> String {
 pub fn inline_preview_editor<'a>(editor: &TextArea<'a>) -> TextArea<'a> {
     let source_lines = editor.lines().to_vec();
     let cursor_line = editor.cursor().0;
-    let table_lines = (0..source_lines.len())
-        .map(|row| table_line_kind(&source_lines, row))
-        .collect::<Vec<_>>();
+    let table_lines = table_line_contexts(&source_lines);
     let rendered_lines = source_lines
         .iter()
         .enumerate()
@@ -72,7 +70,7 @@ pub fn inline_preview_editor<'a>(editor: &TextArea<'a>) -> TextArea<'a> {
             if row == cursor_line {
                 source.clone()
             } else {
-                render_inline_line(source, table_lines[row])
+                render_inline_line(source, table_lines[row].as_ref())
             }
         })
         .collect();
@@ -92,9 +90,7 @@ pub fn sync_inline_preview_cursor(
     let source_lines = source.lines();
     let cursor = source.cursor();
     let cursor_line = cursor.0;
-    let table_lines = (0..source_lines.len())
-        .map(|row| table_line_kind(source_lines, row))
-        .collect::<Vec<_>>();
+    let table_lines = table_line_contexts(source_lines);
 
     for row in [previous_cursor_line, cursor_line] {
         let Some(source_line) = source_lines.get(row) else {
@@ -103,7 +99,7 @@ pub fn sync_inline_preview_cursor(
         let line = if row == cursor_line {
             source_line.clone()
         } else {
-            render_inline_line(source_line, table_lines[row])
+            render_inline_line(source_line, table_lines[row].as_ref())
         };
         replace_presentation_line(rendered, row, &line);
     }
@@ -138,7 +134,7 @@ fn apply_inline_styles(
     editor: &mut TextArea<'_>,
     lines: &[String],
     cursor_line: usize,
-    table_lines: &[Option<TableLineKind>],
+    table_lines: &[Option<TableLineContext>],
 ) {
     for (row, line) in lines.iter().enumerate() {
         if row == cursor_line || line.is_empty() {
@@ -177,17 +173,22 @@ fn apply_inline_styles(
         );
         highlight_links(editor, row, line);
         highlight_markers(editor, row, line);
-        if table_lines[row] == Some(TableLineKind::Header) {
+        if table_lines[row]
+            .as_ref()
+            .is_some_and(|context| context.kind == TableLineKind::Header)
+        {
             let end = editor.lines()[row].len();
             editor.custom_highlight(((row, 0), (row, end)), Style::new().fg(BRIGHT).bold(), 5);
         }
     }
 }
 
-fn render_inline_line(source: &str, table_line: Option<TableLineKind>) -> String {
+fn render_inline_line(source: &str, table_line: Option<&TableLineContext>) -> String {
     match table_line {
-        Some(TableLineKind::Separator) => compact_table_separator(source),
-        Some(TableLineKind::Header | TableLineKind::Body) => compact_table_row(source),
+        Some(context) if context.kind == TableLineKind::Separator => {
+            compact_table_separator(&context.widths)
+        }
+        Some(context) => compact_table_row(source, context),
         None => render_markdown(source)
             .lines
             .into_iter()
@@ -360,25 +361,71 @@ enum TableLineKind {
     Body,
 }
 
-fn table_line_kind(lines: &[String], row: usize) -> Option<TableLineKind> {
-    if is_table_header(lines, row) {
-        return Some(TableLineKind::Header);
-    }
-    if is_table_separator(&lines[row]) && row > 0 && is_table_header(lines, row - 1) {
-        return Some(TableLineKind::Separator);
-    }
-    if !looks_like_table_row(&lines[row]) {
-        return None;
-    }
-    for preceding in (1..row).rev() {
-        if is_table_separator(&lines[preceding]) {
-            return is_table_header(lines, preceding - 1).then_some(TableLineKind::Body);
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TableAlignment {
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TableLineContext {
+    kind: TableLineKind,
+    widths: Vec<usize>,
+    alignments: Vec<TableAlignment>,
+}
+
+fn table_line_contexts(lines: &[String]) -> Vec<Option<TableLineContext>> {
+    let mut contexts = vec![None; lines.len()];
+    let mut row = 0;
+    while row + 1 < lines.len() {
+        if !is_table_header(lines, row) {
+            row += 1;
+            continue;
         }
-        if !looks_like_table_row(&lines[preceding]) {
-            break;
+
+        let separator = row + 1;
+        let mut end = separator + 1;
+        while end < lines.len() && looks_like_table_row(&lines[end]) {
+            end += 1;
         }
+        let cells = (row..end)
+            .filter(|table_row| *table_row != separator)
+            .map(|table_row| rendered_table_cells(&lines[table_row]))
+            .collect::<Vec<_>>();
+        let columns = cells.iter().map(Vec::len).max().unwrap_or_default();
+        let widths = (0..columns)
+            .map(|column| {
+                cells
+                    .iter()
+                    .filter_map(|row| row.get(column))
+                    .map(|cell| unicode_width::UnicodeWidthStr::width(cell.as_str()))
+                    .max()
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        let alignments = table_cells(&lines[separator])
+            .into_iter()
+            .map(|cell| table_alignment(&cell))
+            .collect::<Vec<_>>();
+
+        for (table_row, context) in contexts.iter_mut().enumerate().take(end).skip(row) {
+            let kind = if table_row == row {
+                TableLineKind::Header
+            } else if table_row == separator {
+                TableLineKind::Separator
+            } else {
+                TableLineKind::Body
+            };
+            *context = Some(TableLineContext {
+                kind,
+                widths: widths.clone(),
+                alignments: alignments.clone(),
+            });
+        }
+        row = end;
     }
-    None
+    contexts
 }
 
 fn is_table_header(lines: &[String], row: usize) -> bool {
@@ -415,40 +462,85 @@ fn table_pipe_positions(source: &str) -> Vec<usize> {
         .collect()
 }
 
-fn compact_table_row(source: &str) -> String {
+fn table_cells(source: &str) -> Vec<String> {
     let trimmed = source.trim();
-    let mut characters = trimmed.chars().collect::<Vec<_>>();
-    for position in table_pipe_positions(trimmed) {
-        characters[position] = '│';
+    let mut cells = Vec::new();
+    let mut cell = String::new();
+    let mut escaped = false;
+    for character in trimmed.chars() {
+        if character == '|' && !escaped {
+            cells.push(std::mem::take(&mut cell));
+        } else {
+            cell.push(character);
+        }
+        escaped = character == '\\' && !escaped;
+        if character != '\\' {
+            escaped = false;
+        }
     }
-    characters.into_iter().collect()
+    cells.push(cell);
+    if trimmed.starts_with('|') {
+        cells.remove(0);
+    }
+    if trimmed.ends_with('|') {
+        cells.pop();
+    }
+    cells
+        .into_iter()
+        .map(|cell| cell.trim().to_owned())
+        .collect()
 }
 
-fn compact_table_separator(source: &str) -> String {
-    let mut characters = source.trim().chars().collect::<Vec<_>>();
-    render_table_separator(&mut characters);
-    characters.into_iter().collect()
+fn rendered_table_cells(source: &str) -> Vec<String> {
+    table_cells(source)
+        .into_iter()
+        .map(|cell| render_inline_line(&cell, None))
+        .collect()
 }
 
-fn render_table_separator(characters: &mut [char]) {
-    let Some(start) = characters
-        .iter()
-        .position(|character| !character.is_whitespace())
-    else {
-        return;
-    };
-    let end = characters
-        .iter()
-        .rposition(|character| !character.is_whitespace())
-        .unwrap_or(start);
-    for character in &mut characters[start..=end] {
-        *character = if *character == '|' { '┼' } else { '─' };
+fn compact_table_row(source: &str, context: &TableLineContext) -> String {
+    let cells = rendered_table_cells(source);
+    let mut row = String::from("│");
+    for (column, width) in context.widths.iter().enumerate() {
+        let cell = cells.get(column).map_or("", String::as_str);
+        let padding = width.saturating_sub(unicode_width::UnicodeWidthStr::width(cell));
+        let alignment = context
+            .alignments
+            .get(column)
+            .copied()
+            .unwrap_or(TableAlignment::Left);
+        let (left, right) = match alignment {
+            TableAlignment::Left => (0, padding),
+            TableAlignment::Center => (padding / 2, padding - (padding / 2)),
+            TableAlignment::Right => (padding, 0),
+        };
+        row.push(' ');
+        row.push_str(&" ".repeat(left));
+        row.push_str(cell);
+        row.push_str(&" ".repeat(right));
+        row.push_str(" │");
     }
-    if characters[start] == '┼' {
-        characters[start] = '├';
+    row
+}
+
+fn compact_table_separator(widths: &[usize]) -> String {
+    let mut separator = String::from("├");
+    for (column, width) in widths.iter().enumerate() {
+        separator.push_str(&"─".repeat(width + 2));
+        separator.push(if column + 1 == widths.len() {
+            '┤'
+        } else {
+            '┼'
+        });
     }
-    if characters[end] == '┼' {
-        characters[end] = '┤';
+    separator
+}
+
+fn table_alignment(cell: &str) -> TableAlignment {
+    match (cell.trim().starts_with(':'), cell.trim().ends_with(':')) {
+        (true, true) => TableAlignment::Center,
+        (false, true) => TableAlignment::Right,
+        _ => TableAlignment::Left,
     }
 }
 
@@ -524,6 +616,22 @@ mod tests {
         assert_eq!(
             source_from_textarea(&editor),
             "**current**\n# Heading\n**bold** and [link](url)\n- [x] finished\n| A | B |\n|---|---|\n| 1 | 2 |"
+        );
+    }
+
+    #[test]
+    fn inline_preview_aligns_complete_tables() {
+        let editor = textarea_from_source(
+            "current\n| Name | Count | Note |\n| :--- | ---: | :---: |\n| Ada | 7 | Hi |",
+        );
+        let rendered = inline_preview_editor(&editor);
+
+        assert_eq!(rendered.lines()[1], "│ Name │ Count │ Note │");
+        assert_eq!(rendered.lines()[2], "├──────┼───────┼──────┤");
+        assert_eq!(rendered.lines()[3], "│ Ada  │     7 │  Hi  │");
+        assert_eq!(
+            source_from_textarea(&editor),
+            "current\n| Name | Count | Note |\n| :--- | ---: | :---: |\n| Ada | 7 | Hi |"
         );
     }
 }
