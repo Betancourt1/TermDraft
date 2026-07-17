@@ -1991,7 +1991,7 @@ fn draw_command_group(
         } else {
             Style::new()
         };
-        let shortcut = format!(" {:<10}", command_shortcut(app, command.action));
+        let shortcut = format!(" {:<10} ", command_shortcut(app, command.action));
         let used = shortcut.chars().count() + command.label.chars().count();
         let trailing = usize::from(area.width).saturating_sub(used);
         lines.push(Line::from(vec![
@@ -2020,7 +2020,7 @@ fn draw_compact_command_list(
                 Style::new().fg(MUTED).bold(),
             ),
             Span::styled(
-                format!("{:<10}", command_shortcut(app, command.action)),
+                format!("{:<10} ", command_shortcut(app, command.action)),
                 Style::new().fg(BRIGHT).bold(),
             ),
             Span::styled(command.label, Style::new().fg(TEXT)),
@@ -2341,6 +2341,7 @@ mod tests {
         for group in ["DOCUMENT", "NAVIGATE", "FILES", "MODE", "EDIT", "VIEW"] {
             assert!(screen.contains(group));
         }
+        assert!(screen.contains("w / ctrl+s Save"));
         assert!(screen.contains("Save the open Markdown source"));
         let first_row = screen
             .lines()
