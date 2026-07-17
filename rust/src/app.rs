@@ -2580,6 +2580,10 @@ impl App {
             self.status_message = Some("No document open".to_owned());
             return;
         }
+        let opening_preview = !self.preview_is_visible();
+        let editor_line = self
+            .active_tab()
+            .map(|tab| u16::try_from(tab.editor.cursor().0).unwrap_or(u16::MAX));
         if self.view_mode == ViewMode::Inline || self.is_narrow() {
             self.preview_visible = true;
             self.narrow_pane = if self.narrow_pane == Focus::Preview {
@@ -2589,6 +2593,9 @@ impl App {
             };
         } else {
             self.preview_visible = !self.preview_visible;
+        }
+        if opening_preview && let Some(line) = editor_line {
+            self.preview_scroll = line;
         }
         self.focus = if self.preview_is_visible() {
             Focus::Preview
@@ -5741,6 +5748,34 @@ command_manage_recovery = "Z"
         assert!(!app.editor_is_visible());
         assert!(app.preview_is_visible());
         assert_eq!(app.focus, Focus::Preview);
+    }
+
+    #[test]
+    fn opening_preview_tracks_the_editor_cursor_line() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        let source = (0..40)
+            .map(|line| format!("Line {line:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, source).unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+
+        app.active_tab_mut()
+            .unwrap()
+            .editor
+            .move_cursor(CursorMove::Jump(18, 0));
+        app.toggle_preview();
+        assert_eq!(app.preview_scroll, 18);
+
+        app.toggle_preview();
+        app.active_tab_mut()
+            .unwrap()
+            .editor
+            .move_cursor(CursorMove::Jump(7, 0));
+        app.toggle_preview();
+        assert_eq!(app.preview_scroll, 7);
     }
 
     #[test]
