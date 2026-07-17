@@ -1,6 +1,6 @@
 //! Semantic Markdown rendering for the read-only preview pane.
 
-use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use unicode_width::UnicodeWidthStr;
@@ -106,8 +106,14 @@ impl MarkdownRenderer {
                 }
                 self.quote_depth += 1;
             }
-            Tag::CodeBlock(_) => {
+            Tag::CodeBlock(kind) => {
                 self.separate_block();
+                self.ensure_quote_prefix();
+                self.current.push(Span::styled(
+                    format!("┌─ {}", code_block_label(code_block_info(&kind))),
+                    Style::new().fg(BRIGHT).bg(CODE_BACKGROUND).bold(),
+                ));
+                self.flush_line();
                 self.code_block = true;
             }
             Tag::List(next) => self.lists.push(ListState { next }),
@@ -168,6 +174,12 @@ impl MarkdownRenderer {
             TagEnd::CodeBlock => {
                 self.flush_line();
                 self.code_block = false;
+                self.ensure_quote_prefix();
+                self.current.push(Span::styled(
+                    "└─".to_owned(),
+                    Style::new().fg(MUTED).bg(CODE_BACKGROUND),
+                ));
+                self.flush_line();
             }
             TagEnd::List(_) => {
                 self.lists.pop();
@@ -256,7 +268,14 @@ impl MarkdownRenderer {
             table.cell.push_str(text);
             return;
         }
+        let starts_line = self.current.is_empty();
         self.ensure_quote_prefix();
+        if starts_line && self.code_block {
+            self.current.push(Span::styled(
+                "│ ".to_owned(),
+                Style::new().fg(MUTED).bg(CODE_BACKGROUND),
+            ));
+        }
         let style = if self.code_block {
             style.patch(Style::new().fg(TEXT).bg(CODE_BACKGROUND))
         } else if self.quote_depth > 0 {
@@ -348,6 +367,28 @@ impl MarkdownRenderer {
     }
 }
 
+fn code_block_info<'a>(kind: &'a CodeBlockKind<'a>) -> Option<&'a str> {
+    match kind {
+        CodeBlockKind::Indented => None,
+        CodeBlockKind::Fenced(info) => Some(info.as_ref()),
+    }
+}
+
+#[must_use]
+pub(crate) fn code_block_label(info: Option<&str>) -> String {
+    let Some(language) = info.and_then(|value| value.split_whitespace().next()) else {
+        return "CODE".to_owned();
+    };
+    if matches!(
+        language.to_ascii_lowercase().as_str(),
+        "bash" | "sh" | "shell" | "zsh"
+    ) {
+        "BASH".to_owned()
+    } else {
+        format!("CODE · {}", language.to_uppercase())
+    }
+}
+
 fn align_cell(cell: &str, width: usize, alignment: Alignment) -> String {
     let padding = width.saturating_sub(UnicodeWidthStr::width(cell));
     let (left, right) = match alignment {
@@ -432,5 +473,17 @@ mod tests {
         let rendered = render_markdown("- Parent\n  - Child\n    1. Grandchild");
 
         assert_eq!(plain(&rendered), "• Parent\n  • Child\n    1. Grandchild");
+    }
+
+    #[test]
+    fn preview_labels_bash_and_other_code_blocks() {
+        let rendered = render_markdown(
+            "```bash\necho hello\n```\n\n```python\nprint('hello')\n```\n\n```\nplain\n```",
+        );
+        let screen = plain(&rendered);
+
+        assert!(screen.contains("┌─ BASH\n│ echo hello\n└─"));
+        assert!(screen.contains("┌─ CODE · PYTHON\n│ print('hello')\n└─"));
+        assert!(screen.contains("┌─ CODE\n│ plain\n└─"));
     }
 }

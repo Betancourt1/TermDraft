@@ -8,11 +8,12 @@ use tui_textarea::{CursorRenderMode, TextArea, WrapMode};
 
 use crate::app::Mode;
 use crate::config::EditorConfig;
-use crate::markdown::render_markdown;
+use crate::markdown::{code_block_label, render_markdown};
 
 const MUTED: Color = Color::Rgb(92, 92, 92);
 const TEXT: Color = Color::Rgb(218, 218, 218);
 const BRIGHT: Color = Color::Rgb(242, 242, 242);
+const CODE_BACKGROUND: Color = Color::Rgb(28, 28, 28);
 
 #[must_use]
 pub fn textarea_from_source(source: &str) -> TextArea<'static> {
@@ -63,6 +64,7 @@ pub fn inline_preview_editor<'a>(editor: &TextArea<'a>) -> TextArea<'a> {
     let source_lines = editor.lines().to_vec();
     let cursor_line = editor.cursor().0;
     let table_lines = table_line_contexts(&source_lines);
+    let code_lines = code_line_contexts(&source_lines);
     let rendered_lines = source_lines
         .iter()
         .enumerate()
@@ -70,14 +72,23 @@ pub fn inline_preview_editor<'a>(editor: &TextArea<'a>) -> TextArea<'a> {
             if row == cursor_line {
                 source.clone()
             } else {
-                render_inline_line(source, table_lines[row].as_ref())
+                code_lines[row].as_ref().map_or_else(
+                    || render_inline_line(source, table_lines[row].as_ref()),
+                    |context| render_inline_code_line(source, context),
+                )
             }
         })
         .collect();
 
     let mut rendered = editor.clone();
     rendered.set_lines(rendered_lines, editor.cursor());
-    apply_inline_styles(&mut rendered, &source_lines, cursor_line, &table_lines);
+    apply_inline_styles(
+        &mut rendered,
+        &source_lines,
+        cursor_line,
+        &table_lines,
+        &code_lines,
+    );
     rendered
 }
 
@@ -91,6 +102,7 @@ pub fn sync_inline_preview_cursor(
     let cursor = source.cursor();
     let cursor_line = cursor.0;
     let table_lines = table_line_contexts(source_lines);
+    let code_lines = code_line_contexts(source_lines);
 
     for row in [previous_cursor_line, cursor_line] {
         let Some(source_line) = source_lines.get(row) else {
@@ -99,7 +111,10 @@ pub fn sync_inline_preview_cursor(
         let line = if row == cursor_line {
             source_line.clone()
         } else {
-            render_inline_line(source_line, table_lines[row].as_ref())
+            code_lines[row].as_ref().map_or_else(
+                || render_inline_line(source_line, table_lines[row].as_ref()),
+                |context| render_inline_code_line(source_line, context),
+            )
         };
         replace_presentation_line(rendered, row, &line);
     }
@@ -109,7 +124,13 @@ pub fn sync_inline_preview_cursor(
         u16::try_from(cursor.1).unwrap_or(u16::MAX),
     ));
     rendered.clear_custom_highlight();
-    apply_inline_styles(rendered, source_lines, cursor_line, &table_lines);
+    apply_inline_styles(
+        rendered,
+        source_lines,
+        cursor_line,
+        &table_lines,
+        &code_lines,
+    );
 }
 
 fn replace_presentation_line(editor: &mut TextArea<'_>, row: usize, replacement: &str) {
@@ -135,9 +156,23 @@ fn apply_inline_styles(
     lines: &[String],
     cursor_line: usize,
     table_lines: &[Option<TableLineContext>],
+    code_lines: &[Option<CodeLineContext>],
 ) {
     for (row, line) in lines.iter().enumerate() {
-        if row == cursor_line || line.is_empty() {
+        if row == cursor_line {
+            continue;
+        }
+        if let Some(context) = &code_lines[row] {
+            let end = editor.lines()[row].len();
+            let style = match context.kind {
+                CodeLineKind::Opening => Style::new().fg(BRIGHT).bg(CODE_BACKGROUND).bold(),
+                CodeLineKind::Body => Style::new().fg(TEXT).bg(CODE_BACKGROUND),
+                CodeLineKind::Closing => Style::new().fg(MUTED).bg(CODE_BACKGROUND),
+            };
+            editor.custom_highlight(((row, 0), (row, end)), style, 40);
+            continue;
+        }
+        if line.is_empty() {
             continue;
         }
         highlight_heading(editor, row, line);
@@ -180,6 +215,109 @@ fn apply_inline_styles(
             let end = editor.lines()[row].len();
             editor.custom_highlight(((row, 0), (row, end)), Style::new().fg(BRIGHT).bold(), 5);
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CodeLineKind {
+    Opening,
+    Body,
+    Closing,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CodeLineContext {
+    kind: CodeLineKind,
+    label: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct OpenFence {
+    marker: char,
+    length: usize,
+    label: String,
+}
+
+fn code_line_contexts(lines: &[String]) -> Vec<Option<CodeLineContext>> {
+    let mut contexts = vec![None; lines.len()];
+    let mut open: Option<OpenFence> = None;
+    for (row, line) in lines.iter().enumerate() {
+        if let Some(fence) = &open {
+            if is_closing_fence(line, fence) {
+                contexts[row] = Some(CodeLineContext {
+                    kind: CodeLineKind::Closing,
+                    label: fence.label.clone(),
+                });
+                open = None;
+            } else {
+                contexts[row] = Some(CodeLineContext {
+                    kind: CodeLineKind::Body,
+                    label: fence.label.clone(),
+                });
+            }
+            continue;
+        }
+        let Some(fence) = opening_fence(line) else {
+            continue;
+        };
+        contexts[row] = Some(CodeLineContext {
+            kind: CodeLineKind::Opening,
+            label: fence.label.clone(),
+        });
+        open = Some(fence);
+    }
+    contexts
+}
+
+fn opening_fence(source: &str) -> Option<OpenFence> {
+    let indentation = source.len() - source.trim_start_matches(' ').len();
+    if indentation > 3 {
+        return None;
+    }
+    let content = &source[indentation..];
+    let marker = content.chars().next()?;
+    if !matches!(marker, '`' | '~') {
+        return None;
+    }
+    let length = content
+        .chars()
+        .take_while(|character| *character == marker)
+        .count();
+    if length < 3 {
+        return None;
+    }
+    let info = content.get(length..)?.trim();
+    if marker == '`' && info.contains('`') {
+        return None;
+    }
+    Some(OpenFence {
+        marker,
+        length,
+        label: code_block_label((!info.is_empty()).then_some(info)),
+    })
+}
+
+fn is_closing_fence(source: &str, open: &OpenFence) -> bool {
+    let indentation = source.len() - source.trim_start_matches(' ').len();
+    if indentation > 3 {
+        return false;
+    }
+    let content = &source[indentation..];
+    let length = content
+        .chars()
+        .take_while(|character| *character == open.marker)
+        .count();
+    length >= open.length
+        && content
+            .get(length..)
+            .is_some_and(|remainder| remainder.trim().is_empty())
+}
+
+fn render_inline_code_line(source: &str, context: &CodeLineContext) -> String {
+    match context.kind {
+        CodeLineKind::Opening => format!("┌─ {}", context.label),
+        CodeLineKind::Body => format!("│ {source}"),
+        CodeLineKind::Closing => "└─".to_owned(),
     }
 }
 
@@ -668,6 +806,26 @@ mod tests {
         assert_eq!(
             source_from_textarea(&editor),
             "current\n- Parent\n  - Nested bullet\n   1. Nested number\n    - Deep item"
+        );
+    }
+
+    #[test]
+    fn inline_preview_labels_and_frames_fenced_code() {
+        let editor = textarea_from_source(
+            "current\n```bash\necho hello\n```\n\n```python\nprint('hello')\n```\n\n```\nplain\n```",
+        );
+        let rendered = inline_preview_editor(&editor);
+
+        assert_eq!(rendered.lines()[1], "┌─ BASH");
+        assert_eq!(rendered.lines()[2], "│ echo hello");
+        assert_eq!(rendered.lines()[3], "└─");
+        assert_eq!(rendered.lines()[5], "┌─ CODE · PYTHON");
+        assert_eq!(rendered.lines()[6], "│ print('hello')");
+        assert_eq!(rendered.lines()[9], "┌─ CODE");
+        assert_eq!(rendered.lines()[10], "│ plain");
+        assert_eq!(
+            source_from_textarea(&editor),
+            "current\n```bash\necho hello\n```\n\n```python\nprint('hello')\n```\n\n```\nplain\n```"
         );
     }
 }

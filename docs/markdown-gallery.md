@@ -13,14 +13,16 @@ source is always the document. Inline styles and the split preview only present 
 this file.
 
 The current Rust inline view renders headings, emphasis, strong text, strikeout, inline code, links,
-tasks, bullets, quotes, fences, rules, and table borders outside the active source line. The split
-view uses a semantic Markdown parser. Links, images, footnotes, and raw HTML are not interactive.
+indented lists, quotes, labeled code fences, rules, and aligned table borders outside the active
+source line. The split view uses a semantic Markdown parser. Links, images, footnotes, and raw HTML
+are not interactive.
 
 | Construct | Inline view | Split preview |
 | --- | --- | --- |
 | Headings and common inline markers | Compact rendered terminal text | Rendered terminal text |
-| Lists, tasks, quotes, and code | Rendered outside the active source line | Rendered terminal text |
-| Tables | Rendered borders outside the active source line | Rendered bordered table |
+| Lists, tasks, and quotes | Rendered with nested indentation | Rendered with nested indentation |
+| Fenced code | `BASH`, `CODE`, or `CODE · LANGUAGE` rail | Labeled rail with a dark surface |
+| Tables | Aligned borders outside the active source line | Aligned bordered table |
 | GFM alerts, footnotes, definitions | Source-faithful fallback where unsupported | Rendered labels without interactive navigation |
 | Raw HTML | Exact Markdown source | Omitted rather than executed |
 
@@ -98,6 +100,10 @@ active source line, and the split renderer reconstructs a bordered table without
 | `` `code` `` | Inline code |
 
 ## Code
+
+Shell fences use a `BASH` label. Other language fences use `CODE · LANGUAGE`, while an unlabeled
+fence or four-space block uses `CODE`. The label, rail, and dark surface distinguish code from
+prose without adding prompts to the source.
 
 ```python
 def greeting(name: str) -> str:
