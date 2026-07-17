@@ -9,7 +9,7 @@ use tempfile::NamedTempFile;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-use crate::document::{Document, Encoding, FileSnapshot, LineEnding};
+use crate::document::{Document, Encoding, FileSnapshot, LineEnding, MixedSource};
 
 const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 
@@ -26,15 +26,29 @@ pub struct LoadedFile {
 impl LoadedFile {
     #[must_use]
     pub fn into_document(self) -> Document {
+        let mixed_source = self
+            .mixed_line_ending_target()
+            .map(|target| MixedSource::new(self.exact_text.clone(), self.text.clone(), target));
+        let source = if mixed_source.is_some() {
+            self.exact_text
+        } else {
+            self.text
+        };
         Document {
             path: self.path,
-            text: self.text.clone(),
-            saved_text: self.text,
+            text: source.clone(),
+            saved_text: source,
             encoding: self.encoding,
             line_ending: self.line_ending,
+            mixed_source,
             snapshot: self.snapshot,
             conflict: false,
         }
+    }
+
+    #[must_use]
+    pub fn mixed_line_ending_target(&self) -> Option<LineEnding> {
+        LineEnding::mixed_target(&self.exact_text)
     }
 }
 
@@ -176,11 +190,15 @@ pub fn normalize_line_endings(text: &str) -> String {
 
 #[must_use]
 pub fn encode_text(text: &str, encoding: Encoding, line_ending: LineEnding) -> Vec<u8> {
-    let normalized = normalize_line_endings(text);
-    let rendered = if line_ending.separator() == "\n" {
-        normalized
+    let rendered = if line_ending == LineEnding::Mixed {
+        text.to_owned()
     } else {
-        normalized.replace('\n', line_ending.separator())
+        let normalized = normalize_line_endings(text);
+        if line_ending.separator() == "\n" {
+            normalized
+        } else {
+            normalized.replace('\n', line_ending.separator())
+        }
     };
     let mut bytes =
         Vec::with_capacity(rendered.len() + usize::from(encoding == Encoding::Utf8Bom) * 3);
@@ -244,5 +262,38 @@ mod tests {
         .unwrap_err();
         assert!(matches!(error, SaveError::Conflict));
         assert_eq!(fs::read_to_string(path).unwrap(), "external");
+    }
+
+    #[test]
+    fn mixed_line_endings_keep_a_consent_target_without_changing_disk() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mixed.md");
+        let original = b"first\r\nsecond\nthird\r";
+        fs::write(&path, original).unwrap();
+
+        let loaded = load_file(&path).unwrap();
+        assert_eq!(loaded.line_ending, LineEnding::Mixed);
+        assert_eq!(loaded.mixed_line_ending_target(), Some(LineEnding::Crlf));
+        assert_eq!(loaded.text, "first\nsecond\nthird\n");
+        let mut document = loaded.into_document();
+        assert_eq!(document.text, "first\r\nsecond\nthird\r");
+        assert!(!document.is_editable());
+        assert!(document.accept_mixed_line_endings());
+        assert!(document.is_editable());
+        assert_eq!(document.line_ending, LineEnding::Mixed);
+        document.conflict = true;
+        assert!(!document.is_dirty());
+        document.update_from_editor("first\nchanged\nthird\n".to_owned());
+        assert_eq!(document.line_ending, LineEnding::Crlf);
+        assert!(document.is_dirty());
+        document.update_from_editor("first\nsecond\nthird\n".to_owned());
+        assert_eq!(document.text, "first\r\nsecond\nthird\r");
+        assert_eq!(document.line_ending, LineEnding::Mixed);
+        assert!(!document.is_dirty());
+        assert_eq!(
+            encode_text(&document.text, Encoding::Utf8, document.line_ending),
+            original
+        );
+        assert_eq!(fs::read(path).unwrap(), original);
     }
 }
