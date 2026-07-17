@@ -234,7 +234,7 @@ Rust always uses its built-in theme, so `--safe-mode` is behaviorally redundant.
 
 The command palette contains the same 32 actions in the same six groups/order as Python, rendered as
 one searchable list. Python projects those actions into a responsive grouped grid with descriptions.
-Rust's `?` screen is a 25-row effective summary; `--commands` is the exhaustive user-facing
+Rust's `?` screen is a scrollable 25-row effective summary; `--commands` is the exhaustive user-facing
 reference.
 
 ## Terminal lifecycle
@@ -261,6 +261,6 @@ cargo test --locked --all-targets
 cargo test --locked --release
 ```
 
-At checkpoint `8a95a4e`, 151 Rust library tests and 3 Rust binary tests pass. The Python suite remains
+At checkpoint `1367cc0`, 153 Rust library tests and 3 Rust binary tests pass. The Python suite remains
 the product oracle and passes 681 tests with 2 expected platform skips. The exhaustive interface and
 gap inventory, plus the explicitly historical benchmark, live in [RUST_PORT.md](../RUST_PORT.md).

@@ -97,7 +97,7 @@ Global shortcuts include `Ctrl+S`, `Ctrl+Q`, `Ctrl+P`, `Ctrl+F`, `Ctrl+B`, `Ctrl
 `Ctrl+PageUp` / `Ctrl+PageDown`.
 
 Run `termdraft-rs --commands` for the complete effective COMMAND, Files, global, editor, and preview
-reference. Press `?` inside the application for a compact 25-row runtime summary.
+reference. Press `?` inside the application for a compact scrollable 25-row runtime summary.
 
 ## What is included
 

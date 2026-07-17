@@ -1,6 +1,6 @@
 # Rust terminal frontend QA
 
-This checklist covers the Ratatui frontend on the `rust-port` branch at checkpoint `8a95a4e`. The
+This checklist covers the Ratatui frontend on the `rust-port` branch at checkpoint `1367cc0`. The
 goal is to preserve the Python application's recognizable keyboard-first writing hierarchy with the
 fewest interface changes practical, not to claim pixel parity with Textual.
 
@@ -56,7 +56,7 @@ cargo test --locked --all-targets
 cargo test --locked --release
 ```
 
-At checkpoint `8a95a4e`, 151 library tests and 3 binary tests pass.
+At checkpoint `1367cc0`, 153 library tests and 3 binary tests pass.
 
 ## Manual PTY check
 

@@ -38,7 +38,7 @@ comparison, set `XDG_STATE_HOME=/tmp/termdraft-rs-state` and pass
 
 ## Inventory snapshot
 
-This inventory was recounted from the Python source and Rust checkpoint `8a95a4e`:
+This inventory was recounted from the Python source and Rust checkpoint `1367cc0`:
 
 - both command palettes contain exactly **32 actions** in the same six groups and order;
 - both configuration contracts contain exactly **52 binding IDs**, all of which reach implemented
@@ -48,7 +48,7 @@ This inventory was recounted from the Python source and Rust checkpoint `8a95a4e
   **21 overlay types are currently user-reachable**;
 - shared dialog types serve several workflows, so the operation-by-operation popup matrix below is
   the authoritative interface comparison;
-- the Rust suite passes **151 library tests plus 3 binary tests**; the Python suite passes
+- the Rust suite passes **153 library tests plus 3 binary tests**; the Python suite passes
   **681 tests with 2 platform skips**.
 
 Neither frontend has a native menu bar. In both, the searchable command palette is the application
@@ -87,7 +87,7 @@ menu; the focused Files key layer is a second contextual menu.
 | Executable and runtime | Published `termdraft`; Python/Textual and Nerd Font icons | Branch-local `termdraft-rs`; one native executable and ordinary Unicode symbols | Rust starts with less runtime overhead and needs no Nerd Font; Python remains the supported package |
 | Shell chrome | Textual styling and Nerd Font glyphs | Monochrome Ratatui chrome, `RUST PORT` badge, `▸`, `◆`, and `›` | Same hierarchy, not pixel parity |
 | Palette layout | Responsive grouped two-column cheatsheet that stacks when narrow; descriptions below | One searchable list with a group column and shortcut on every row | Actions and order match; Rust shows less explanatory copy at once |
-| Shortcut help | Generated exhaustive effective reference | 25-row effective summary | Rust `--commands` is the exhaustive reference; `?` is intentionally more compact |
+| Shortcut help | Generated exhaustive effective reference | Scrollable 25-row effective summary | Rust `--commands` is the exhaustive reference; `?` is intentionally more compact |
 | Preview engine | `markdown-it-py`/Textual with tables, tasks, alerts, footnotes, definitions, link selection, and internal footnote navigation | Presentation-only inline styling plus a best-effort `tui-markdown` split preview | Source remains authoritative in both; richer preview behavior is still Python-only |
 | Explorer model | Lazy, collapsible Textual `DirectoryTree` plus asynchronous indexing | Always-expanded sorted snapshot from `ignore::WalkBuilder` | Rust is simpler and predictable; large trees can occupy more space and delay first frame |
 | Search regex engine | Python `regex`, full case folding, and a per-line timeout | Rust `regex`, a linear-time syntax subset, and the same 500-character input limit | Common regexes work; look-around/backreferences accepted by Python are not Rust syntax |
@@ -173,7 +173,7 @@ prints the group on every row. Both fuzzy-filter the complete 32-action set.
 | User-facing surface | Python/Textual | Rust/Ratatui | Status or changed behavior |
 | --- | --- | --- | --- |
 | Command palette | Search, six responsive groups, descriptions, mouse/keyboard | Search, same 32 actions/groups/order, one list, keyboard | Functional parity; layout/mouse differ |
-| Shortcut help | Full effective binding reference | 25-row effective summary | Rust is intentionally shorter; `--commands` is exhaustive |
+| Shortcut help | Full effective binding reference | Scrollable 25-row effective summary | Rust is intentionally shorter; every row remains reachable at 80x24 and `--commands` is exhaustive |
 | Markdown syntax help | `HelpDialog` with supported syntax and examples | Dedicated scrollable Markdown Help overlay | Parity, with Rust limitations stated truthfully |
 | Find file | Query, include/exclude filter, ranked results | Same fields, filter contract, ranking, and open action | Parity |
 | Workspace search | Query, literal/fuzzy/word/regex, case, filter, warnings/results | Same controls and asynchronous revision/cancellation behavior | Parity |
@@ -281,7 +281,7 @@ feature.
 
 ## Verification
 
-Current code checkpoint: `8a95a4e`.
+Current code checkpoint: `1367cc0`.
 
 ```bash
 cargo fmt --all -- --check
@@ -293,7 +293,7 @@ cargo test --locked --release
 
 Results at this checkpoint:
 
-- 151 Rust library tests and 3 Rust binary tests pass;
+- 153 Rust library tests and 3 Rust binary tests pass;
 - strict Clippy and rustfmt pass;
 - the Python suite passes 681 tests with 2 expected platform skips;
 - source-format and documentation diff checks pass.
@@ -302,7 +302,7 @@ Results at this checkpoint:
 
 The following numbers are preserved from the earlier `987cafc` checkpoint, before the recent
 search, Files, mouse, keymap, diagnostics, mixed-ending, conflict, and Recovery Manager parity work.
-They were **not rerun for `8a95a4e`** and must not be presented as current benchmark results. They do
+They were **not rerun for `1367cc0`** and must not be presented as current benchmark results. They do
 explain why the Rust build can feel more fluid, especially at process start and first frame.
 
 Environment at that historical checkpoint: macOS 26.5.2 on arm64, Python 3.12.13 / TermDraft 1.2.0,
