@@ -752,9 +752,16 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
         }
         Overlay::Confirm(action) => {
             let message = match action {
-                ConfirmAction::Quit => "Unsaved documents remain. Quit and discard them?",
+                ConfirmAction::Quit => {
+                    let name = app
+                        .active_tab()
+                        .and_then(|tab| tab.document.path.file_name())
+                        .unwrap_or_default()
+                        .to_string_lossy();
+                    format!("Save changes to {name}?")
+                }
                 ConfirmAction::CloseTab => {
-                    "This document has unsaved changes. Close and discard them?"
+                    "This document has unsaved changes. Close and discard them?".to_owned()
                 }
             };
             let text = Text::from(vec![
@@ -2130,6 +2137,11 @@ mod tests {
         assert!(screen.contains("Save local as"));
         assert!(screen.contains("Continue without copy"));
         assert!(!screen.contains("Reload external"));
+
+        app.overlay = Some(Overlay::Confirm(ConfirmAction::Quit));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let screen = rendered(&terminal);
+        assert!(screen.contains("Save changes to note.md?"));
     }
 
     #[test]

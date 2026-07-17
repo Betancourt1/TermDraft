@@ -151,6 +151,8 @@ pub enum RecoveryManagerFocus {
 struct PendingTransition {
     action: ConfirmAction,
     accepted_paths: Vec<PathBuf>,
+    remaining_tabs: Vec<usize>,
+    original_active_tab: Option<usize>,
 }
 
 enum DiskState {
@@ -1823,15 +1825,18 @@ impl App {
 
     fn request_quit(&mut self) {
         self.sync_active_document();
+        let original_active_tab = self.active_tab;
+        let remaining_tabs = original_active_tab
+            .into_iter()
+            .chain((0..self.tabs.len()).filter(|index| Some(*index) != original_active_tab))
+            .collect();
         self.pending_transition = Some(PendingTransition {
             action: ConfirmAction::Quit,
             accepted_paths: Vec::new(),
+            remaining_tabs,
+            original_active_tab,
         });
-        if self.tabs.iter().any(|tab| tab.document.is_dirty()) {
-            self.overlay = Some(Overlay::Confirm(ConfirmAction::Quit));
-        } else {
-            self.validate_pending_transition();
-        }
+        self.advance_quit_transition();
     }
 
     fn close_active(&mut self) {
@@ -1842,6 +1847,8 @@ impl App {
         self.pending_transition = Some(PendingTransition {
             action: ConfirmAction::CloseTab,
             accepted_paths: Vec::new(),
+            remaining_tabs: Vec::new(),
+            original_active_tab: None,
         });
         if self.tabs[index].document.is_dirty() {
             self.overlay = Some(Overlay::Confirm(ConfirmAction::CloseTab));
@@ -1858,16 +1865,10 @@ impl App {
         else {
             return;
         };
-        let saved = match action {
-            ConfirmAction::Quit => self.save_all_dirty(),
-            ConfirmAction::CloseTab => {
-                if self.active_tab().is_some_and(|tab| tab.document.is_dirty()) {
-                    self.save_active();
-                }
-                self.active_tab().is_none_or(|tab| !tab.document.is_dirty())
-            }
-        };
-        if !saved {
+        if self.active_tab().is_some_and(|tab| tab.document.is_dirty()) {
+            self.save_active();
+        }
+        if self.active_tab().is_some_and(|tab| tab.document.is_dirty()) {
             if self.overlay.is_none() {
                 self.overlay = Some(Overlay::Confirm(action));
             }
@@ -1884,50 +1885,93 @@ impl App {
         else {
             return;
         };
-        let indices = match action {
-            ConfirmAction::Quit => (0..self.tabs.len()).collect::<Vec<_>>(),
-            ConfirmAction::CloseTab => self.active_tab.into_iter().collect(),
+        if action == ConfirmAction::Quit {
+            self.advance_quit_transition();
+            return;
+        }
+        let Some(index) = self.active_tab else {
+            self.pending_transition = None;
+            return;
         };
-        for index in indices {
-            let path = self.tabs[index].document.path.clone();
-            if self.pending_transition.as_ref().is_some_and(|pending| {
-                pending
-                    .accepted_paths
-                    .iter()
-                    .any(|accepted| accepted == &path)
-            }) {
-                continue;
-            }
-            match disk_state(&path) {
-                DiskState::Current(loaded) => {
-                    let baseline = &self.tabs[index].document.snapshot;
-                    if loaded.snapshot == *baseline
-                        || (loaded.snapshot.sha256 == baseline.sha256
-                            && loaded.snapshot.same_origin(baseline))
-                    {
-                        self.tabs[index].document.snapshot = loaded.snapshot;
-                        if !self.tabs[index].document.recovery_conflict {
-                            self.tabs[index].document.conflict = false;
-                        }
-                    }
-                }
-                DiskState::Missing => {
-                    self.active_tab = Some(index);
-                    self.show_conflict(index, ConflictKind::Missing);
-                    return;
-                }
-                DiskState::Unavailable(error) => {
-                    self.active_tab = Some(index);
-                    self.status_message = Some(format!("CONFLICT · file unavailable · {error}"));
-                    self.show_conflict(index, ConflictKind::Unavailable);
-                    return;
-                }
-            }
+        if !self.validate_transition_tab(index) {
+            return;
         }
         self.pending_transition = None;
-        match action {
-            ConfirmAction::Quit => self.should_quit = true,
-            ConfirmAction::CloseTab => self.close_active_discarding(),
+        self.close_active_discarding();
+    }
+
+    fn advance_quit_transition(&mut self) {
+        loop {
+            let Some(pending) = self.pending_transition.as_ref() else {
+                return;
+            };
+            if pending.action != ConfirmAction::Quit {
+                return;
+            }
+            let Some(index) = pending.remaining_tabs.first().copied() else {
+                let original_active_tab = pending
+                    .original_active_tab
+                    .filter(|index| *index < self.tabs.len());
+                self.pending_transition = None;
+                self.active_tab = original_active_tab;
+                self.should_quit = true;
+                return;
+            };
+            if index >= self.tabs.len() {
+                if let Some(pending) = self.pending_transition.as_mut() {
+                    pending.remaining_tabs.remove(0);
+                }
+                continue;
+            }
+            self.active_tab = Some(index);
+            if self.tabs[index].document.is_dirty() {
+                self.overlay = Some(Overlay::Confirm(ConfirmAction::Quit));
+                return;
+            }
+            if !self.validate_transition_tab(index) {
+                return;
+            }
+            if let Some(pending) = self.pending_transition.as_mut() {
+                pending.remaining_tabs.remove(0);
+            }
+        }
+    }
+
+    fn validate_transition_tab(&mut self, index: usize) -> bool {
+        let path = self.tabs[index].document.path.clone();
+        if self.pending_transition.as_ref().is_some_and(|pending| {
+            pending
+                .accepted_paths
+                .iter()
+                .any(|accepted| accepted == &path)
+        }) {
+            return true;
+        }
+        match disk_state(&path) {
+            DiskState::Current(loaded) => {
+                let baseline = &self.tabs[index].document.snapshot;
+                if loaded.snapshot == *baseline
+                    || (loaded.snapshot.sha256 == baseline.sha256
+                        && loaded.snapshot.same_origin(baseline))
+                {
+                    self.tabs[index].document.snapshot = loaded.snapshot;
+                    if !self.tabs[index].document.recovery_conflict {
+                        self.tabs[index].document.conflict = false;
+                    }
+                }
+                true
+            }
+            DiskState::Missing => {
+                self.active_tab = Some(index);
+                self.show_conflict(index, ConflictKind::Missing);
+                false
+            }
+            DiskState::Unavailable(error) => {
+                self.active_tab = Some(index);
+                self.status_message = Some(format!("CONFLICT · file unavailable · {error}"));
+                self.show_conflict(index, ConflictKind::Unavailable);
+                false
+            }
         }
     }
 
@@ -1953,30 +1997,22 @@ impl App {
                 self.close_active_discarding();
             }
             ConfirmAction::Quit => {
-                let dirty_paths = self
-                    .tabs
-                    .iter()
-                    .filter(|tab| tab.document.is_dirty())
-                    .map(|tab| tab.document.path.clone())
-                    .collect::<Vec<_>>();
-                for path in &dirty_paths {
-                    self.discard_recovery_for(path);
+                let Some(index) = self.active_tab else {
+                    self.pending_transition = None;
+                    return;
+                };
+                let path = self.tabs[index].document.path.clone();
+                let text = self.tabs[index].document.text.clone();
+                self.discard_recovery_for(&path);
+                self.tabs[index].document.saved_text = text;
+                self.tabs[index].document.conflict = false;
+                self.tabs[index].document.recovery_conflict = false;
+                if let Some(pending) = self.pending_transition.as_mut()
+                    && !pending.accepted_paths.contains(&path)
+                {
+                    pending.accepted_paths.push(path);
                 }
-                for tab in &mut self.tabs {
-                    if tab.document.is_dirty() {
-                        tab.document.saved_text.clone_from(&tab.document.text);
-                        tab.document.conflict = false;
-                        tab.document.recovery_conflict = false;
-                    }
-                }
-                if let Some(pending) = self.pending_transition.as_mut() {
-                    for path in dirty_paths {
-                        if !pending.accepted_paths.contains(&path) {
-                            pending.accepted_paths.push(path);
-                        }
-                    }
-                }
-                self.validate_pending_transition();
+                self.advance_quit_transition();
             }
         }
     }
@@ -4287,22 +4323,6 @@ impl App {
             }
         }
     }
-
-    fn save_all_dirty(&mut self) -> bool {
-        let original = self.active_tab;
-        for index in 0..self.tabs.len() {
-            if !self.tabs[index].document.is_dirty() {
-                continue;
-            }
-            self.active_tab = Some(index);
-            self.save_active();
-            if self.tabs[index].document.is_dirty() {
-                return false;
-            }
-        }
-        self.active_tab = original;
-        true
-    }
 }
 
 fn missing_recovery_open_limitation(status: RecoveryRecordStatus) -> String {
@@ -5146,6 +5166,78 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
         assert!(app.should_quit);
         assert_eq!(fs::read_to_string(&path).unwrap(), "local disk");
+    }
+
+    #[test]
+    fn quit_saves_one_dirty_tab_then_cancel_preserves_the_next() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.md");
+        let second = directory.path().join("second.md");
+        fs::write(&first, "first").unwrap();
+        fs::write(&second, "second").unwrap();
+        let first = first.canonicalize().unwrap();
+        let second = second.canonicalize().unwrap();
+        let workspace = Workspace::from_target(&first).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.active_tab_mut().unwrap().editor.insert_str("draft ");
+        app.sync_active_document();
+        app.open_document(&second).unwrap();
+        app.active_tab_mut().unwrap().editor.insert_str("saved ");
+
+        app.request_quit();
+        assert_eq!(app.active_tab().unwrap().document.path, second);
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Confirm(ConfirmAction::Quit))
+        ));
+        app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+
+        assert_eq!(fs::read_to_string(&second).unwrap(), "saved second");
+        assert_eq!(app.active_tab().unwrap().document.path, first);
+        assert!(app.active_tab().unwrap().document.is_dirty());
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Confirm(ConfirmAction::Quit))
+        ));
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert!(!app.should_quit);
+        assert!(app.pending_transition.is_none());
+        assert_eq!(app.active_tab().unwrap().document.path, first);
+        assert!(app.active_tab().unwrap().document.is_dirty());
+        assert_eq!(fs::read_to_string(first).unwrap(), "first");
+    }
+
+    #[test]
+    fn quit_can_save_one_dirty_tab_and_discard_another() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.md");
+        let second = directory.path().join("second.md");
+        fs::write(&first, "first").unwrap();
+        fs::write(&second, "second").unwrap();
+        let first = first.canonicalize().unwrap();
+        let second = second.canonicalize().unwrap();
+        let workspace = Workspace::from_target(&first).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.active_tab_mut()
+            .unwrap()
+            .editor
+            .insert_str("discarded ");
+        app.sync_active_document();
+        app.open_document(&second).unwrap();
+        app.active_tab_mut().unwrap().editor.insert_str("saved ");
+
+        app.request_quit();
+        app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert_eq!(app.active_tab().unwrap().document.path, first);
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+
+        assert!(app.should_quit);
+        assert!(app.pending_transition.is_none());
+        assert_eq!(app.active_tab().unwrap().document.path, second);
+        assert_eq!(fs::read_to_string(first).unwrap(), "first");
+        assert_eq!(fs::read_to_string(second).unwrap(), "saved second");
     }
 
     #[test]
@@ -5998,6 +6090,49 @@ mod tests {
             assert!(app.pending_transition.is_none());
             assert_eq!(fs::read(&path).unwrap(), b"external\r\nversion\n");
         }
+    }
+
+    #[test]
+    fn quit_continues_to_the_next_dirty_tab_after_mixed_conflict_reload() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.md");
+        let second = directory.path().join("second.md");
+        fs::write(&first, "first").unwrap();
+        fs::write(&second, "second").unwrap();
+        let first = first.canonicalize().unwrap();
+        let second = second.canonicalize().unwrap();
+        let workspace = Workspace::from_target(&first).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.active_tab_mut().unwrap().editor.insert_str("draft ");
+        app.sync_active_document();
+        app.open_document(&second).unwrap();
+        app.active_tab_mut().unwrap().editor.insert_str("local ");
+        fs::write(&second, b"external\r\nversion\n").unwrap();
+
+        app.request_quit();
+        app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::MixedLineEndings {
+                context: MixedLineEndingContext::Reload,
+                ..
+            })
+        ));
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.active_tab().unwrap().document.path, first);
+        assert!(app.active_tab().unwrap().document.is_dirty());
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Confirm(ConfirmAction::Quit))
+        ));
+        assert_eq!(fs::read(&second).unwrap(), b"external\r\nversion\n");
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.should_quit);
+        assert!(app.pending_transition.is_none());
     }
 
     #[test]
