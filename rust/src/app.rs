@@ -652,6 +652,7 @@ pub const COMMANDS: &[CommandSpec] = &[
 pub struct EditorTab {
     pub document: Document,
     pub editor: TextArea<'static>,
+    pending_mixed_open: bool,
     undo_groups: Vec<usize>,
     redo_groups: Vec<usize>,
 }
@@ -668,6 +669,7 @@ impl EditorTab {
         Self {
             document: loaded.into_document(),
             editor,
+            pending_mixed_open: false,
             undo_groups: Vec::new(),
             redo_groups: Vec::new(),
         }
@@ -899,8 +901,9 @@ impl App {
             .collect::<HashMap<_, _>>();
         if restore_open_tabs {
             for path in &state.open_paths {
-                let _ = self.open_document(path);
+                let _ = self.open_document_with_prompts(path, false);
             }
+            let previous_active = self.active_tab;
             if let Some(active) = &state.active_path
                 && let Some(index) = self
                     .tabs
@@ -908,6 +911,11 @@ impl App {
                     .position(|tab| tab.document.path == *active)
             {
                 self.active_tab = Some(index);
+            }
+            if !self.ensure_active_mixed_open_prompt(previous_active)
+                && let Some(path) = self.active_tab().map(|tab| tab.document.path.clone())
+            {
+                self.offer_recovery(&path);
             }
         }
         for tab in &mut self.tabs {
@@ -1476,14 +1484,27 @@ impl App {
     }
 
     fn open_document(&mut self, path: &Path) -> anyhow::Result<()> {
+        self.open_document_with_prompts(path, true)
+    }
+
+    fn open_document_with_prompts(
+        &mut self,
+        path: &Path,
+        show_prompts: bool,
+    ) -> anyhow::Result<()> {
         let path = self.workspace.validate_document_path(path)?;
         if let Some(index) = self.tabs.iter().position(|tab| tab.document.path == path) {
+            let previous_active = self.active_tab;
             self.cache_active_view();
             self.active_tab = Some(index);
             self.focus = Focus::Editor;
             self.preview_scroll = 0;
             self.narrow_pane = Focus::Editor;
-            self.mark_recent(&path);
+            if show_prompts {
+                self.mark_recent(&path);
+                self.ensure_active_mixed_open_prompt(previous_active);
+            }
+            self.enforce_active_read_only();
             return Ok(());
         }
         let previous_active = self.active_tab;
@@ -1496,30 +1517,50 @@ impl App {
                 u16::try_from(view.column).unwrap_or(u16::MAX),
             ));
         }
-        let mixed_target = tab.document.mixed_line_ending_target();
+        tab.pending_mixed_open = tab.document.mixed_line_ending_target().is_some();
         self.tabs.push(tab);
-        let tab_index = self.tabs.len() - 1;
-        self.active_tab = Some(tab_index);
+        self.active_tab = Some(self.tabs.len() - 1);
         self.focus = Focus::Editor;
         self.preview_scroll = 0;
         self.narrow_pane = Focus::Editor;
-        if let Some(target) = mixed_target {
-            self.overlay = Some(Overlay::MixedLineEndings {
-                tab_index,
-                previous_active,
-                context: MixedLineEndingContext::Open,
-                target,
-            });
-            self.status_message = Some(format!(
-                "Mixed line endings · edit will normalize to {}",
-                line_ending_name(target)
-            ));
-            self.enforce_active_read_only();
-        } else {
+        if show_prompts && !self.ensure_active_mixed_open_prompt(previous_active) {
             self.mark_recent(&path);
             self.offer_recovery(&path);
         }
         Ok(())
+    }
+
+    fn ensure_active_mixed_open_prompt(&mut self, previous_active: Option<usize>) -> bool {
+        if self.overlay.is_some() {
+            return false;
+        }
+        let Some(tab_index) = self.active_tab else {
+            return false;
+        };
+        let Some(target) = self.tabs.get(tab_index).and_then(|tab| {
+            tab.pending_mixed_open
+                .then(|| tab.document.mixed_line_ending_target())
+                .flatten()
+        }) else {
+            return false;
+        };
+        let previous_active = previous_active
+            .filter(|index| *index != tab_index && *index < self.tabs.len())
+            .or_else(|| {
+                (self.tabs.len() > 1).then(|| if tab_index == 0 { 1 } else { tab_index - 1 })
+            });
+        self.overlay = Some(Overlay::MixedLineEndings {
+            tab_index,
+            previous_active,
+            context: MixedLineEndingContext::Open,
+            target,
+        });
+        self.status_message = Some(format!(
+            "Mixed line endings · edit will normalize to {}",
+            line_ending_name(target)
+        ));
+        self.enforce_active_read_only();
+        true
     }
 
     fn save_active(&mut self) {
@@ -1688,6 +1729,9 @@ impl App {
         if !tab.document.accept_mixed_line_endings() {
             return;
         }
+        if context == MixedLineEndingContext::Open {
+            tab.pending_mixed_open = false;
+        }
         let path = tab.document.path.clone();
         self.status_message = Some(format!(
             "Mixed line endings · first edit will normalize to {}",
@@ -1696,6 +1740,8 @@ impl App {
         if context == MixedLineEndingContext::Open {
             self.mark_recent(&path);
             self.offer_recovery(&path);
+        } else if context == MixedLineEndingContext::Reload && self.pending_transition.is_some() {
+            self.continue_pending_transition();
         }
     }
 
@@ -1707,7 +1753,14 @@ impl App {
     ) {
         if context == MixedLineEndingContext::Open && tab_index < self.tabs.len() {
             self.tabs.remove(tab_index);
-            self.active_tab = previous_active.filter(|index| *index < self.tabs.len());
+            self.active_tab = previous_active
+                .and_then(|index| match index.cmp(&tab_index) {
+                    std::cmp::Ordering::Less => Some(index),
+                    std::cmp::Ordering::Equal => None,
+                    std::cmp::Ordering::Greater => Some(index - 1),
+                })
+                .filter(|index| *index < self.tabs.len())
+                .or_else(|| (!self.tabs.is_empty()).then_some(tab_index.min(self.tabs.len() - 1)));
             self.focus = if self.active_tab.is_some() {
                 Focus::Editor
             } else {
@@ -1719,6 +1772,9 @@ impl App {
         self.active_tab = (tab_index < self.tabs.len()).then_some(tab_index);
         self.enforce_active_read_only();
         self.status_message = Some("Mixed line endings · kept read-only".to_owned());
+        if context == MixedLineEndingContext::Reload && self.pending_transition.is_some() {
+            self.continue_pending_transition();
+        }
     }
 
     fn open_conflict_save_as(&mut self) {
@@ -1744,8 +1800,14 @@ impl App {
             DiskState::Current(loaded) => {
                 self.install_loaded(index, loaded, MixedLineEndingContext::Reload);
                 self.discard_recovery_for(&path);
-                if self.pending_transition.is_some() {
-                    self.overlay = None;
+                let awaiting_mixed_choice = matches!(
+                    self.overlay,
+                    Some(Overlay::MixedLineEndings {
+                        context: MixedLineEndingContext::Reload,
+                        ..
+                    })
+                );
+                if self.pending_transition.is_some() && !awaiting_mixed_choice {
                     self.continue_pending_transition();
                 } else if self.overlay.is_none() {
                     self.status_message = Some("Reloaded external version".to_owned());
@@ -1952,6 +2014,7 @@ impl App {
         }
         self.preview_scroll = 0;
         self.narrow_pane = Focus::Editor;
+        self.ensure_active_mixed_open_prompt(Some(current));
         self.enforce_active_read_only();
     }
 
@@ -5539,6 +5602,107 @@ mod tests {
     }
 
     #[test]
+    fn session_restore_prompts_only_the_active_mixed_tab() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let mixed = root.join("mixed.md");
+        let normal = root.join("normal.md");
+        fs::write(&mixed, b"one\r\ntwo\n").unwrap();
+        fs::write(&normal, "normal").unwrap();
+        let store = SessionStore::new(root.join("state"));
+        store
+            .save(&SessionState {
+                workspace_root: root.clone(),
+                active_path: Some(normal.clone()),
+                documents: vec![
+                    DocumentViewState {
+                        path: mixed.clone(),
+                        line: 0,
+                        column: 0,
+                    },
+                    DocumentViewState {
+                        path: normal.clone(),
+                        line: 0,
+                        column: 0,
+                    },
+                ],
+                open_paths: vec![mixed.clone(), normal.clone()],
+            })
+            .unwrap();
+        let workspace = Workspace::from_target(&root).unwrap();
+
+        let mut app =
+            App::with_state_services(workspace, Config::default(), Some(store), None).unwrap();
+
+        assert_eq!(app.active_tab().unwrap().document.path, normal);
+        assert!(app.overlay.is_none());
+        app.open_document(&mixed).unwrap();
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::MixedLineEndings {
+                context: MixedLineEndingContext::Open,
+                ..
+            })
+        ));
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.active_tab().unwrap().document.path, normal);
+    }
+
+    #[test]
+    fn each_restored_mixed_tab_prompts_when_activated() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let first = root.join("first.md");
+        let second = root.join("second.md");
+        fs::write(&first, b"one\r\ntwo\n").unwrap();
+        fs::write(&second, b"three\nfour\r\n").unwrap();
+        let store = SessionStore::new(root.join("state"));
+        store
+            .save(&SessionState {
+                workspace_root: root.clone(),
+                active_path: Some(first.clone()),
+                documents: vec![
+                    DocumentViewState {
+                        path: first.clone(),
+                        line: 0,
+                        column: 0,
+                    },
+                    DocumentViewState {
+                        path: second.clone(),
+                        line: 0,
+                        column: 0,
+                    },
+                ],
+                open_paths: vec![first.clone(), second.clone()],
+            })
+            .unwrap();
+        let workspace = Workspace::from_target(&root).unwrap();
+        let mut app =
+            App::with_state_services(workspace, Config::default(), Some(store), None).unwrap();
+
+        assert_eq!(app.active_tab().unwrap().document.path, first);
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::MixedLineEndings { .. })
+        ));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.tabs[0].document.is_editable());
+
+        app.switch_tab(1);
+        assert_eq!(app.active_tab().unwrap().document.path, second);
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::MixedLineEndings { .. })
+        ));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(app.tabs.iter().all(|tab| tab.document.is_editable()));
+    }
+
+    #[test]
     fn recent_order_is_persisted_independently_from_open_tab_order() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
@@ -5794,6 +5958,46 @@ mod tests {
             app.active_tab().unwrap().document.line_ending,
             LineEnding::Crlf
         );
+    }
+
+    #[test]
+    fn conflict_reload_waits_for_mixed_choice_before_closing() {
+        for choice in [KeyCode::Enter, KeyCode::Esc] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("note.md");
+            fs::write(&path, "disk").unwrap();
+            let workspace = Workspace::from_target(&path).unwrap();
+            let mut app = App::new(workspace).unwrap();
+            app.active_tab_mut().unwrap().editor.insert_str("local ");
+            fs::write(&path, b"external\r\nversion\n").unwrap();
+
+            app.close_active();
+            app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+            assert!(matches!(
+                app.overlay,
+                Some(Overlay::Conflict {
+                    kind: ConflictKind::Changed,
+                    ..
+                })
+            ));
+            app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+
+            assert!(matches!(
+                app.overlay,
+                Some(Overlay::MixedLineEndings {
+                    context: MixedLineEndingContext::Reload,
+                    ..
+                })
+            ));
+            assert_eq!(app.tabs.len(), 1);
+            assert!(app.pending_transition.is_some());
+
+            app.handle_key(KeyEvent::new(choice, KeyModifiers::NONE));
+
+            assert!(app.tabs.is_empty());
+            assert!(app.pending_transition.is_none());
+            assert_eq!(fs::read(&path).unwrap(), b"external\r\nversion\n");
+        }
     }
 
     #[test]
