@@ -1,6 +1,8 @@
 # TermDraft Markdown gallery
 
-Open this file in the Rust port and press `v` to cycle through Inline, Split, and Source views:
+Open this file in the Rust port. With the default Inline configuration, `v` switches between the
+source editor and rendered preview. With `editor.view_mode = "split"` in a wide terminal, `v`
+shows or hides the preview beside the source editor:
 
 ```bash
 cargo run --release --locked -- docs/markdown-gallery.md
@@ -39,7 +41,7 @@ and `Enter`; the source cursor moves to that line.
 
 Plain text can contain *emphasis*, **strong emphasis**, ~~strikethrough~~, `inline code`, and an
 [ordinary link](https://example.com). The Rust frontend does not open links or load images; Inline
-and Source retain image syntax, while Split can present only terminal text:
+and the source editor retain image syntax, while the preview can present only terminal text:
 
 ![Mountain silhouette](mountain.png)
 
@@ -136,10 +138,10 @@ Text after the rule.
 
 ## Safe raw HTML fallback
 
-Raw HTML is never executed by the Rust frontend. Inline/Source retain the literal text, while the
-split renderer omits the tag rather than executing it:
+Raw HTML is never executed by the Rust frontend. Inline/source editing retains the literal text,
+while the split renderer omits the tag rather than executing it:
 
 <kbd>Ctrl+S</kbd>
 
 Math and underline extensions are not enabled. The split renderer supports its own subscript and
-superscript presentation, while Inline and Source keep their exact Markdown syntax.
+superscript presentation, while the source editor keeps their exact Markdown syntax.

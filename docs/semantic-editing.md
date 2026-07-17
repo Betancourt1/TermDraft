@@ -1,8 +1,8 @@
 # Future semantic block editing in Rust
 
-This document describes work beyond the `rust-port` branch's current inline presentation. The Rust
-frontend does not yet contain the Python semantic-block inspector, coordinate diagnostic, or
-experimental block reader.
+This document describes editable semantic blocks beyond the `rust-port` branch's current read-only
+diagnostics. Rust now contains the Python semantic-block inspector, coordinate diagnostic, and
+experimental block reader; none of them can update `Document` or replace the full-source editor.
 
 Today, one full-source `tui-textarea-2` editor remains authoritative. Inactive lines can hide or
 style common Markdown markers, but those styles do not change character positions or write rendered
@@ -57,17 +57,19 @@ Parse the current `Document.text` and display non-overlapping block ranges in a 
 overlay. Joining every mapped block and uncovered gap must reproduce the original source exactly.
 The first implementation should not edit or save anything.
 
-Status: not ported. The Python application remains the reference prototype for this diagnostic,
-but its Python string offsets and Textual coordinates cannot be reused directly.
+Status: implemented as the read-only `b` overlay. Rust maps common top-level blocks, preserves every
+uncovered source slice, handles LF/CRLF/CR and Unicode offsets, and lets Enter jump to the selected
+source line. The map is a diagnostic contract, not an editing model.
 
 ### 2. Independent rendered blocks
 
-Render headings and paragraphs from their exact slices while retaining Source view as an immediate
-fallback. Keep links inert and leave lists, fences, tables, references, and ambiguous containers as
-exact source until each family has verified ranges.
+Render headings and paragraphs from their exact slices while retaining the full-source editor as an
+immediate fallback. Keep links inert and leave lists, fences, tables, references, and ambiguous
+containers as exact source until each family has verified ranges.
 
-Status: not ported. The current split view renders one derived preview for the complete document;
-it does not mount independently addressable semantic blocks.
+Status: implemented as the read-only `B` overlay. Headings and paragraphs use rendered presentation;
+every other visible segment uses exact source fallback. It scrolls independently and cannot edit,
+save, or splice blocks. The normal Split view still renders one preview for the whole document.
 
 ### 3. One active source block
 
@@ -106,8 +108,11 @@ document, not individual blocks.
 - Rendered block height can change sharply after a resize.
 - Selection, IME composition, bidirectional text, and terminal width need real interaction tests.
 - Large documents may make full parsing or mounting many rendered widgets too expensive.
-- Mixed line endings remain read-only and cannot participate in range editing.
+- Mixed line endings retain exact bytes until explicit consent and the first edit. An editable
+  semantic mode would need to decide whether consent normalizes the whole document before any block
+  range is opened; the current read-only diagnostics can inspect mixed source safely.
 
-The 20/80 boundary for this port is to keep the proven full-source editor and presentation-only
-inline view. Semantic editing should begin only with the read-only block map; jumping directly to
-editable widgets would weaken the source-safety contract for a feature the branch does not yet need.
+The 20/80 boundary remains the proven full-source editor, presentation-only inline view, and the two
+read-only semantic overlays now in the branch. Editable widgets should begin only after the block
+map and coordinate diagnostics are treated as tested prerequisites; jumping directly to source
+splicing would weaken the source-safety contract for a feature the branch does not yet need.

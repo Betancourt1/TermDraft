@@ -1,73 +1,104 @@
 # Rust terminal frontend QA
 
-This checklist covers the Ratatui frontend on the `rust-port` branch. The previous Textual dialog,
-Trash, click, and recovery-manager review belongs to the Python application and is available through
-Git history; those surfaces do not exist in this port.
+This checklist covers the Ratatui frontend on the `rust-port` branch at checkpoint `8a95a4e`. The
+goal is to preserve the Python application's recognizable keyboard-first writing hierarchy with the
+fewest interface changes practical, not to claim pixel parity with Textual.
 
 ## Preserved visual contract
 
 | Surface | Rust acceptance |
 | --- | --- |
-| Shell | One-line title with `RUST PORT`, optional tab row, Files pane, centered workbench, and compact status line |
-| Hierarchy | Monochrome borders and text; brightness and weight identify focus without decorative color |
-| Modes | COMMAND uses a block cursor; WRITE uses a bar cursor; both remain visible in the status line |
-| Editor | Inline view keeps the cursor line as exact source; Split and Source remain available with `v` |
-| Files | Ordinary Unicode `▸`, `◆`, and `›` symbols; no Nerd Font dependency |
-| Overlays | Square bordered panels, concise keyboard footer, and a highlighted selected row |
-| Exit | Alternate screen, raw mode, mouse capture, and cursor shape are restored |
+| Shell | One-line title with `RUST PORT`, optional tabs, Files pane, centered workbench, and compact status line |
+| Hierarchy | Monochrome borders/text; brightness and weight identify focus without decorative color |
+| Modes | COMMAND uses a block cursor; WRITE uses a bar cursor; both remain visible in status |
+| Editor | Inline keeps the active line as exact source; configured Split shows source and preview side by side |
+| Preview toggle | `v` switches editor/preview in Inline or narrow layouts and shows/hides preview in wide Split |
+| Files | Ordinary Unicode `▸`, `◆`, and `›`; keyboard navigation plus click selection/double-click open |
+| Tabs | Open order, modified `●`, conflict `!`, active state, and keyboard switching remain legible |
+| Menu | Exact 32-action Python group/order contract in one searchable Rust list |
+| Overlays | Square bordered panels, concise keyboard footer, visible focus, and cancel-default destructive prompts |
+| Recovery | Inventory/detail/target layout, active/quarantine state, protected records, explicit irreversible actions |
+| Mouse | Main-pane focus, Files selection/open, wheel scroll, and draggable Files/Split dividers |
+| Exit | Alternate screen, raw mode, mouse capture, and cursor shape restore on the normal exit path |
 
-The layout intentionally preserves the Python frontend's recognizable writing hierarchy, but it
-does not claim pixel parity. The explorer width and split ratio are fixed, overlays are keyboard
-only, and mouse input has no application actions.
+The differences are intentional and visible: Python's palette uses a responsive multi-group grid
+with descriptions, Rust uses one grouped list; Python uses Nerd Font icons, Rust ordinary Unicode;
+Python notifications can appear as toasts, Rust keeps feedback in the status line. Rust overlays,
+tabs, preview links, and source click positioning remain keyboard-only.
 
-## Automated checks
+## Automated coverage
 
-`ui.rs::renders_the_preserved_application_shell` renders the real `App` through Ratatui's
-`TestBackend` at 100×24 and asserts the visible title, Rust-port marker, Files label, COMMAND mode,
-open filename, and rendered cursor.
+`ui.rs` renders the real application through Ratatui's `TestBackend` and checks the preserved shell,
+inline and split workbenches, diagnostic windows, mixed/conflict panels, Recovery Manager states,
+destructive confirmations, and narrow/small-terminal bounds.
 
-The app tests separately cover:
+The app/domain tests separately cover:
 
-- WRITE editing followed by an atomic disk save;
-- dirty quit behavior where Enter cannot confirm destruction;
-- mixed-line-ending read-only behavior;
-- no-clobber Create, Save As, and Duplicate paths;
-- clean reload versus dirty external-change conflict;
-- workspace refresh, restored tabs/cursors, and content-free sessions;
-- recovery restore, stale-baseline Save As enforcement, and journal cleanup.
+- exact 32-action palette group/order/shortcut parity and all 52 effective binding actions;
+- WRITE editing, Markdown continuation, undo/redo, and conflict-checked atomic saves;
+- mixed-line-ending open/reload/recovery consent, exact no-edit save, and first-edit normalization;
+- fuzzy file search, four workspace-search modes, filters, dirty overrides, cancellation, warnings,
+  Unicode coordinates, find/replace, and one-step Replace All undo;
+- recent order, restored tabs/cursors, content-free sessions, and open-tab reuse;
+- create/copy/cut/paste/rename/move/Trash and clean-tab/session retargeting;
+- main-pane mouse focus, Files selection/double-click, wheel scrolling, and both divider drags;
+- external change conflicts and filename-specific per-document close/quit traversal;
+- recovery publish/restore, inventory, locks, retarget, quarantine, export, restore, permanent delete,
+  configured retention, alias protection, stale-fingerprint rejection, and per-record errors;
+- Markdown help, semantic inspector/reader, and cursor-coordinate diagnostics.
 
-Run the complete frontend and domain suite with:
+Run the complete gates with:
 
 ```bash
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets
 cargo test --locked --release
 ```
 
+At checkpoint `8a95a4e`, 151 library tests and 3 binary tests pass.
+
 ## Manual PTY check
 
-Launch a disposable UTF-8 Markdown file at a minimum of 100×24:
+Launch a disposable UTF-8 fixture at a minimum of 100×24:
 
 ```bash
 mkdir -p /tmp/termdraft-rs-fixture
 printf '# QA\n\nCafé 日本語\n' > /tmp/termdraft-rs-fixture/note.md
-cargo run --release --locked -- /tmp/termdraft-rs-fixture/note.md
+XDG_STATE_HOME=/tmp/termdraft-rs-state \
+  cargo run --release --locked -- \
+  --config-dir /tmp/termdraft-rs-config \
+  /tmp/termdraft-rs-fixture/note.md
 ```
 
-Verify the following in order:
+Verify in order:
 
-1. Files and the editor remain readable at the minimum size.
-2. While Files is focused, `j`/`k` select and `Enter` opens; `Tab` toggles Files/editor focus.
-3. `i`, Unicode typing, `Esc`, and `w` preserve the exact expected bytes.
-4. `v` cycles all three views without altering source.
-5. `:`, `?`, `f`, `/`, `s`, and `S` open centered keyboard overlays and Escape closes them.
-6. A dirty close or quit cannot discard on Enter; only the labeled key performs the action.
-7. A clean `q` restores the normal terminal screen and cursor.
+1. Files and the editor remain readable at 100×24; narrower layouts keep only one workbench pane.
+2. While Files is focused, `j`/`k` select, Enter opens, and `a/c/x/p/r/m/d` reach the expected
+   no-clobber file/folder flows.
+3. `i`, Unicode typing/paste, `Esc`, and `w` preserve the expected bytes.
+4. `v` follows Inline/Split behavior without altering source; Alt+Up/Down navigates preview headings.
+5. `:` contains the same six groups and 32 ordered actions as Python; `?` shows the compact effective
+   summary and `--commands` remains the exhaustive reference.
+6. `f`, `o`, `/`, `s`, and `S` exercise file, recent, workspace, document, and heading navigation.
+7. `K`, `b`, `B`, and `I` open the read-only reference/diagnostic windows and return safely.
+8. `M` shows active/quarantine/corrupt inventory; Tab changes record/target focus; irreversible
+   deletion or retention requires `d`, while Enter/Esc cancels.
+9. A mixed-ending fixture requires consent, stays exact after an untouched Save, and normalizes only
+   after the first edit.
+10. A dirty external edit never overwrites either version and shows only its valid conflict actions.
+11. Dirty close/quit prompts each document by name; Enter never discards.
+12. Files click/double-click, wheel scroll, and both dividers work; overlay clicks remain inert.
+13. A clean `q` restores the normal terminal screen, cursor, raw mode, and mouse reporting.
 
-The code checkpoint documented in [RUST_PORT.md](RUST_PORT.md) passed this PTY path against both a
-temporary Unicode fixture and a real note under `~/Documents/Other`.
+## Result and accepted gaps
 
-## Result and known gaps
+The preserved shell, keyboard modes, full command menu, file workflows, search/replace, mixed and
+conflict decisions, Recovery Manager, diagnostics, main mouse regions, source fidelity, dirty
+transitions, and normal terminal cleanup pass at this checkpoint.
 
-The preserved shell, keyboard modes, source fidelity, dirty decisions, and terminal cleanup pass at
-the documented checkpoint. Resizable panes, mouse behavior, file-mutation dialogs, TCSS themes, and
-the full recovery manager remain Python-only and should not be represented as Rust QA coverage.
+The remaining UI gaps are the richer Python preview/link/footnote behavior, outline filtering and
+preview reveal, collapsible/lazy Files, proactive inactive-tab checks, tab/editor/overlay mouse
+interaction, missing/orphan recovery opening, session scroll restoration, TCSS themes, and
+cooperative SIGTERM/SIGHUP shutdown. See [RUST_PORT.md](RUST_PORT.md) for the exhaustive inventory
+and safety differences.

@@ -11,13 +11,21 @@ branch checkpoint, not a published TermDraft release.
 ### Added
 
 - Added the standalone `termdraft-rs` Ratatui/Crossterm workbench with preserved COMMAND/WRITE
-  modes, tabs, Files, Inline/Split/Source views, search, outline, and keyboard overlays.
-- Ported UTF-8/BOM and line-ending preservation, conflict-checked atomic saves, external-change
-  handling, no-clobber Create/Save As/Duplicate paths, compatible sessions, and crash journals.
-- Added strict compatible editor configuration, Markdown continuation, 39 Rust tests, and the
-  Python/Rust comparison in [RUST_PORT.md](RUST_PORT.md).
-- Updated all branch-facing documentation to use the Rust binary, implemented shortcuts, Cargo
-  gates, Ratatui architecture, and the actual release boundary.
+  modes, tabs, Files, Inline/Split behavior, outline, and keyboard overlays.
+- Ported fuzzy file finding, recent documents, four-mode workspace search, active-document find and
+  replace, all workspace create/copy/cut/paste/rename/move/Trash actions, and no-clobber Save As and
+  Duplicate flows.
+- Ported UTF-8/BOM and uniform/mixed line-ending preservation, explicit normalization consent,
+  conflict decisions, per-document dirty exit traversal, compatible sessions, and crash journals.
+- Added the Recovery Manager inventory, retarget/archive/restore/export/delete/retention flows,
+  exact destructive confirmations, configured retention, and cross-process recovery mutation locks.
+- Added all 52 compatible keybinding overrides, live configuration reload, the exact 32-action
+  Python palette contract, Markdown help, semantic diagnostics, and cursor-coordinate diagnostics.
+- Added main-workbench mouse focus, Files selection/double-click, wheel scrolling, and resizable
+  Files and Split dividers.
+- Updated branch-facing documentation with the exhaustive Python/Rust feature, interface, menu,
+  popup, command, safety, verification, and historical-performance inventories in
+  [RUST_PORT.md](RUST_PORT.md).
 
 ## [Unreleased] — Python reference
 

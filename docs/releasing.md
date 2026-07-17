@@ -34,9 +34,20 @@ Then launch a disposable Markdown fixture in a real PTY and verify:
 1. the title, Files pane, editor, and status line render;
 2. `i` enters WRITE and `Esc` returns to COMMAND;
 3. Unicode source can be typed and saved exactly;
-4. `v` cycles Inline, Split, and Source without changing file bytes;
-5. a dirty `q` requires an explicit Save, Discard, or Cancel choice;
-6. the alternate screen, cursor, raw mode, and mouse reporting are restored after exit.
+4. `v` switches editor/preview in Inline, or shows/hides preview in wide Split, without changing
+   file bytes;
+5. `:`, `?`, `f`, `o`, `/`, `s`, `S`, `K`, `b`, `B`, `I`, and `M` open the expected keyboard
+   surfaces, and the palette contains 32 actions in six groups;
+6. Files supports create/copy/cut/paste/rename/move/Trash, including directory destinations and
+   cancel-default Trash confirmation;
+7. mixed line endings require consent, remain exact without an edit, and disclose their
+   normalization target;
+8. an external conflict offers only the safe Save local as / Reload / Continue / Cancel actions for
+   its state;
+9. dirty close/quit traverses documents individually and Enter cannot discard;
+10. Files selection/double-click, wheel scrolling, and both divider drags work while overlay mouse
+    input remains intentionally unsupported;
+11. the alternate screen, cursor, raw mode, and mouse reporting are restored after exit.
 
 For isolated state during manual tests:
 
@@ -49,8 +60,8 @@ XDG_STATE_HOME=/tmp/termdraft-rs-state \
   /tmp/termdraft-rs-fixture
 ```
 
-The unchanged Python suite remains a compatibility oracle. If its development environment is
-already prepared, run `pytest -q`; do not install or alter Python tooling merely to produce a Rust
+The Python suite remains a compatibility oracle. If its development environment is already
+prepared, run `.venv/bin/pytest -q`; do not install or alter Python tooling merely to produce a Rust
 binary.
 
 ## Current distribution boundary
@@ -69,7 +80,8 @@ user's Cargo bin directory and can be removed with `cargo uninstall termdraft-rs
 
 ## Before promoting Rust to a release
 
-Promotion should be an explicit product decision rather than an incidental tag. At minimum:
+Rust is the likely primary direction, but promotion must still be an explicit product decision
+rather than an incidental tag. At minimum:
 
 1. Decide whether Rust replaces `termdraft` or remains `termdraft-rs`.
 2. Resolve or formally accept the parity gaps in [RUST_PORT.md](../RUST_PORT.md).
@@ -81,8 +93,9 @@ Promotion should be an explicit product decision rather than an incidental tag. 
 7. Update Homebrew only after a public immutable artifact has passed installation and rollback
    tests.
 
-The branch intentionally does not add those release mechanics yet; the goal is to compare the port,
-not to replace the public distribution prematurely.
+The branch intentionally does not add those release mechanics yet. Feature parity is now broad
+enough to make Rust the likely successor, but the public distribution should not change before the
+remaining accepted gaps and rollback path are documented and tested.
 
 ## Python release reference
 

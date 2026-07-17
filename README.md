@@ -22,6 +22,11 @@ keyboard-first workbench without requiring Python or Textual at runtime.
 The published `termdraft` command and Homebrew formula still install the Python 1.2 application.
 See [RUST_PORT.md](RUST_PORT.md) for the measured comparison and the exact parity boundary.
 
+Rust is now the likely primary direction because the preserved workflow feels more immediate and
+the remaining gaps are concentrated in rich preview interaction, unavailable-source recovery,
+theme support, and a few deeper platform safeguards. Python remains the public release and product
+oracle until that promotion is made explicitly.
+
 ## Quick start
 
 Rust 1.88 or newer is required.
@@ -71,15 +76,19 @@ press `Esc` to return to COMMAND mode.
 | `w` | Save |
 | `W` | Save As to a new workspace-relative path |
 | `D` | Duplicate the active document |
-| `a` while Files is focused | Create a Markdown or text file |
+| `a` while Files is focused | Create a file or folder |
+| `c` / `x` / `p` while Files is focused | Copy / cut / paste an entry |
+| `r` / `m` / `d` while Files is focused | Rename / move / Trash an entry |
 | `f` | Find a file |
-| `/` | Search text across the workspace |
-| `s` | Find the next match in the active document |
+| `/` | Search text across the workspace in literal, fuzzy, word, or regex mode |
+| `s` | Find and replace in the active document |
 | `S` | Open the document outline |
-| `v` | Cycle Inline, Split, and Source views |
+| `v` | Switch editor/preview, or show/hide preview in a wide Split layout |
 | `e` | Show or hide the file explorer |
 | `[` / `]` | Switch tabs |
 | `:` / `?` | Open the command palette / shortcut help |
+| `R` / `M` | Reload configuration / manage recovery drafts |
+| `K` / `b` / `B` / `I` | Markdown help / inspect blocks / read blocks / cursor coordinates |
 | `q` | Quit safely |
 
 In COMMAND mode, `h`, `j`, `k`, and `l` move through the editor. `Tab` moves focus between the
@@ -87,26 +96,35 @@ editor and Files; the same movement keys navigate Files, and `Enter` opens the s
 Global shortcuts include `Ctrl+S`, `Ctrl+Q`, `Ctrl+P`, `Ctrl+F`, `Ctrl+B`, `Ctrl+E`, and
 `Ctrl+PageUp` / `Ctrl+PageDown`.
 
-Run `termdraft-rs --commands` for the effective editor settings and palette actions. Press `?`
-inside the application for the fuller runtime shortcut screen.
+Run `termdraft-rs --commands` for the complete effective COMMAND, Files, global, editor, and preview
+reference. Press `?` inside the application for a compact 25-row runtime summary.
 
 ## What is included
 
 - A standalone Ratatui/Crossterm frontend with the preserved title, tabs, Files pane, centered
   editor, compact status line, command palette, and explicit terminal cursor shapes
-- Inline Markdown presentation by default, plus split preview and exact source views; presentation
-  changes appearance only and never reconstructs the document
+- Inline Markdown presentation by default, plus a configurable resizable split source/preview
+  layout; presentation changes appearance only and never reconstructs the document
 - Multiple documents with independent undo histories, restored tabs, active document, and cursor
   positions
-- Fuzzy file finding, literal workspace search, active-document find, and heading outline
-- File creation, Save As, and duplication through no-clobber workspace-relative paths
-- UTF-8 and UTF-8 BOM support with LF, CRLF, or CR preservation; mixed-ending files open read-only
-- Conflict-checked atomic saves, external-change polling, guarded dirty exits, and crash journals
+- Fuzzy file finding, four-mode workspace search, active-document find and replace, recent documents,
+  and heading outline
+- File/folder create, copy, cut, paste, rename, move, Trash, Save As, and duplication through
+  no-clobber workspace-relative paths
+- UTF-8 and UTF-8 BOM support with LF, CRLF, or CR preservation; mixed-ending files require consent,
+  remain exact until the first edit, and then normalize to the disclosed target
+- Conflict-checked atomic saves, safe external-conflict choices, per-document guarded exits, crash
+  journals, and a recovery inventory/retarget/archive/restore/export/delete/retention manager
+- All 52 compatible binding IDs, effective remapping, live `R` reload, and an exact 32-action command
+  palette in the same groups and order as Python
+- Main-pane mouse focus, Files selection/double-click, wheel scrolling, and resizable dividers
+- Markdown syntax, semantic-block, experimental reader, and coordinate-diagnostic overlays
 - Markdown continuation for bullets, tasks, numbered lists, and quotes
 
-The intentionally unported features are listed in [RUST_PORT.md](RUST_PORT.md). The largest gaps are
-file-tree mutations beyond creation/duplication, replace, mouse actions, keybinding remapping, TCSS
-themes, and the full Python recovery manager.
+The exact inventories are in [RUST_PORT.md](RUST_PORT.md). The largest remaining gaps are the richer
+Python preview and link/footnote interactions, outline filtering/preview reveal, collapsible/lazy
+Files and inactive-tab monitoring, full mouse/overlay input, direct opening of missing/orphan
+recovery drafts, session scroll restoration, TCSS themes, and public Rust distribution.
 
 ## Configuration
 
@@ -129,10 +147,11 @@ startup_mode = "command" # or "write"
 view_mode = "inline"     # or "split"
 ```
 
-Configuration is strict and is read at startup. Existing `[keybindings]` entries are displayed by
-`--commands` but are not remapped in the Rust frontend. `theme.tcss` is created for compatibility
-but is not evaluated, the built-in Rust theme is always used, and live reload is not implemented.
-Use `--config-dir PATH` for an isolated configuration directory.
+Configuration is strict. The generated template documents all 52 `[keybindings]` IDs; Rust applies
+valid overrides to global, editor, preview, and COMMAND actions, rejects collisions and reserved
+keys, and reloads `config.toml` with `R`. Invalid reloads leave the active configuration untouched.
+`theme.tcss` is still created only for compatibility: Rust never evaluates Textual CSS, always uses
+its built-in theme, and requires Python for theme watching. Use `--config-dir PATH` for isolation.
 
 Sessions remain content-free. Crash-recovery journals contain dirty source and use the existing
 TermDraft state directories so the Python and Rust implementations can understand their v2 data.
@@ -160,8 +179,8 @@ cargo test --locked --all-targets
 cargo test --locked --release
 ```
 
-The unchanged Python implementation remains in `src/termdraft` as a reference and regression
-oracle. Its existing test suite can still be run from a prepared development environment with
-`pytest -q`; the current GitHub workflows continue to package and release only that Python app.
+The Python implementation remains in `src/termdraft` as a reference and regression oracle. Its test
+suite can still be run from the prepared development environment with `.venv/bin/pytest -q`; the
+current GitHub workflows continue to package and release only that Python app.
 
 TermDraft is released under the [MIT License](LICENSE).
