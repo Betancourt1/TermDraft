@@ -163,7 +163,10 @@ enum DiskState {
 
 #[derive(Clone, Debug)]
 pub enum Overlay {
-    Help,
+    Help {
+        scroll: u16,
+        max_scroll: u16,
+    },
     MarkdownHelp {
         scroll: u16,
     },
@@ -2288,7 +2291,12 @@ impl App {
             CommandAction::InspectSemanticBlocks => self.open_semantic_inspector(),
             CommandAction::ReadSemanticBlocks => self.open_semantic_reader(),
             CommandAction::InspectCursorCoordinates => self.open_coordinate_inspector(),
-            CommandAction::Help => self.overlay = Some(Overlay::Help),
+            CommandAction::Help => {
+                self.overlay = Some(Overlay::Help {
+                    scroll: 0,
+                    max_scroll: 0,
+                });
+            }
         }
     }
 
@@ -3394,9 +3402,14 @@ impl App {
             return;
         };
         let keep = match &mut overlay {
-            Overlay::Help | Overlay::CoordinateInspector { .. } | Overlay::Message(_) => {
-                key.code != KeyCode::Enter
-            }
+            Overlay::Help { scroll, max_scroll } => match key.code {
+                KeyCode::Enter | KeyCode::F(1) => false,
+                code => {
+                    update_scroll(scroll, code, usize::from(*max_scroll) + 1);
+                    true
+                }
+            },
+            Overlay::CoordinateInspector { .. } | Overlay::Message(_) => key.code != KeyCode::Enter,
             Overlay::MarkdownHelp { scroll } => match key.code {
                 KeyCode::Enter | KeyCode::F(1) => false,
                 code => {
@@ -5016,6 +5029,28 @@ command_manage_recovery = "Z"
             app.status_message.as_deref(),
             Some("Open a Markdown document first")
         );
+    }
+
+    #[test]
+    fn shortcut_help_scrolls_within_the_rendered_bounds() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let mut app = App::with_state_services(workspace, Config::default(), None, None).unwrap();
+
+        app.execute_command(CommandAction::Help);
+        let Some(Overlay::Help { max_scroll, .. }) = &mut app.overlay else {
+            panic!("shortcut help should be open");
+        };
+        *max_scroll = 6;
+
+        app.handle_overlay_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert!(matches!(app.overlay, Some(Overlay::Help { scroll: 6, .. })));
+        app.handle_overlay_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        assert!(matches!(app.overlay, Some(Overlay::Help { scroll: 6, .. })));
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        assert!(matches!(app.overlay, Some(Overlay::Help { scroll: 0, .. })));
+        app.handle_overlay_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert!(app.overlay.is_none());
     }
 
     #[test]

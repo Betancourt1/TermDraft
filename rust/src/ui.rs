@@ -28,9 +28,11 @@ const BORDER: Color = Color::Rgb(58, 58, 58);
 const TEXT: Color = Color::Rgb(218, 218, 218);
 const MUTED: Color = Color::Rgb(118, 118, 118);
 const BRIGHT: Color = Color::Rgb(242, 242, 242);
+const SHORTCUT_HELP_LINE_COUNT: u16 = 25;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     app.update_viewport_width(frame.area().width);
+    update_help_scroll_bounds(frame.area(), &mut app.overlay);
     frame.render_widget(
         Block::new().style(Style::new().bg(BACKGROUND)),
         frame.area(),
@@ -348,10 +350,20 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+fn update_help_scroll_bounds(frame_area: Rect, overlay: &mut Option<Overlay>) {
+    let Some(Overlay::Help { scroll, max_scroll }) = overlay else {
+        return;
+    };
+    let popup_height = popup(frame_area, 78, 30).height;
+    let visible_lines = popup_height.saturating_sub(3); // Borders plus the footer.
+    *max_scroll = SHORTCUT_HELP_LINE_COUNT.saturating_sub(visible_lines);
+    *scroll = (*scroll).min(*max_scroll);
+}
+
 #[allow(clippy::too_many_lines)]
 fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
     let area = match overlay {
-        Overlay::Help => popup(frame.area(), 78, 30),
+        Overlay::Help { .. } => popup(frame.area(), 78, 30),
         Overlay::MarkdownHelp { .. } => popup(frame.area(), 76, 30),
         Overlay::SemanticInspector { .. } => popup(frame.area(), 82, 34),
         Overlay::SemanticReader { .. } => popup(frame.area(), 82, 36),
@@ -379,7 +391,7 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
         .style(Style::new().bg(BACKGROUND))
         .padding(Padding::horizontal(2));
     match overlay {
-        Overlay::Help => draw_help(frame, app, area, block),
+        Overlay::Help { scroll, .. } => draw_help(frame, app, area, block, *scroll),
         Overlay::MarkdownHelp { scroll } => {
             draw_markdown_help(frame, area, block, *scroll);
         }
@@ -1700,7 +1712,7 @@ fn control_span(label: &str, focused: bool, enabled: bool) -> Span<'static> {
 }
 
 #[allow(clippy::too_many_lines)]
-fn draw_help(frame: &mut Frame, app: &App, area: Rect, block: Block<'_>) {
+fn draw_help(frame: &mut Frame, app: &App, area: Rect, block: Block<'_>, scroll: u16) {
     let lines = vec![
         help_line(
             "MODE",
@@ -1808,11 +1820,22 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, block: Block<'_>) {
             "Open grouped command menu",
         ),
     ];
+    debug_assert_eq!(lines.len(), usize::from(SHORTCUT_HELP_LINE_COUNT));
+    let block = block.title(" Shortcuts ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let [content, footer] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(inner);
     frame.render_widget(
         Paragraph::new(lines)
-            .block(block.title(" Shortcuts "))
+            .scroll((scroll, 0))
             .wrap(Wrap { trim: false }),
-        area,
+        content,
+    );
+    frame.render_widget(
+        Paragraph::new("↑/↓  PageUp/PageDown  Home/End  Enter/Esc/F1  Close")
+            .style(Style::new().fg(MUTED)),
+        footer,
     );
 }
 
@@ -2021,6 +2044,35 @@ mod tests {
                 .rendered_cursor_position()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn shortcut_help_keeps_every_command_reachable_at_80_by_24() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.overlay = Some(Overlay::Help {
+            scroll: 0,
+            max_scroll: 0,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let first_page = rendered(&terminal);
+        assert!(first_page.contains("Enter WRITE mode"));
+        assert!(!first_page.contains("Open grouped command menu"));
+        assert!(first_page.contains("PageUp/PageDown"));
+        let Some(Overlay::Help { scroll, max_scroll }) = &mut app.overlay else {
+            panic!("shortcut help should remain open");
+        };
+        assert_eq!(*max_scroll, 6);
+        *scroll = *max_scroll;
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let last_page = rendered(&terminal);
+        assert!(!last_page.contains("Enter WRITE mode"));
+        assert!(last_page.contains("Open grouped command menu"));
+        assert!(last_page.contains("Enter/Esc/F1"));
     }
 
     #[test]
