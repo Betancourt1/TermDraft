@@ -426,4 +426,11 @@ mod tests {
         assert!(screen.contains("├──────┼───────┼──────┤"));
         assert!(screen.contains("│ Ada  │     7 │  Hi  │"));
     }
+
+    #[test]
+    fn preview_indents_nested_lists() {
+        let rendered = render_markdown("- Parent\n  - Child\n    1. Grandchild");
+
+        assert_eq!(plain(&rendered), "• Parent\n  • Child\n    1. Grandchild");
+    }
 }

@@ -189,20 +189,32 @@ fn render_inline_line(source: &str, table_line: Option<&TableLineContext>) -> St
             compact_table_separator(&context.widths)
         }
         Some(context) => compact_table_row(source, context),
-        None => render_markdown(source)
-            .lines
-            .into_iter()
-            .filter_map(|line| {
-                let text = line
-                    .spans
-                    .into_iter()
-                    .map(|span| span.content.into_owned())
-                    .collect::<String>();
-                (!text.is_empty()).then_some(text)
-            })
-            .collect::<Vec<_>>()
-            .join(" "),
+        None => {
+            let (indentation, markdown) = inline_list_source(source);
+            let rendered = render_markdown(markdown)
+                .lines
+                .into_iter()
+                .filter_map(|line| {
+                    let text = line
+                        .spans
+                        .into_iter()
+                        .map(|span| span.content.into_owned())
+                        .collect::<String>();
+                    (!text.is_empty()).then_some(text)
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("{indentation}{rendered}")
+        }
     }
+}
+
+fn inline_list_source(source: &str) -> (&str, &str) {
+    let Some(captures) = list_item().captures(source) else {
+        return ("", source);
+    };
+    let indentation = captures.get(1).map_or("", |capture| capture.as_str());
+    (indentation, &source[indentation.len()..])
 }
 
 fn highlight_heading(editor: &mut TextArea<'_>, row: usize, line: &str) {
@@ -352,6 +364,13 @@ fn task() -> &'static Regex {
 fn bullet() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| Regex::new(r"^\s*([-+*])\s+").expect("valid bullet regex"))
+}
+
+fn list_item() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r"^([ \t]*)(?:[-+*]|\d+[.)])(?:[ \t]+|$)").expect("valid list-item regex")
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -632,6 +651,23 @@ mod tests {
         assert_eq!(
             source_from_textarea(&editor),
             "current\n| Name | Count | Note |\n| :--- | ---: | :---: |\n| Ada | 7 | Hi |"
+        );
+    }
+
+    #[test]
+    fn inline_preview_preserves_nested_list_indentation() {
+        let editor = textarea_from_source(
+            "current\n- Parent\n  - Nested bullet\n   1. Nested number\n    - Deep item",
+        );
+        let rendered = inline_preview_editor(&editor);
+
+        assert_eq!(rendered.lines()[1], "• Parent");
+        assert_eq!(rendered.lines()[2], "  • Nested bullet");
+        assert_eq!(rendered.lines()[3], "   1. Nested number");
+        assert_eq!(rendered.lines()[4], "    • Deep item");
+        assert_eq!(
+            source_from_textarea(&editor),
+            "current\n- Parent\n  - Nested bullet\n   1. Nested number\n    - Deep item"
         );
     }
 }
