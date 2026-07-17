@@ -793,6 +793,15 @@ impl EditorTab {
         self.redo_groups.clear();
     }
 
+    fn cut_selection(&mut self) -> bool {
+        if !self.editor.cut() {
+            return false;
+        }
+        self.record_edit(1);
+        self.sync_document();
+        true
+    }
+
     fn undo(&mut self) {
         let requested = self.undo_groups.pop().unwrap_or(1);
         let mut applied = 0;
@@ -3250,6 +3259,10 @@ impl App {
                     self.copy_editor_selection();
                     return;
                 }
+                KeyCode::Char('x' | 'X') => {
+                    self.cut_editor_selection();
+                    return;
+                }
                 KeyCode::Char('v' | 'V') => {
                     self.paste_system_clipboard();
                     return;
@@ -3323,6 +3336,28 @@ impl App {
         match write_system_clipboard(&text) {
             Ok(()) => self.status_message = Some("Copied selection".to_owned()),
             Err(error) => self.status_message = Some(format!("Copy failed · {error}")),
+        }
+    }
+
+    fn cut_editor_selection(&mut self) {
+        if self
+            .active_tab()
+            .is_none_or(|tab| !tab.document.is_editable())
+        {
+            self.enforce_active_read_only();
+            return;
+        }
+        let Some(text) = self.active_tab().and_then(selected_text) else {
+            self.status_message = Some("Select text to cut".to_owned());
+            return;
+        };
+        match write_system_clipboard(&text) {
+            Ok(()) => {
+                if self.active_tab_mut().is_some_and(EditorTab::cut_selection) {
+                    self.status_message = Some("Cut selection".to_owned());
+                }
+            }
+            Err(error) => self.status_message = Some(format!("Cut failed · {error}")),
         }
     }
 
@@ -6138,6 +6173,26 @@ command_manage_recovery = "Z"
 
         app.paste_into_document("café");
         assert_eq!(app.active_tab().unwrap().document.text, "café bravo");
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::SUPER));
+
+        assert_eq!(app.active_tab().unwrap().document.text, "alpha bravo");
+    }
+
+    #[test]
+    fn hybrid_write_mode_cut_is_one_undo_group() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "alpha bravo").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut config = Config::default();
+        config.editor.startup_mode = StartupMode::Write;
+        let mut app = App::with_config(workspace, config).unwrap();
+        let tab = app.active_tab_mut().unwrap();
+        tab.editor.start_selection();
+        tab.editor.move_cursor(CursorMove::Jump(0, 5));
+
+        assert!(tab.cut_selection());
+        assert_eq!(tab.document.text, " bravo");
         app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::SUPER));
 
         assert_eq!(app.active_tab().unwrap().document.text, "alpha bravo");

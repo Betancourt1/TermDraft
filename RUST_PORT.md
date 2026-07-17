@@ -301,9 +301,9 @@ Bracketed terminal paste still inserts source in Rust, but it is an `Event::Past
 editor command. Rust's private yank buffer has no reachable default paste key because TermDraft's
 configured redo owns Ctrl+Y before `tui-textarea` can treat it as yank.
 
-On macOS, `Super+C` copies the editor selection to the system clipboard without clearing it,
-`Super+V` uses Ghostty's bracketed-paste event (with a direct clipboard fallback), and `Super+Z`
-reaches TermDraft's grouped undo through the Kitty keyboard protocol.
+On macOS, `Super+C` copies the editor selection without clearing it, `Super+X` cuts it to the
+system clipboard, `Super+V` uses Ghostty's bracketed-paste event (with a direct clipboard fallback),
+and `Super+Z` reaches TermDraft's grouped undo through the Kitty keyboard protocol.
 
 ### Python-only fixed editor controls
 
@@ -314,7 +314,6 @@ reaches TermDraft's grouped undo through the Kitty keyboard protocol.
 | Delete complete line(s) intersecting selection | `Ctrl+Shift+K` |
 | Select current line | `F6` |
 | Select all | `F7` |
-| Application-clipboard cut alias | `Super+X` |
 
 ### Rust-only fixed editor controls
 
