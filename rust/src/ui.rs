@@ -242,7 +242,7 @@ fn draw_workbench(frame: &mut Frame, app: &mut App, regions: UiRegions) {
 }
 
 fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
-    let area = centered(area, 108);
+    let area = editor_area(area);
     let mode = app.mode;
     let show_cursor = app.overlay.is_none() && app.focus == Focus::Editor;
     let Some(tab) = app.active_tab_mut() else {
@@ -2243,6 +2243,11 @@ fn centered(area: Rect, max_width: u16) -> Rect {
         .flex(Flex::Center)
         .areas(area);
     center
+}
+
+#[must_use]
+pub(crate) fn editor_area(area: Rect) -> Rect {
+    centered(area, 108)
 }
 
 fn popup(area: Rect, width: u16, height: u16) -> Rect {

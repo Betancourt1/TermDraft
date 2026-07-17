@@ -28,8 +28,8 @@ use crate::continuation::{EnterAction, action_for};
 use crate::coordinate_diagnostic::{CoordinateDiagnostic, diagnose_coordinate};
 use crate::document::{Document, Encoding, LineEnding, MixedSource};
 use crate::editor::{
-    apply_editor_config, inline_preview_editor, source_from_textarea, style_cursor,
-    sync_inline_preview_cursor, textarea_from_source,
+    apply_editor_config, cursor_at_screen_position, inline_preview_editor, source_from_textarea,
+    style_cursor, sync_inline_preview_cursor, textarea_from_source,
 };
 use crate::path_filter::parse_path_filter;
 use crate::persistence::{LoadedFile, SaveError, load_file, normalize_line_endings, save_atomic};
@@ -737,6 +737,29 @@ impl EditorTab {
             u16::try_from(cursor.0).unwrap_or(u16::MAX),
             u16::try_from(cursor.1).unwrap_or(u16::MAX),
         ));
+    }
+
+    fn place_cursor(&mut self, area: Rect, column: u16, row: u16, inline: bool) {
+        let cursor = if inline {
+            self.refresh_inline_editor();
+            cursor_at_screen_position(&self.inline_editor, area, column, row)
+        } else {
+            cursor_at_screen_position(&self.editor, area, column, row)
+        };
+        let Some((cursor_row, cursor_column)) = cursor else {
+            return;
+        };
+        let source_column = self.editor.lines()[cursor_row]
+            .chars()
+            .count()
+            .min(cursor_column);
+        self.editor.move_cursor(CursorMove::Jump(
+            u16::try_from(cursor_row).unwrap_or(u16::MAX),
+            u16::try_from(source_column).unwrap_or(u16::MAX),
+        ));
+        if inline {
+            self.refresh_inline_editor();
+        }
     }
 
     fn record_edit(&mut self, history_items: usize) {
@@ -3373,6 +3396,12 @@ impl App {
                     self.focus = Focus::Preview;
                 } else if UiRegions::contains(self.ui_regions.editor, column, row) {
                     self.focus = Focus::Editor;
+                    let inline = self.view_mode == ViewMode::Inline;
+                    if let Some(area) = self.ui_regions.editor.map(ui::editor_area)
+                        && let Some(tab) = self.active_tab_mut()
+                    {
+                        tab.place_cursor(area, column, row, inline);
+                    }
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => match self.resize_target {
@@ -5818,6 +5847,51 @@ command_manage_recovery = "Z"
         app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 80, 10));
         app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 80, 10));
         assert!(app.split_percent > 50);
+    }
+
+    #[test]
+    fn mouse_click_places_the_source_cursor() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "alpha\nbravo\ncharlie").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.view_mode = ViewMode::Split;
+        let mut terminal = Terminal::new(TestBackend::new(100, 16)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let editor = ui::editor_area(app.ui_regions.editor.unwrap());
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: editor.x.saturating_add(6),
+            row: editor.y.saturating_add(1),
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(app.focus, Focus::Editor);
+        assert_eq!(app.active_tab().unwrap().editor.cursor(), (1, 3));
+    }
+
+    #[test]
+    fn mouse_click_places_the_hybrid_cursor_on_the_visible_line() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "# First\n\n**Second**").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.view_mode = ViewMode::Inline;
+        let mut terminal = Terminal::new(TestBackend::new(100, 16)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let editor = ui::editor_area(app.ui_regions.editor.unwrap());
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: editor.x.saturating_add(5),
+            row: editor.y.saturating_add(2),
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(app.active_tab().unwrap().editor.cursor().0, 2);
     }
 
     #[test]

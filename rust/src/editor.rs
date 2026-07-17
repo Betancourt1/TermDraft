@@ -2,9 +2,12 @@
 
 use std::sync::OnceLock;
 
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::widgets::Widget;
 use regex::Regex;
-use tui_textarea::{CursorRenderMode, TextArea, WrapMode};
+use tui_textarea::{CursorMove, CursorRenderMode, TextArea, WrapMode};
 
 use crate::app::Mode;
 use crate::config::EditorConfig;
@@ -56,6 +59,74 @@ pub fn style_cursor(editor: &mut TextArea<'_>, mode: Mode) {
 #[must_use]
 pub fn source_from_textarea(editor: &TextArea<'_>) -> String {
     editor.lines().join("\n")
+}
+
+/// Resolve a terminal cell to the nearest cursor position in the rendered editor.
+#[must_use]
+pub fn cursor_at_screen_position(
+    editor: &TextArea<'_>,
+    area: Rect,
+    column: u16,
+    row: u16,
+) -> Option<(usize, usize)> {
+    if area.is_empty() || !area.contains(Position::new(column, row)) {
+        return None;
+    }
+
+    let mut probe = editor.clone();
+    let mut position = render_cursor(&probe, area)?;
+    let vertical_move = if row < position.y {
+        CursorMove::Up
+    } else {
+        CursorMove::Down
+    };
+    while position.y != row {
+        let before = probe.cursor();
+        probe.move_cursor(vertical_move);
+        if probe.cursor() == before {
+            break;
+        }
+        let next = render_cursor(&probe, area)?;
+        if position.y.abs_diff(row) <= next.y.abs_diff(row) {
+            probe.move_cursor(CursorMove::Jump(
+                u16::try_from(before.0).unwrap_or(u16::MAX),
+                u16::try_from(before.1).unwrap_or(u16::MAX),
+            ));
+            break;
+        }
+        position = next;
+    }
+
+    let target_row = position.y;
+    while position.x != column {
+        let before = probe.cursor();
+        let horizontal_move = if column < position.x {
+            CursorMove::Back
+        } else {
+            CursorMove::Forward
+        };
+        probe.move_cursor(horizontal_move);
+        if probe.cursor() == before {
+            break;
+        }
+        let next = render_cursor(&probe, area)?;
+        if next.y != target_row || position.x.abs_diff(column) < next.x.abs_diff(column) {
+            probe.move_cursor(CursorMove::Jump(
+                u16::try_from(before.0).unwrap_or(u16::MAX),
+                u16::try_from(before.1).unwrap_or(u16::MAX),
+            ));
+            break;
+        }
+        position = next;
+    }
+
+    Some(probe.cursor())
+}
+
+fn render_cursor(editor: &TextArea<'_>, area: Rect) -> Option<Position> {
+    let mut buffer = Buffer::empty(area);
+    editor.render(area, &mut buffer);
+    editor.rendered_cursor_position()
 }
 
 /// Build a presentation-only editor copy with every inactive line rendered as Markdown.
