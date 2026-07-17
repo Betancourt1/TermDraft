@@ -32,7 +32,9 @@ use crate::editor::{
 };
 use crate::path_filter::parse_path_filter;
 use crate::persistence::{LoadedFile, SaveError, load_file, normalize_line_endings, save_atomic};
-use crate::recovery::{RecoveryEntry, RecoveryJournal};
+use time::{Duration as TimeDuration, OffsetDateTime};
+
+use crate::recovery::{RecoveryEntry, RecoveryJournal, RecoveryRecord, RecoveryRecordStatus};
 use crate::search::{
     DEFAULT_FILE_RESULT_LIMIT, DocumentSearchMatch, MatchDirection, TextMatch, TextSearchMode,
     TextSearchOptions, TextSearchOverride, TextSearchRequest, cycle_document_match_index,
@@ -47,6 +49,8 @@ use crate::workspace::{Workspace, WorkspaceEntry, has_editable_suffix};
 use crate::workspace_entries::{
     copy_entry, create_file, create_folder, move_entry, move_to_trash, rename_entry,
 };
+
+const RECOVERY_RETENTION_DAYS: i64 = 30;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode {
@@ -134,6 +138,13 @@ pub enum ConflictKind {
     Changed,
     Missing,
     Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RecoveryManagerFocus {
+    #[default]
+    Records,
+    Target,
 }
 
 #[derive(Clone, Debug)]
@@ -225,6 +236,24 @@ pub enum Overlay {
     },
     Recovery {
         entry: Box<RecoveryEntry>,
+    },
+    RecoveryManager {
+        records: Vec<RecoveryRecord>,
+        selected: usize,
+        focus: RecoveryManagerFocus,
+        target: TextInput,
+        protected_journals: Vec<PathBuf>,
+        protected_documents: Vec<PathBuf>,
+        retention_days: i64,
+        status: String,
+    },
+    RecoveryDeleteConfirm {
+        record: Box<RecoveryRecord>,
+    },
+    RecoveryCleanupConfirm {
+        records: Vec<RecoveryRecord>,
+        cutoff: OffsetDateTime,
+        retention_days: i64,
     },
     MixedLineEndings {
         tab_index: usize,
@@ -427,6 +456,7 @@ pub enum CommandAction {
     CommandMode,
     Undo,
     Redo,
+    ManageRecovery,
     MarkdownHelp,
     InspectSemanticBlocks,
     ReadSemanticBlocks,
@@ -598,6 +628,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         label: "Show shortcuts",
         shortcut: "?",
         action: CommandAction::Help,
+    },
+    CommandSpec {
+        group: "VIEW",
+        label: "Recovery drafts",
+        shortcut: "M",
+        action: CommandAction::ManageRecovery,
     },
     CommandSpec {
         group: "VIEW",
@@ -1033,6 +1069,309 @@ impl App {
                 }
             }
         }
+    }
+
+    fn open_recovery_manager(&mut self) {
+        self.persist_recovery();
+        self.show_recovery_manager(
+            0,
+            "Archive preserves bytes; quarantined drafts can be restored, exported, or deleted."
+                .to_owned(),
+        );
+    }
+
+    fn show_recovery_manager(&mut self, selected: usize, status: String) {
+        let Some(journal) = self.recovery_journal.clone() else {
+            self.status_message = Some("Recovery storage is unavailable".to_owned());
+            return;
+        };
+        let records = match journal.inventory(Some(&self.workspace.root)) {
+            Ok(records) => records,
+            Err(error) => {
+                self.status_message = Some(format!("Recovery inventory unavailable · {error}"));
+                return;
+            }
+        };
+        let protected_documents = self
+            .tabs
+            .iter()
+            .filter(|tab| tab.document.is_dirty())
+            .map(|tab| tab.document.path.clone())
+            .collect::<Vec<_>>();
+        let protected_journals = protected_documents
+            .iter()
+            .map(|path| journal.path_for(path))
+            .collect::<Vec<_>>();
+        self.overlay = Some(Overlay::RecoveryManager {
+            selected: selected.min(records.len().saturating_sub(1)),
+            records,
+            focus: RecoveryManagerFocus::Records,
+            target: TextInput::default(),
+            protected_journals,
+            protected_documents,
+            retention_days: RECOVERY_RETENTION_DAYS,
+            status,
+        });
+    }
+
+    fn recovery_protection(&mut self) -> Option<(RecoveryJournal, Vec<PathBuf>, Vec<PathBuf>)> {
+        self.sync_active_document();
+        let journal = self.recovery_journal.clone()?;
+        let documents = self
+            .tabs
+            .iter()
+            .filter(|tab| tab.document.is_dirty())
+            .map(|tab| tab.document.path.clone())
+            .collect::<Vec<_>>();
+        let journals = documents
+            .iter()
+            .map(|path| journal.path_for(path))
+            .collect();
+        Some((journal, documents, journals))
+    }
+
+    fn open_managed_recovery(&mut self, selected: usize, record: &RecoveryRecord) {
+        let Some((journal, dirty_documents, dirty_journals)) = self.recovery_protection() else {
+            return;
+        };
+        if record.quarantined {
+            let Some(entry) = record.entry.as_ref() else {
+                self.show_recovery_manager(
+                    selected,
+                    "Corrupt quarantine can only be deleted.".to_owned(),
+                );
+                return;
+            };
+            if dirty_documents.contains(&entry.document_path) {
+                self.show_recovery_manager(
+                    selected,
+                    "Cannot restore onto an open dirty document.".to_owned(),
+                );
+                return;
+            }
+            match journal.restore_quarantined(record) {
+                Ok(entry) => self.open_recovery_entry(
+                    selected,
+                    entry,
+                    "Restored quarantined recovery".to_owned(),
+                ),
+                Err(error) => {
+                    self.show_recovery_manager(selected, format!("Restore failed · {error}"));
+                }
+            }
+            return;
+        }
+        if dirty_journals.contains(&record.journal_path) {
+            self.show_recovery_manager(
+                selected,
+                "This recovery belongs to an open dirty document.".to_owned(),
+            );
+            return;
+        }
+        let Some(entry) = record.entry.as_ref() else {
+            self.show_recovery_manager(selected, "Corrupt recovery cannot be opened.".to_owned());
+            return;
+        };
+        match journal.record_for(&entry.document_path) {
+            Ok(Some(current)) if current.fingerprint == record.fingerprint => {
+                if current.status != RecoveryRecordStatus::Valid {
+                    self.show_recovery_manager(
+                        selected,
+                        missing_recovery_open_limitation(current.status),
+                    );
+                } else if let Some(entry) = current.entry {
+                    self.open_recovery_entry(selected, entry, "Opened recovery draft".to_owned());
+                }
+            }
+            Ok(_) => self.show_recovery_manager(
+                selected,
+                "Recovery changed before it could be opened.".to_owned(),
+            ),
+            Err(error) => {
+                self.show_recovery_manager(selected, format!("Recovery open failed · {error}"));
+            }
+        }
+    }
+
+    fn open_recovery_entry(&mut self, selected: usize, entry: RecoveryEntry, message: String) {
+        if !matches!(disk_state(&entry.document_path), DiskState::Current(_)) {
+            self.show_recovery_manager(
+                selected,
+                missing_recovery_open_limitation(RecoveryRecordStatus::Missing),
+            );
+            return;
+        }
+        match self.open_document(&entry.document_path) {
+            Ok(()) => {
+                self.status_message = Some(message);
+                self.overlay = Some(Overlay::Recovery {
+                    entry: Box::new(entry),
+                });
+            }
+            Err(error) => self.show_recovery_manager(
+                selected,
+                format!("Recovery draft cannot be opened · {error}"),
+            ),
+        }
+    }
+
+    fn retarget_managed_recovery(
+        &mut self,
+        selected: usize,
+        record: &RecoveryRecord,
+        target: &str,
+    ) {
+        let Some((journal, dirty_documents, dirty_journals)) = self.recovery_protection() else {
+            return;
+        };
+        if record.quarantined || record.entry.is_none() {
+            self.show_recovery_manager(
+                selected,
+                "Only valid active recovery can be retargeted.".to_owned(),
+            );
+            return;
+        }
+        if dirty_journals.contains(&record.journal_path) {
+            self.show_recovery_manager(
+                selected,
+                "Cannot move an open dirty document's recovery.".to_owned(),
+            );
+            return;
+        }
+        let target = match self.recovery_target_path(target, true) {
+            Ok(target) => target,
+            Err(error) => {
+                self.show_recovery_manager(selected, format!("Retarget failed · {error}"));
+                return;
+            }
+        };
+        if dirty_documents.contains(&target) {
+            self.show_recovery_manager(
+                selected,
+                "Cannot retarget onto an open dirty document.".to_owned(),
+            );
+            return;
+        }
+        match journal.retarget(record, &target, &self.workspace.root) {
+            Ok(_) => self.show_recovery_manager(
+                selected,
+                format!(
+                    "Recovery now follows {}",
+                    self.workspace.relative(&target).display()
+                ),
+            ),
+            Err(error) => {
+                self.show_recovery_manager(selected, format!("Retarget failed · {error}"));
+            }
+        }
+    }
+
+    fn archive_managed_recovery(&mut self, selected: usize, record: &RecoveryRecord) {
+        let Some((journal, _, dirty_journals)) = self.recovery_protection() else {
+            return;
+        };
+        if record.quarantined {
+            self.show_recovery_manager(selected, "Recovery is already archived.".to_owned());
+            return;
+        }
+        if dirty_journals.contains(&record.journal_path) {
+            self.show_recovery_manager(
+                selected,
+                "Cannot archive an open dirty document's recovery.".to_owned(),
+            );
+            return;
+        }
+        match journal.quarantine(record) {
+            Ok(path) => self.show_recovery_manager(
+                selected,
+                format!(
+                    "Archived recovery {}",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                ),
+            ),
+            Err(error) => self.show_recovery_manager(selected, format!("Archive failed · {error}")),
+        }
+    }
+
+    fn export_managed_recovery(&mut self, selected: usize, record: &RecoveryRecord, target: &str) {
+        let Some(journal) = self.recovery_journal.clone() else {
+            return;
+        };
+        let target = match self.recovery_target_path(target, false) {
+            Ok(target) => target,
+            Err(error) => {
+                self.show_recovery_manager(selected, format!("Export failed · {error}"));
+                return;
+            }
+        };
+        match journal.export_quarantined(record, &target) {
+            Ok(_) => {
+                self.refresh_entries(Some(&target));
+                self.show_recovery_manager(
+                    selected,
+                    format!(
+                        "Exported recovery copy to {}",
+                        self.workspace.relative(&target).display()
+                    ),
+                );
+            }
+            Err(error) => self.show_recovery_manager(selected, format!("Export failed · {error}")),
+        }
+    }
+
+    fn delete_managed_recovery(&mut self, record: &RecoveryRecord) {
+        let Some(journal) = self.recovery_journal.clone() else {
+            return;
+        };
+        match journal.delete_quarantined(record) {
+            Ok(()) => self
+                .show_recovery_manager(0, "Permanently deleted quarantined recovery.".to_owned()),
+            Err(error) => self.show_recovery_manager(0, format!("Delete failed · {error}")),
+        }
+    }
+
+    fn cleanup_managed_recovery(&mut self, records: &[RecoveryRecord], cutoff: OffsetDateTime) {
+        let Some(journal) = self.recovery_journal.clone() else {
+            return;
+        };
+        match journal.cleanup_quarantined(cutoff, Some(&self.workspace.root), Some(records)) {
+            Ok(result) => self.show_recovery_manager(
+                0,
+                format!(
+                    "Deleted {} of {} expired recoveries{}",
+                    result.deleted_count(),
+                    result.selected_count(),
+                    if result.failed_count() == 0 {
+                        String::new()
+                    } else {
+                        format!(" · {} failed", result.failed_count())
+                    }
+                ),
+            ),
+            Err(error) => self.show_recovery_manager(0, format!("Cleanup failed · {error}")),
+        }
+    }
+
+    fn recovery_target_path(&self, value: &str, allow_existing: bool) -> Result<PathBuf, String> {
+        let relative = Path::new(value.trim());
+        if relative.as_os_str().is_empty()
+            || relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err("enter a workspace-relative Markdown path".to_owned());
+        }
+        let candidate = self.workspace.root.join(relative);
+        if allow_existing && candidate.exists() {
+            return self
+                .workspace
+                .validate_document_path(&candidate)
+                .map_err(|error| error.to_string());
+        }
+        self.workspace
+            .new_document_path(relative)
+            .map_err(|error| error.to_string())
     }
 
     fn current_session_state(&self) -> SessionState {
@@ -1655,11 +1994,7 @@ impl App {
             BindingAction::EnterWriteMode => self.execute_command(CommandAction::WriteMode),
             BindingAction::DuplicateDocument => self.execute_command(CommandAction::Duplicate),
             BindingAction::ReloadConfig => self.reload_config(),
-            BindingAction::ManageRecovery => {
-                self.overlay = Some(Overlay::Message(
-                    "Recovery draft management is not ported yet".to_owned(),
-                ));
-            }
+            BindingAction::ManageRecovery => self.execute_command(CommandAction::ManageRecovery),
             BindingAction::MarkdownHelp => self.execute_command(CommandAction::MarkdownHelp),
             BindingAction::InspectSemanticBlocks => {
                 self.execute_command(CommandAction::InspectSemanticBlocks);
@@ -1805,6 +2140,7 @@ impl App {
                     tab.redo();
                 }
             }
+            CommandAction::ManageRecovery => self.open_recovery_manager(),
             CommandAction::MarkdownHelp => {
                 self.overlay = Some(Overlay::MarkdownHelp { scroll: 0 });
             }
@@ -3377,6 +3713,151 @@ impl App {
                 }
                 _ => true,
             },
+            Overlay::RecoveryManager {
+                records,
+                selected,
+                focus,
+                target,
+                protected_journals,
+                retention_days,
+                status,
+                ..
+            } => {
+                let record = records.get(*selected).cloned();
+                match key.code {
+                    KeyCode::Tab | KeyCode::BackTab => {
+                        *focus = if *focus == RecoveryManagerFocus::Records {
+                            RecoveryManagerFocus::Target
+                        } else {
+                            RecoveryManagerFocus::Records
+                        };
+                        true
+                    }
+                    KeyCode::Up if *focus == RecoveryManagerFocus::Records => {
+                        *selected = selected.saturating_sub(1);
+                        true
+                    }
+                    KeyCode::Down if *focus == RecoveryManagerFocus::Records => {
+                        *selected = (*selected + 1).min(records.len().saturating_sub(1));
+                        true
+                    }
+                    KeyCode::Home if *focus == RecoveryManagerFocus::Records => {
+                        *selected = 0;
+                        true
+                    }
+                    KeyCode::End if *focus == RecoveryManagerFocus::Records => {
+                        *selected = records.len().saturating_sub(1);
+                        true
+                    }
+                    KeyCode::Enter if *focus == RecoveryManagerFocus::Target => {
+                        if let Some(record) = record {
+                            if record.quarantined {
+                                self.export_managed_recovery(*selected, &record, &target.value);
+                            } else {
+                                self.retarget_managed_recovery(*selected, &record, &target.value);
+                            }
+                        }
+                        false
+                    }
+                    KeyCode::Enter | KeyCode::Char('o')
+                        if *focus == RecoveryManagerFocus::Records =>
+                    {
+                        if let Some(record) = record {
+                            self.open_managed_recovery(*selected, &record);
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    KeyCode::Char('r') if *focus == RecoveryManagerFocus::Records => {
+                        if let Some(record) = record {
+                            if record.quarantined {
+                                self.overlay = Some(Overlay::RecoveryDeleteConfirm {
+                                    record: Box::new(record),
+                                });
+                                false
+                            } else if record.entry.is_none() {
+                                "Corrupt active recovery can only be archived.".clone_into(status);
+                                true
+                            } else if protected_journals.contains(&record.journal_path) {
+                                "This recovery belongs to an open dirty document."
+                                    .clone_into(status);
+                                true
+                            } else if target.value.trim().is_empty() {
+                                *focus = RecoveryManagerFocus::Target;
+                                "Enter a new workspace-relative Markdown path.".clone_into(status);
+                                true
+                            } else {
+                                self.retarget_managed_recovery(*selected, &record, &target.value);
+                                false
+                            }
+                        } else {
+                            true
+                        }
+                    }
+                    KeyCode::Char('a') if *focus == RecoveryManagerFocus::Records => {
+                        if let Some(record) = record {
+                            if record.quarantined {
+                                if record.entry.is_none() {
+                                    "Corrupt quarantine can only be deleted.".clone_into(status);
+                                    true
+                                } else if target.value.trim().is_empty() {
+                                    *focus = RecoveryManagerFocus::Target;
+                                    "Enter a workspace-relative path for the exported copy."
+                                        .clone_into(status);
+                                    true
+                                } else {
+                                    self.export_managed_recovery(*selected, &record, &target.value);
+                                    false
+                                }
+                            } else {
+                                self.archive_managed_recovery(*selected, &record);
+                                false
+                            }
+                        } else {
+                            true
+                        }
+                    }
+                    KeyCode::Char('x') if *focus == RecoveryManagerFocus::Records => {
+                        let cutoff =
+                            OffsetDateTime::now_utc() - TimeDuration::days(*retention_days);
+                        let expired = expired_recovery_records(records, cutoff);
+                        if expired.is_empty() {
+                            "No expired quarantined recoveries.".clone_into(status);
+                            true
+                        } else {
+                            self.overlay = Some(Overlay::RecoveryCleanupConfirm {
+                                records: expired,
+                                cutoff,
+                                retention_days: *retention_days,
+                            });
+                            false
+                        }
+                    }
+                    _ if *focus == RecoveryManagerFocus::Target && edit_text_input(target, key) => {
+                        true
+                    }
+                    _ => true,
+                }
+            }
+            Overlay::RecoveryDeleteConfirm { record } => match key.code {
+                KeyCode::Char('d') => {
+                    self.delete_managed_recovery(record);
+                    false
+                }
+                KeyCode::Enter => false,
+                _ => true,
+            },
+            Overlay::RecoveryCleanupConfirm {
+                records, cutoff, ..
+            } => match key.code {
+                KeyCode::Char('d') => {
+                    self.cleanup_managed_recovery(records, *cutoff);
+                    false
+                }
+                KeyCode::Enter => false,
+                _ => true,
+            },
             Overlay::SearchResults { results, selected } => match key.code {
                 KeyCode::Up => {
                     *selected = selected.saturating_sub(1);
@@ -3487,6 +3968,12 @@ impl App {
             }
             Overlay::PathInput { input, .. } | Overlay::WorkspaceInput { input, .. } => {
                 input.insert(text);
+                true
+            }
+            Overlay::RecoveryManager { focus, target, .. }
+                if *focus == RecoveryManagerFocus::Target =>
+            {
+                target.insert(text);
                 true
             }
             _ => false,
@@ -3753,6 +4240,35 @@ impl App {
         self.active_tab = original;
         true
     }
+}
+
+fn missing_recovery_open_limitation(status: RecoveryRecordStatus) -> String {
+    let source = match status {
+        RecoveryRecordStatus::Missing => "missing",
+        RecoveryRecordStatus::Orphan => "not a safe regular file",
+        RecoveryRecordStatus::Corrupt => "corrupt",
+        RecoveryRecordStatus::Valid => "unavailable",
+    };
+    format!(
+        "Source is {source}; Rust cannot safely open this recovery without a FileSnapshot yet. Retarget or Archive it."
+    )
+}
+
+fn expired_recovery_records(
+    records: &[RecoveryRecord],
+    cutoff: OffsetDateTime,
+) -> Vec<RecoveryRecord> {
+    records
+        .iter()
+        .filter(|record| {
+            record.quarantined
+                && record
+                    .entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.updated_at < cutoff)
+        })
+        .cloned()
+        .collect()
 }
 
 fn disk_state(path: &Path) -> DiskState {
@@ -5380,5 +5896,237 @@ mod tests {
         ));
         app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn recovery_manager_lists_and_protects_every_dirty_open_document() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let first = root.join("first.md");
+        let second = root.join("second.md");
+        fs::write(&first, "first").unwrap();
+        fs::write(&second, "second").unwrap();
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        let workspace = Workspace::from_target(&root).unwrap();
+        let mut app =
+            App::with_state_services(workspace, Config::default(), None, Some(journal.clone()))
+                .unwrap();
+
+        app.open_document(&first).unwrap();
+        app.active_tab_mut().unwrap().editor.insert_str("draft ");
+        app.sync_active_document();
+        app.open_document(&second).unwrap();
+        app.active_tab_mut().unwrap().editor.insert_str("draft ");
+        app.execute_binding_action(BindingAction::ManageRecovery);
+
+        assert!(COMMANDS.iter().any(|command| {
+            command.group == "VIEW"
+                && command.label == "Recovery drafts"
+                && command.shortcut == "M"
+                && command.action == CommandAction::ManageRecovery
+        }));
+        let Some(Overlay::RecoveryManager {
+            records,
+            protected_journals,
+            protected_documents,
+            ..
+        }) = &app.overlay
+        else {
+            panic!("recovery manager did not open");
+        };
+        assert_eq!(records.len(), 2);
+        assert!(protected_documents.contains(&first));
+        assert!(protected_documents.contains(&second));
+        assert!(protected_journals.contains(&journal.path_for(&first)));
+        assert!(protected_journals.contains(&journal.path_for(&second)));
+    }
+
+    #[test]
+    fn recovery_manager_rechecks_dirty_state_before_archiving() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("note.md");
+        fs::write(&path, "saved").unwrap();
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        let workspace = Workspace::from_target(&root).unwrap();
+        let mut app =
+            App::with_state_services(workspace, Config::default(), None, Some(journal.clone()))
+                .unwrap();
+        app.open_document(&path).unwrap();
+        let loaded = load_file(&path).unwrap();
+        journal
+            .publish(
+                &path,
+                &root,
+                "recovery draft",
+                loaded.encoding,
+                &loaded.snapshot,
+            )
+            .unwrap();
+
+        app.open_recovery_manager();
+        app.active_tab_mut().unwrap().editor.insert_str("new ");
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+
+        assert!(journal.path_for(&path).exists());
+        assert!(journal.list_quarantined(Some(&root)).unwrap().is_empty());
+        assert!(matches!(
+            &app.overlay,
+            Some(Overlay::RecoveryManager { status, .. })
+                if status.contains("open dirty document")
+        ));
+    }
+
+    #[test]
+    fn recovery_manager_retargets_archives_exports_and_restores() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let original = root.join("original.md");
+        let renamed = root.join("renamed.md");
+        fs::write(&original, "saved").unwrap();
+        let loaded = load_file(&original).unwrap();
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        let workspace = Workspace::from_target(&root).unwrap();
+        let mut app =
+            App::with_state_services(workspace, Config::default(), None, Some(journal.clone()))
+                .unwrap();
+        journal
+            .publish(
+                &original,
+                &root,
+                "unsaved draft",
+                loaded.encoding,
+                &loaded.snapshot,
+            )
+            .unwrap();
+        fs::rename(&original, &renamed).unwrap();
+
+        app.open_recovery_manager();
+        assert!(matches!(
+            &app.overlay,
+            Some(Overlay::RecoveryManager { records, .. })
+                if records[0].status == RecoveryRecordStatus::Missing
+        ));
+        if let Some(Overlay::RecoveryManager { focus, target, .. }) = &mut app.overlay {
+            *focus = RecoveryManagerFocus::Target;
+            target.value = "renamed.md".to_owned();
+            target.cursor = target.value.chars().count();
+        }
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(!journal.path_for(&original).exists());
+        assert_eq!(
+            journal.load(&renamed).unwrap().unwrap().text,
+            "unsaved draft"
+        );
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert!(!journal.path_for(&renamed).exists());
+        assert_eq!(journal.list_quarantined(Some(&root)).unwrap().len(), 1);
+
+        if let Some(Overlay::RecoveryManager { focus, target, .. }) = &mut app.overlay {
+            *focus = RecoveryManagerFocus::Target;
+            target.value = "exported.md".to_owned();
+            target.cursor = target.value.chars().count();
+        }
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            fs::read_to_string(root.join("exported.md")).unwrap(),
+            "unsaved draft"
+        );
+        assert_eq!(journal.list_quarantined(Some(&root)).unwrap().len(), 1);
+
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+        assert!(journal.list_quarantined(Some(&root)).unwrap().is_empty());
+        assert!(journal.path_for(&renamed).exists());
+        assert!(matches!(app.overlay, Some(Overlay::Recovery { .. })));
+    }
+
+    #[test]
+    fn corrupt_quarantine_requires_an_explicit_delete_key() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let recovery_root = root.join("recovery");
+        let quarantine_root = recovery_root.join("quarantine");
+        fs::create_dir_all(&quarantine_root).unwrap();
+        let corrupt = quarantine_root.join(format!("{}.json", "e".repeat(64)));
+        fs::write(&corrupt, b"{not valid JSON}\n").unwrap();
+        let journal = RecoveryJournal::new(recovery_root);
+        let workspace = Workspace::from_target(&root).unwrap();
+        let mut app =
+            App::with_state_services(workspace, Config::default(), None, Some(journal.clone()))
+                .unwrap();
+
+        app.open_recovery_manager();
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::RecoveryDeleteConfirm { .. })
+        ));
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(corrupt.exists());
+        assert!(app.overlay.is_none());
+
+        app.open_recovery_manager();
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(!corrupt.exists());
+        assert!(journal.list_quarantined(Some(&root)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn expired_cleanup_is_cancel_safe_and_rechecks_exact_records() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("old.md");
+        fs::write(&path, "saved").unwrap();
+        let loaded = load_file(&path).unwrap();
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        let workspace = Workspace::from_target(&root).unwrap();
+        let mut app =
+            App::with_state_services(workspace, Config::default(), None, Some(journal.clone()))
+                .unwrap();
+        journal
+            .publish(
+                &path,
+                &root,
+                "old recovery",
+                loaded.encoding,
+                &loaded.snapshot,
+            )
+            .unwrap();
+        let active_path = journal.path_for(&path);
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&active_path).unwrap()).unwrap();
+        value["updated_at"] = serde_json::Value::String("2000-01-01T00:00:00Z".to_owned());
+        fs::write(&active_path, serde_json::to_vec(&value).unwrap()).unwrap();
+        let listed = journal.list_entries(Some(&root)).unwrap().pop().unwrap();
+        let archived_path = journal.quarantine(&listed).unwrap();
+
+        app.open_recovery_manager();
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(matches!(
+            &app.overlay,
+            Some(Overlay::RecoveryCleanupConfirm { records, .. })
+                if records.len() == 1 && records[0].journal_path == archived_path
+        ));
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(archived_path.exists());
+
+        app.open_recovery_manager();
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        let mut changed = fs::read(&archived_path).unwrap();
+        changed.push(b'\n');
+        fs::write(&archived_path, changed).unwrap();
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(archived_path.exists());
+        assert!(matches!(
+            &app.overlay,
+            Some(Overlay::RecoveryManager { status, .. }) if status.contains("1 failed")
+        ));
+
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(!archived_path.exists());
+        assert!(journal.list_quarantined(Some(&root)).unwrap().is_empty());
     }
 }

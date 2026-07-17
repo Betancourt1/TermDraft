@@ -5,16 +5,18 @@ use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap};
+use time::{Duration as TimeDuration, OffsetDateTime};
 
 use crate::app::{
     App, ConfirmAction, ConflictKind, FileFinderFocus, FindFocus, Focus, MixedLineEndingContext,
-    Mode, Overlay, TextInput, UiRegions, ViewMode, WorkspaceSearchFocus, command_candidates,
-    text_search_mode_label,
+    Mode, Overlay, RecoveryManagerFocus, TextInput, UiRegions, ViewMode, WorkspaceSearchFocus,
+    command_candidates, text_search_mode_label,
 };
 use crate::coordinate_diagnostic::CoordinateDiagnostic;
 use crate::document::LineEnding;
 use crate::editor::apply_inline_preview;
 use crate::markdown_help::MARKDOWN_SYNTAX_HELP;
+use crate::recovery::{RecoveryRecord, RecoveryRecordStatus};
 use crate::search::{TextMatch, TextSearchMode};
 use crate::semantic_blocks::{ReaderPresentation, SemanticBlockMap};
 
@@ -348,7 +350,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
 #[allow(clippy::too_many_lines)]
 fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
     let area = match overlay {
-        Overlay::Help => popup(frame.area(), 78, 29),
+        Overlay::Help => popup(frame.area(), 78, 30),
         Overlay::MarkdownHelp { .. } => popup(frame.area(), 76, 30),
         Overlay::SemanticInspector { .. } => popup(frame.area(), 82, 34),
         Overlay::SemanticReader { .. } => popup(frame.area(), 82, 36),
@@ -362,6 +364,9 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
         Overlay::WorkspaceSearch { .. } => popup(frame.area(), 80, 24),
         Overlay::PathInput { .. } | Overlay::WorkspaceInput { .. } => popup(frame.area(), 66, 7),
         Overlay::Recovery { .. } | Overlay::MixedLineEndings { .. } => popup(frame.area(), 70, 9),
+        Overlay::RecoveryManager { .. } => popup(frame.area(), 88, 34),
+        Overlay::RecoveryDeleteConfirm { .. } => popup(frame.area(), 74, 9),
+        Overlay::RecoveryCleanupConfirm { .. } => popup(frame.area(), 82, 30),
         Overlay::Conflict { .. } => popup(frame.area(), 74, 10),
         Overlay::TrashConfirm { .. } => popup(frame.area(), 70, 8),
         Overlay::Confirm(_) | Overlay::Message(_) => popup(frame.area(), 62, 7),
@@ -575,6 +580,65 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
                 area,
             );
         }
+        Overlay::RecoveryManager {
+            records,
+            selected,
+            focus,
+            target,
+            protected_journals,
+            protected_documents,
+            retention_days,
+            status,
+        } => draw_recovery_manager(
+            frame,
+            app,
+            area,
+            block,
+            records,
+            *selected,
+            *focus,
+            target,
+            protected_journals,
+            protected_documents,
+            *retention_days,
+            status,
+        ),
+        Overlay::RecoveryDeleteConfirm { record } => {
+            let description = record.entry.as_ref().map_or_else(
+                || {
+                    record
+                        .journal_path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned()
+                },
+                |entry| entry.document_path.display().to_string(),
+            );
+            let text = Text::from(vec![
+                Line::from(format!(
+                    "Delete quarantined bytes for {description}? This cannot be undone."
+                ))
+                .style(Style::new().fg(TEXT)),
+                Line::from(format!(
+                    "Exact fingerprint: {}",
+                    short_fingerprint(&record.fingerprint)
+                ))
+                .style(Style::new().fg(MUTED)),
+                Line::from(""),
+                Line::from("d  Delete forever     Enter / Esc  Cancel (default)")
+                    .style(Style::new().fg(BRIGHT)),
+            ]);
+            frame.render_widget(
+                Paragraph::new(text).block(block.title(" Permanently delete recovery? ")),
+                area,
+            );
+        }
+        Overlay::RecoveryCleanupConfirm {
+            records,
+            retention_days,
+            ..
+        } => draw_recovery_cleanup_confirmation(frame, app, area, block, records, *retention_days),
         Overlay::MixedLineEndings {
             context, target, ..
         } => {
@@ -708,6 +772,347 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
             area,
         ),
     }
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn draw_recovery_manager(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    block: Block<'_>,
+    records: &[RecoveryRecord],
+    selected: usize,
+    focus: RecoveryManagerFocus,
+    target: &TextInput,
+    protected_journals: &[std::path::PathBuf],
+    protected_documents: &[std::path::PathBuf],
+    retention_days: i64,
+    status: &str,
+) {
+    let inner = block.inner(area);
+    frame.render_widget(block.title(" Manage recovery drafts "), area);
+    let [
+        intro,
+        records_area,
+        detail_area,
+        target_area,
+        actions_area,
+        status_area,
+        footer_area,
+    ] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Min(6),
+        Constraint::Length(4),
+        Constraint::Length(2),
+        Constraint::Length(2),
+        Constraint::Length(2),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    frame.render_widget(
+        Paragraph::new(
+            "Archive preserves bytes. Quarantine can be restored, exported as Markdown, or deleted forever.",
+        )
+        .style(Style::new().fg(MUTED)),
+        intro,
+    );
+
+    let cutoff = OffsetDateTime::now_utc() - TimeDuration::days(retention_days);
+    let items = if records.is_empty() {
+        vec![ListItem::new("No recovery entries")]
+    } else {
+        records
+            .iter()
+            .map(|record| {
+                ListItem::new(recovery_record_label(
+                    app,
+                    record,
+                    protected_journals,
+                    protected_documents,
+                    cutoff,
+                ))
+            })
+            .collect()
+    };
+    let list = List::new(items).highlight_symbol("› ").highlight_style(
+        if focus == RecoveryManagerFocus::Records {
+            Style::new().bg(Color::Rgb(44, 44, 44)).fg(BRIGHT).bold()
+        } else {
+            Style::new().fg(TEXT)
+        },
+    );
+    let mut list_state = ratatui::widgets::ListState::default()
+        .with_selected((!records.is_empty()).then_some(selected));
+    frame.render_stateful_widget(list, records_area, &mut list_state);
+
+    let record = records.get(selected);
+    let active_protected = record.is_some_and(|record| {
+        !record.quarantined && protected_journals.contains(&record.journal_path)
+    });
+    let restore_protected = record.is_some_and(|record| {
+        record.quarantined
+            && record
+                .entry
+                .as_ref()
+                .is_some_and(|entry| protected_documents.contains(&entry.document_path))
+    });
+    let has_entry = record.is_some_and(|record| record.entry.is_some());
+    let quarantined = record.is_some_and(|record| record.quarantined);
+    let open_enabled = record.is_some_and(|record| {
+        if record.quarantined {
+            record.entry.is_some() && !restore_protected
+        } else {
+            record.entry.is_some()
+                && record.status == RecoveryRecordStatus::Valid
+                && !active_protected
+        }
+    });
+    let retarget_enabled = has_entry && !quarantined && !active_protected;
+    let archive_enabled = record.is_some_and(|record| !record.quarantined && !active_protected);
+    let delete_enabled = record.is_some_and(|record| record.quarantined);
+    let export_enabled = has_entry && quarantined;
+    let target_enabled = retarget_enabled || export_enabled;
+    frame.render_widget(
+        Paragraph::new(recovery_record_detail(
+            record,
+            active_protected,
+            restore_protected,
+        ))
+        .style(Style::new().fg(TEXT))
+        .wrap(Wrap { trim: false }),
+        detail_area,
+    );
+    frame.render_widget(
+        Paragraph::new(labeled_input_line(
+            "Target",
+            target,
+            focus == RecoveryManagerFocus::Target,
+            !target_enabled,
+        )),
+        target_area,
+    );
+
+    let mut actions = Vec::new();
+    if quarantined {
+        if has_entry {
+            actions.push(control_span("[o] Restore", false, open_enabled));
+            actions.push(Span::raw("  "));
+        }
+        actions.push(control_span("[r] Delete forever", false, delete_enabled));
+        if has_entry {
+            actions.push(Span::raw("  "));
+            actions.push(control_span("[a] Export copy", false, export_enabled));
+        }
+    } else {
+        actions.push(control_span("[o] Open draft", false, open_enabled));
+        actions.push(Span::raw("  "));
+        actions.push(control_span("[r] Retarget", false, retarget_enabled));
+        actions.push(Span::raw("  "));
+        actions.push(control_span("[a] Archive", false, archive_enabled));
+    }
+    let expired_count = records
+        .iter()
+        .filter(|record| {
+            record.quarantined
+                && record
+                    .entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.updated_at < cutoff)
+        })
+        .count();
+    actions.push(Span::raw("  "));
+    actions.push(control_span(
+        &format!("[x] Delete >{retention_days}d ({expired_count})"),
+        false,
+        expired_count > 0,
+    ));
+    frame.render_widget(Paragraph::new(Line::from(actions)), actions_area);
+    frame.render_widget(
+        Paragraph::new(status).style(Style::new().fg(BRIGHT)),
+        status_area,
+    );
+    let focus_label = if focus == RecoveryManagerFocus::Records {
+        "Records"
+    } else {
+        "Target"
+    };
+    frame.render_widget(
+        Paragraph::new(format!(
+            "Focus: {focus_label} · Tab switch · ↑↓ select · Enter primary/submit · Esc close"
+        ))
+        .style(Style::new().fg(MUTED)),
+        footer_area,
+    );
+}
+
+fn recovery_record_label(
+    app: &App,
+    record: &RecoveryRecord,
+    protected_journals: &[std::path::PathBuf],
+    protected_documents: &[std::path::PathBuf],
+    cutoff: OffsetDateTime,
+) -> String {
+    let location = if record.quarantined { "Q" } else { "A" };
+    let status = match record.status {
+        RecoveryRecordStatus::Valid => "VALID",
+        RecoveryRecordStatus::Missing => "MISSING",
+        RecoveryRecordStatus::Orphan => "ORPHAN",
+        RecoveryRecordStatus::Corrupt => "CORRUPT",
+    };
+    let name = record.entry.as_ref().map_or_else(
+        || {
+            record
+                .journal_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        },
+        |entry| {
+            app.workspace
+                .relative(&entry.document_path)
+                .display()
+                .to_string()
+        },
+    );
+    let mut flags = Vec::new();
+    if (!record.quarantined && protected_journals.contains(&record.journal_path))
+        || (record.quarantined
+            && record
+                .entry
+                .as_ref()
+                .is_some_and(|entry| protected_documents.contains(&entry.document_path)))
+    {
+        flags.push("active");
+    }
+    if record
+        .entry
+        .as_ref()
+        .is_some_and(|entry| entry.updated_at < cutoff)
+    {
+        flags.push("old");
+    }
+    let suffix = if flags.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", flags.join(", "))
+    };
+    format!("{location} · {status:<7} · {name}{suffix}")
+}
+
+fn recovery_record_detail(
+    record: Option<&RecoveryRecord>,
+    active_protected: bool,
+    restore_protected: bool,
+) -> String {
+    let Some(record) = record else {
+        return "Nothing to manage in this recovery directory.".to_owned();
+    };
+    let Some(entry) = record.entry.as_ref() else {
+        return format!(
+            "{} It cannot be opened, restored, or exported. {}",
+            record
+                .error
+                .as_deref()
+                .unwrap_or("This recovery could not be validated."),
+            if record.quarantined {
+                "Delete forever is the only available action."
+            } else {
+                "Archive preserves its exact bytes for later inspection."
+            }
+        );
+    };
+    if active_protected {
+        return "This draft belongs to an open dirty document and cannot be opened or moved."
+            .to_owned();
+    }
+    if restore_protected {
+        return "This archive targets an open dirty document. Restore is disabled; export remains safe."
+            .to_owned();
+    }
+    if matches!(
+        record.status,
+        RecoveryRecordStatus::Missing | RecoveryRecordStatus::Orphan
+    ) {
+        return format!(
+            "Source is {}. Rust cannot safely open this recovery without a FileSnapshot yet; Retarget or Archive it.",
+            if record.status == RecoveryRecordStatus::Missing {
+                "missing"
+            } else {
+                "not a safe regular file"
+            }
+        );
+    }
+    format!(
+        "{}{} · updated {}",
+        if record.quarantined {
+            "Quarantined · "
+        } else {
+            ""
+        },
+        entry.document_path.display(),
+        entry.updated_at.date()
+    )
+}
+
+fn draw_recovery_cleanup_confirmation(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    block: Block<'_>,
+    records: &[RecoveryRecord],
+    retention_days: i64,
+) {
+    let mut lines = vec![
+        Line::from(format!(
+            "Delete these exact {} quarantined recoveries older than {retention_days} days?",
+            records.len()
+        ))
+        .style(Style::new().fg(TEXT)),
+        Line::from("This cannot be undone. Records are rechecked before deletion.")
+            .style(Style::new().fg(MUTED)),
+        Line::from(""),
+    ];
+    let available = usize::from(area.height.saturating_sub(9));
+    for record in records.iter().take(available) {
+        let name = record.entry.as_ref().map_or_else(
+            || record.journal_path.display().to_string(),
+            |entry| {
+                app.workspace
+                    .relative(&entry.document_path)
+                    .display()
+                    .to_string()
+            },
+        );
+        lines.push(
+            Line::from(format!(
+                "• {name} · {}",
+                short_fingerprint(&record.fingerprint)
+            ))
+            .style(Style::new().fg(TEXT)),
+        );
+    }
+    if records.len() > available {
+        lines.push(
+            Line::from(format!("… and {} more", records.len() - available))
+                .style(Style::new().fg(MUTED)),
+        );
+    }
+    lines.extend([
+        Line::from(""),
+        Line::from("d  Delete exact records     Enter / Esc  Cancel (default)")
+            .style(Style::new().fg(BRIGHT)),
+    ]);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(block.title(" Delete expired recovery drafts? "))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn short_fingerprint(fingerprint: &str) -> String {
+    fingerprint.chars().take(12).collect()
 }
 
 fn draw_markdown_help(frame: &mut Frame, area: Rect, block: Block<'_>, scroll: u16) {
@@ -1379,6 +1784,11 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, block: Block<'_>) {
         ),
         help_line(
             "VIEW",
+            shortcut(app, &["command_manage_recovery"]),
+            "Manage recovery drafts",
+        ),
+        help_line(
+            "VIEW",
             shortcut(app, &["command_inspect_cursor_coordinates"]),
             "Cursor coordinates",
         ),
@@ -1431,6 +1841,7 @@ fn command_shortcut(app: &App, action: crate::app::CommandAction) -> String {
         CommandAction::CommandMode => return "Esc".to_owned(),
         CommandAction::Undo => &["command_undo", "undo"],
         CommandAction::Redo => &["command_redo", "redo"],
+        CommandAction::ManageRecovery => &["command_manage_recovery"],
         CommandAction::MarkdownHelp => &["command_markdown_help"],
         CommandAction::InspectSemanticBlocks => &["command_inspect_semantic_blocks"],
         CommandAction::ReadSemanticBlocks => &["command_read_semantic_blocks"],
@@ -1548,6 +1959,8 @@ mod tests {
     use super::*;
     use crate::config::{Config, StartupView};
     use crate::coordinate_diagnostic::diagnose_coordinate;
+    use crate::persistence::load_file;
+    use crate::recovery::RecoveryJournal;
     use crate::semantic_blocks::map_semantic_blocks;
     use crate::workspace::Workspace;
 
@@ -1717,5 +2130,142 @@ mod tests {
         assert!(screen.contains("Save local as"));
         assert!(screen.contains("Continue without copy"));
         assert!(!screen.contains("Reload external"));
+    }
+
+    #[test]
+    fn renders_recovery_manager_and_exact_destructive_confirmations() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let missing = root.join("missing.md");
+        let old = root.join("old.md");
+        fs::write(&missing, "saved").unwrap();
+        fs::write(&old, "saved").unwrap();
+        let missing_loaded = load_file(&missing).unwrap();
+        let old_loaded = load_file(&old).unwrap();
+        let recovery_root = root.join("recovery");
+        let journal = RecoveryJournal::new(recovery_root.clone());
+        journal
+            .publish(
+                &missing,
+                &root,
+                "missing draft",
+                missing_loaded.encoding,
+                &missing_loaded.snapshot,
+            )
+            .unwrap();
+        fs::remove_file(&missing).unwrap();
+        journal
+            .publish(
+                &old,
+                &root,
+                "old draft",
+                old_loaded.encoding,
+                &old_loaded.snapshot,
+            )
+            .unwrap();
+        let old_active = journal.path_for(&old);
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&old_active).unwrap()).unwrap();
+        value["updated_at"] = serde_json::Value::String("2000-01-01T00:00:00Z".to_owned());
+        fs::write(&old_active, serde_json::to_vec(&value).unwrap()).unwrap();
+        let old_record = journal
+            .list_entries(Some(&root))
+            .unwrap()
+            .into_iter()
+            .find(|record| {
+                record
+                    .entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.document_path == old)
+            })
+            .unwrap();
+        journal.quarantine(&old_record).unwrap();
+        let quarantine_root = recovery_root.join("quarantine");
+        let corrupt_path = quarantine_root.join(format!("{}.json", "e".repeat(64)));
+        fs::write(&corrupt_path, b"{not valid JSON}\n").unwrap();
+
+        let records = journal.inventory(Some(&root)).unwrap();
+        let missing_index = records
+            .iter()
+            .position(|record| record.status == RecoveryRecordStatus::Missing)
+            .unwrap();
+        let corrupt_index = records
+            .iter()
+            .position(|record| record.quarantined && record.entry.is_none())
+            .unwrap();
+        let old_record = records
+            .iter()
+            .find(|record| {
+                record.quarantined
+                    && record
+                        .entry
+                        .as_ref()
+                        .is_some_and(|entry| entry.document_path == old)
+            })
+            .unwrap()
+            .clone();
+        let workspace = Workspace::from_target(&root).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(110, 42)).unwrap();
+
+        app.overlay = Some(Overlay::RecoveryManager {
+            records: records.clone(),
+            selected: missing_index,
+            focus: RecoveryManagerFocus::Records,
+            target: TextInput::default(),
+            protected_journals: Vec::new(),
+            protected_documents: Vec::new(),
+            retention_days: 30,
+            status: "Ready".to_owned(),
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let screen = rendered(&terminal);
+        assert!(screen.contains("Manage recovery drafts"));
+        assert!(screen.contains("MISSING"));
+        assert!(screen.contains("FileSnapshot"));
+        assert!(screen.contains("Retarget"));
+        assert!(screen.contains("Archive"));
+        assert!(screen.contains("Delete >30d (1)"));
+
+        app.overlay = Some(Overlay::RecoveryManager {
+            records: records.clone(),
+            selected: corrupt_index,
+            focus: RecoveryManagerFocus::Records,
+            target: TextInput::default(),
+            protected_journals: Vec::new(),
+            protected_documents: Vec::new(),
+            retention_days: 30,
+            status: "Ready".to_owned(),
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let screen = rendered(&terminal);
+        assert!(screen.contains("CORRUPT"));
+        assert!(screen.contains("Delete forever"));
+        assert!(!screen.contains("[o] Restore"));
+        assert!(!screen.contains("[a] Export copy"));
+
+        let corrupt_record = records[corrupt_index].clone();
+        let fingerprint = short_fingerprint(&corrupt_record.fingerprint);
+        app.overlay = Some(Overlay::RecoveryDeleteConfirm {
+            record: Box::new(corrupt_record),
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let screen = rendered(&terminal);
+        assert!(screen.contains("Permanently delete recovery?"));
+        assert!(screen.contains(&fingerprint));
+        assert!(screen.contains("Enter / Esc  Cancel (default)"));
+
+        let fingerprint = short_fingerprint(&old_record.fingerprint);
+        app.overlay = Some(Overlay::RecoveryCleanupConfirm {
+            records: vec![old_record],
+            cutoff: OffsetDateTime::now_utc() - TimeDuration::days(30),
+            retention_days: 30,
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let screen = rendered(&terminal);
+        assert!(screen.contains("Delete expired recovery drafts?"));
+        assert!(screen.contains("older than 30 days"));
+        assert!(screen.contains(&fingerprint));
+        assert!(screen.contains("d  Delete exact records"));
     }
 }
