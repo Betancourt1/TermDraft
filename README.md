@@ -54,6 +54,19 @@ No Rust package or Homebrew formula is published for this comparison branch. The
 the same Yazi-style Nerd Font folder and Markdown icons as the Python application, so a Nerd Font is
 recommended for the intended interface.
 
+On macOS, you can try the interface in [Server Mono](https://github.com/internet-development/www-server-mono)
+without changing your global Ghostty configuration. Server Mono supplies the text glyphs and
+Ghostty's bundled Symbols Nerd Font keeps the Files icons intact:
+
+```bash
+brew install --cask font-server-mono
+open -na Ghostty.app --args \
+  --font-family="Server Mono" \
+  --font-family="Symbols Nerd Font Mono" \
+  --working-directory="$PWD" \
+  -e cargo run --release --locked -- ~/Documents/notes
+```
+
 Useful non-interactive commands:
 
 ```bash
