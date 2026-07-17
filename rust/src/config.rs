@@ -28,11 +28,65 @@ startup_mode = "command"
 view_mode = "inline"
 
 [recovery]
+# Used only when you explicitly choose age-based cleanup in Recovery Manager.
 retention_days = 30
 
 [keybindings]
 # Bindings override keys only. They cannot define actions or commands.
 # save = "ctrl+s"
+# save_as = "ctrl+shift+s"
+# quit = "ctrl+q"
+# toggle_explorer = "ctrl+b"
+# find_file = "ctrl+p"
+# recent_documents = "ctrl+o"
+# next_tab = "ctrl+pagedown"
+# previous_tab = "ctrl+pageup"
+# close_tab = "ctrl+f4"
+# find_replace = "ctrl+f"
+# search_text = "ctrl+shift+f"
+# document_outline = "ctrl+shift+o"
+# toggle_preview = "ctrl+e"
+# preview_next_heading = "alt+down"
+# preview_previous_heading = "alt+up"
+# Tab, Shift+Tab, and Enter remain reserved for preview controls.
+# undo = "ctrl+z,super+z"
+# redo = "ctrl+y,super+y,ctrl+shift+z"
+# show_help = "f1"
+# command_palette = "ctrl+backslash"
+# Single-key COMMAND bindings are remappable too.
+# command_write_mode = "i"
+# command_save = "w"
+# command_save_as = "W"
+# command_duplicate_document = "D"
+# command_quit = "q"
+# command_toggle_explorer = "e"
+# command_find_file = "f"
+# command_recent_documents = "o"
+# command_next_tab = "]"
+# command_previous_tab = "["
+# command_close_tab = "C"
+# command_search_text = "slash"
+# command_find_replace = "s"
+# command_document_outline = "S"
+# command_toggle_preview = "v"
+# command_undo = "u"
+# command_redo = "U"
+# command_reload_config = "R"
+# command_manage_recovery = "M"
+# command_markdown_help = "K"
+# command_inspect_semantic_blocks = "b"
+# command_read_semantic_blocks = "B"
+# command_inspect_cursor_coordinates = "I"
+# command_open_palette = "colon"
+# command_show_help = "question_mark"
+# command_cursor_left = "h"
+# command_cursor_down = "j"
+# command_cursor_up = "k"
+# command_cursor_right = "l"
+# command_line_start = "0"
+# command_line_end = "dollar_sign"
+# command_document_start = "g"
+# command_document_end = "G"
 "#;
 
 pub const THEME_TEMPLATE: &str = r"/* TermDraft user theme overrides.
@@ -304,6 +358,8 @@ fn absolutize(path: &Path) -> Result<PathBuf, ConfigError> {
 
 #[cfg(test)]
 mod tests {
+    use crate::bindings::BINDING_DEFINITIONS;
+
     use super::*;
 
     #[test]
@@ -370,6 +426,17 @@ retention_days = 45
         assert_eq!(config.keybindings["redo"], "ctrl+r,ctrl+shift+r");
         assert_eq!(config.keybindings["quit"], "ctrl+q");
         assert_eq!(config.keybindings.len(), 52);
+    }
+
+    #[test]
+    fn generated_template_documents_every_configurable_binding() {
+        for binding in BINDING_DEFINITIONS {
+            assert!(
+                CONFIG_TEMPLATE.contains(&format!("# {} =", binding.id)),
+                "missing template example for {}",
+                binding.id
+            );
+        }
     }
 
     #[test]
