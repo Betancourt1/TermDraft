@@ -15,7 +15,7 @@ use crate::app::{
 };
 use crate::coordinate_diagnostic::CoordinateDiagnostic;
 use crate::document::LineEnding;
-use crate::editor::inline_preview_editor;
+use crate::editor::style_cursor;
 use crate::markdown::render_markdown;
 use crate::markdown_help::MARKDOWN_SYNTAX_HELP;
 use crate::recovery::{RecoveryRecord, RecoveryRecordStatus};
@@ -255,10 +255,15 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
     }
     frame.render_widget(&tab.editor, area);
     let cursor_position = if inline {
-        let rendered = inline_preview_editor(&tab.editor);
+        tab.refresh_inline_editor();
+        style_cursor(&mut tab.inline_editor, mode);
+        if mode == Mode::Command {
+            tab.inline_editor
+                .set_cursor_line_style(Style::new().bg(Color::Rgb(10, 10, 10)));
+        }
         frame.render_widget(Clear, area);
-        frame.render_widget(&rendered, area);
-        rendered.rendered_cursor_position()
+        frame.render_widget(&tab.inline_editor, area);
+        tab.inline_editor.rendered_cursor_position()
     } else {
         tab.editor.rendered_cursor_position()
     };
@@ -267,6 +272,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
     }
     tab.editor.clear_custom_highlight();
     tab.editor.set_cursor_line_style(Style::new());
+    tab.inline_editor.set_cursor_line_style(Style::new());
 }
 
 fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {

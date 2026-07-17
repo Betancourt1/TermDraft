@@ -83,6 +83,57 @@ pub fn inline_preview_editor<'a>(editor: &TextArea<'a>) -> TextArea<'a> {
     rendered
 }
 
+/// Update the raw active line without resetting the inline preview viewport.
+pub fn sync_inline_preview_cursor(
+    rendered: &mut TextArea<'_>,
+    source: &TextArea<'_>,
+    previous_cursor_line: usize,
+) {
+    let source_lines = source.lines();
+    let cursor = source.cursor();
+    let cursor_line = cursor.0;
+    let table_lines = (0..source_lines.len())
+        .map(|row| table_line_kind(source_lines, row))
+        .collect::<Vec<_>>();
+
+    for row in [previous_cursor_line, cursor_line] {
+        let Some(source_line) = source_lines.get(row) else {
+            continue;
+        };
+        let line = if row == cursor_line {
+            source_line.clone()
+        } else {
+            render_inline_line(source_line, table_lines[row])
+        };
+        replace_presentation_line(rendered, row, &line);
+    }
+
+    rendered.move_cursor(tui_textarea::CursorMove::Jump(
+        u16::try_from(cursor.0).unwrap_or(u16::MAX),
+        u16::try_from(cursor.1).unwrap_or(u16::MAX),
+    ));
+    rendered.clear_custom_highlight();
+    apply_inline_styles(rendered, source_lines, cursor_line, &table_lines);
+}
+
+fn replace_presentation_line(editor: &mut TextArea<'_>, row: usize, replacement: &str) {
+    if editor
+        .lines()
+        .get(row)
+        .is_some_and(|line| line == replacement)
+    {
+        return;
+    }
+    editor.move_cursor(tui_textarea::CursorMove::Jump(
+        u16::try_from(row).unwrap_or(u16::MAX),
+        0,
+    ));
+    if editor.lines().get(row).is_some_and(|line| !line.is_empty()) {
+        editor.delete_line_by_end();
+    }
+    editor.insert_str(replacement);
+}
+
 fn apply_inline_styles(
     editor: &mut TextArea<'_>,
     lines: &[String],

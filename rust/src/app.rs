@@ -28,7 +28,8 @@ use crate::continuation::{EnterAction, action_for};
 use crate::coordinate_diagnostic::{CoordinateDiagnostic, diagnose_coordinate};
 use crate::document::{Document, Encoding, LineEnding, MixedSource};
 use crate::editor::{
-    apply_editor_config, source_from_textarea, style_cursor, textarea_from_source,
+    apply_editor_config, inline_preview_editor, source_from_textarea, style_cursor,
+    sync_inline_preview_cursor, textarea_from_source,
 };
 use crate::path_filter::parse_path_filter;
 use crate::persistence::{LoadedFile, SaveError, load_file, normalize_line_endings, save_atomic};
@@ -682,6 +683,9 @@ pub const COMMANDS: &[CommandSpec] = &[
 pub struct EditorTab {
     pub document: Document,
     pub editor: TextArea<'static>,
+    pub inline_editor: TextArea<'static>,
+    inline_source_lines: Vec<String>,
+    inline_cursor: (usize, usize),
     pending_mixed_open: bool,
     undo_groups: Vec<usize>,
     redo_groups: Vec<usize>,
@@ -696,9 +700,13 @@ impl EditorTab {
     fn from_loaded(loaded: LoadedFile, config: &EditorConfig) -> Self {
         let mut editor = textarea_from_source(&loaded.text);
         apply_editor_config(&mut editor, config);
+        let inline_editor = inline_preview_editor(&editor);
         Self {
             document: loaded.into_document(),
+            inline_source_lines: editor.lines().to_vec(),
+            inline_cursor: editor.cursor(),
             editor,
+            inline_editor,
             pending_mixed_open: false,
             undo_groups: Vec::new(),
             redo_groups: Vec::new(),
@@ -708,6 +716,27 @@ impl EditorTab {
     pub fn sync_document(&mut self) {
         self.document
             .update_from_editor(source_from_textarea(&self.editor));
+    }
+
+    pub fn refresh_inline_editor(&mut self) {
+        let cursor = self.editor.cursor();
+        if self.inline_source_lines.as_slice() != self.editor.lines() {
+            self.inline_editor = inline_preview_editor(&self.editor);
+            self.inline_source_lines = self.editor.lines().to_vec();
+        } else if self.inline_cursor != cursor {
+            sync_inline_preview_cursor(&mut self.inline_editor, &self.editor, self.inline_cursor.0);
+        }
+        self.inline_cursor = cursor;
+    }
+
+    fn scroll_inline_editor(&mut self, mouse: MouseEvent) {
+        self.refresh_inline_editor();
+        self.inline_editor.input(mouse);
+        let cursor = self.inline_editor.cursor();
+        self.editor.move_cursor(CursorMove::Jump(
+            u16::try_from(cursor.0).unwrap_or(u16::MAX),
+            u16::try_from(cursor.1).unwrap_or(u16::MAX),
+        ));
     }
 
     fn record_edit(&mut self, history_items: usize) {
@@ -2201,7 +2230,9 @@ impl App {
             Ok(config) => {
                 for tab in &mut self.tabs {
                     apply_editor_config(&mut tab.editor, &config.editor);
+                    apply_editor_config(&mut tab.inline_editor, &config.editor);
                     style_cursor(&mut tab.editor, self.mode);
+                    style_cursor(&mut tab.inline_editor, self.mode);
                 }
                 self.view_mode = match config.editor.view_mode {
                     StartupView::Inline => ViewMode::Inline,
@@ -3344,10 +3375,15 @@ impl App {
                     self.scroll_preview_by(direction);
                 } else if UiRegions::contains(self.ui_regions.explorer, column, row) {
                     self.move_explorer(direction as isize);
-                } else if UiRegions::contains(self.ui_regions.editor, column, row)
-                    && let Some(tab) = self.active_tab_mut()
-                {
-                    tab.editor.input(mouse);
+                } else if UiRegions::contains(self.ui_regions.editor, column, row) {
+                    let inline = self.view_mode == ViewMode::Inline;
+                    if let Some(tab) = self.active_tab_mut() {
+                        if inline {
+                            tab.scroll_inline_editor(mouse);
+                        } else {
+                            tab.editor.input(mouse);
+                        }
+                    }
                 }
             }
             _ => {}
@@ -4845,6 +4881,9 @@ impl Drop for TerminalExtrasGuard {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
     use super::*;
 
     fn execute_palette_action(app: &mut App, action: CommandAction) {
@@ -5725,6 +5764,67 @@ command_manage_recovery = "Z"
         app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 80, 10));
         app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 80, 10));
         assert!(app.split_percent > 50);
+    }
+
+    #[test]
+    fn hybrid_mouse_scroll_survives_redraws() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        let source = std::iter::once("TOP_MARKER".to_owned())
+            .chain((1..40).map(|line| format!("# Line {line:02}")))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, source).unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 16)).unwrap();
+        let mouse = |kind, column, row| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let editor = app.ui_regions.editor.unwrap();
+        app.handle_mouse(mouse(
+            MouseEventKind::ScrollDown,
+            editor.x.saturating_add(2),
+            editor.y.saturating_add(2),
+        ));
+
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let after_scroll = terminal.backend().buffer().clone();
+        let screen = after_scroll
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert_eq!(app.active_tab().unwrap().editor.cursor().0, 1);
+        assert!(!screen.contains("TOP_MARKER"));
+        assert!(screen.contains("# Line 01"));
+
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        assert_eq!(terminal.backend().buffer(), &after_scroll);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::ScrollUp,
+            editor.x.saturating_add(2),
+            editor.y.saturating_add(2),
+        ));
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let after_scroll_up = terminal.backend().buffer().clone();
+        let screen = after_scroll_up
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert_eq!(app.active_tab().unwrap().editor.cursor().0, 1);
+        assert!(screen.contains("TOP_MARKER"));
+        assert!(screen.contains("# Line 01"));
+
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        assert_eq!(terminal.backend().buffer(), &after_scroll_up);
     }
 
     #[test]
