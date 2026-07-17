@@ -25,6 +25,7 @@ use tui_textarea::{CursorMove, TextArea};
 use crate::bindings::{Action as BindingAction, BindingScope};
 use crate::config::{self, Config, EditorConfig, StartupMode, StartupView};
 use crate::continuation::{EnterAction, action_for};
+use crate::coordinate_diagnostic::{CoordinateDiagnostic, diagnose_coordinate};
 use crate::document::{Document, Encoding, LineEnding};
 use crate::editor::{
     apply_editor_config, source_from_textarea, style_cursor, textarea_from_source,
@@ -39,6 +40,7 @@ use crate::search::{
     location_to_offset, offset_to_location, replace_document_matches, search_files_with_filter,
     search_workspace_text,
 };
+use crate::semantic_blocks::{SemanticBlockMap, map_semantic_blocks};
 use crate::session::{DocumentViewState, MAX_SESSION_DOCUMENTS, SessionState, SessionStore};
 use crate::ui;
 use crate::workspace::{Workspace, WorkspaceEntry, has_editable_suffix};
@@ -123,6 +125,21 @@ pub enum ConfirmAction {
 #[derive(Clone, Debug)]
 pub enum Overlay {
     Help,
+    MarkdownHelp {
+        scroll: u16,
+    },
+    SemanticInspector {
+        mapping: SemanticBlockMap,
+        selected: usize,
+    },
+    SemanticReader {
+        mapping: SemanticBlockMap,
+        scroll: u16,
+    },
+    CoordinateInspector {
+        diagnostic: CoordinateDiagnostic,
+        screen_position: Option<(u16, u16)>,
+    },
     Palette {
         input: TextInput,
         selected: usize,
@@ -371,6 +388,10 @@ pub enum CommandAction {
     CommandMode,
     Undo,
     Redo,
+    MarkdownHelp,
+    InspectSemanticBlocks,
+    ReadSemanticBlocks,
+    InspectCursorCoordinates,
     Help,
 }
 
@@ -516,6 +537,18 @@ pub const COMMANDS: &[CommandSpec] = &[
         action: CommandAction::Redo,
     },
     CommandSpec {
+        group: "EDIT",
+        label: "Inspect blocks",
+        shortcut: "b",
+        action: CommandAction::InspectSemanticBlocks,
+    },
+    CommandSpec {
+        group: "EDIT",
+        label: "Read blocks",
+        shortcut: "B",
+        action: CommandAction::ReadSemanticBlocks,
+    },
+    CommandSpec {
         group: "VIEW",
         label: "Show or hide preview",
         shortcut: "v",
@@ -526,6 +559,18 @@ pub const COMMANDS: &[CommandSpec] = &[
         label: "Show shortcuts",
         shortcut: "?",
         action: CommandAction::Help,
+    },
+    CommandSpec {
+        group: "VIEW",
+        label: "Markdown help",
+        shortcut: "K",
+        action: CommandAction::MarkdownHelp,
+    },
+    CommandSpec {
+        group: "VIEW",
+        label: "Cursor coordinates",
+        shortcut: "I",
+        action: CommandAction::InspectCursorCoordinates,
     },
 ];
 
@@ -1255,17 +1300,15 @@ impl App {
                     "Recovery draft management is not ported yet".to_owned(),
                 ));
             }
-            BindingAction::MarkdownHelp => {
-                self.overlay = Some(Overlay::Message(
-                    "Markdown reference is not ported yet".to_owned(),
-                ));
+            BindingAction::MarkdownHelp => self.execute_command(CommandAction::MarkdownHelp),
+            BindingAction::InspectSemanticBlocks => {
+                self.execute_command(CommandAction::InspectSemanticBlocks);
             }
-            BindingAction::InspectSemanticBlocks
-            | BindingAction::ReadSemanticBlocks
-            | BindingAction::InspectCursorCoordinates => {
-                self.overlay = Some(Overlay::Message(
-                    "This inspection view is not ported yet".to_owned(),
-                ));
+            BindingAction::ReadSemanticBlocks => {
+                self.execute_command(CommandAction::ReadSemanticBlocks);
+            }
+            BindingAction::InspectCursorCoordinates => {
+                self.execute_command(CommandAction::InspectCursorCoordinates);
             }
             BindingAction::CursorLeft => self.move_editor(CursorMove::Back),
             BindingAction::CursorDown => self.move_editor(CursorMove::Down),
@@ -1402,8 +1445,85 @@ impl App {
                     tab.redo();
                 }
             }
+            CommandAction::MarkdownHelp => {
+                self.overlay = Some(Overlay::MarkdownHelp { scroll: 0 });
+            }
+            CommandAction::InspectSemanticBlocks => self.open_semantic_inspector(),
+            CommandAction::ReadSemanticBlocks => self.open_semantic_reader(),
+            CommandAction::InspectCursorCoordinates => self.open_coordinate_inspector(),
             CommandAction::Help => self.overlay = Some(Overlay::Help),
         }
+    }
+
+    fn open_semantic_inspector(&mut self) {
+        self.sync_active_document();
+        let Some(source) = self.active_tab().map(|tab| tab.document.text.clone()) else {
+            self.status_message = Some("Open a Markdown document first".to_owned());
+            return;
+        };
+        self.overlay = Some(Overlay::SemanticInspector {
+            mapping: map_semantic_blocks(&source),
+            selected: 0,
+        });
+    }
+
+    fn open_semantic_reader(&mut self) {
+        self.sync_active_document();
+        let Some(source) = self.active_tab().map(|tab| tab.document.text.clone()) else {
+            self.status_message = Some("Open a Markdown document first".to_owned());
+            return;
+        };
+        self.overlay = Some(Overlay::SemanticReader {
+            mapping: map_semantic_blocks(&source),
+            scroll: 0,
+        });
+    }
+
+    fn open_coordinate_inspector(&mut self) {
+        self.sync_active_document();
+        let Some(tab) = self.active_tab() else {
+            self.status_message = Some("Open a Markdown document first".to_owned());
+            return;
+        };
+        let source = tab.document.text.clone();
+        let cursor = tab.editor.cursor();
+        let line_count = tab.editor.lines().len();
+        let tab_width = usize::from(tab.editor.tab_length());
+        let screen_position = tab
+            .editor
+            .rendered_cursor_position()
+            .map(|position| (position.y, position.x));
+        let wrap_width = self.editor_wrap_width(line_count);
+        match diagnose_coordinate(&source, cursor, wrap_width, tab_width) {
+            Ok(diagnostic) => {
+                self.overlay = Some(Overlay::CoordinateInspector {
+                    diagnostic,
+                    screen_position,
+                });
+            }
+            Err(error) => {
+                self.status_message = Some(format!("Cannot inspect cursor coordinates · {error}"));
+            }
+        }
+    }
+
+    fn editor_wrap_width(&self, line_count: usize) -> usize {
+        if !self.config.editor.soft_wrap {
+            return 0;
+        }
+        let editor_width = self
+            .ui_regions
+            .editor
+            .map_or(self.viewport_width, |area| area.width)
+            .min(108);
+        let line_number_width = if self.config.editor.show_line_numbers {
+            line_count.max(1).ilog10() as usize + 3
+        } else {
+            0
+        };
+        usize::from(editor_width)
+            .saturating_sub(line_number_width)
+            .max(1)
     }
 
     fn open_outline(&mut self) {
@@ -2393,7 +2513,72 @@ impl App {
             return;
         };
         let keep = match &mut overlay {
-            Overlay::Help | Overlay::Message(_) => key.code != KeyCode::Enter,
+            Overlay::Help | Overlay::CoordinateInspector { .. } | Overlay::Message(_) => {
+                key.code != KeyCode::Enter
+            }
+            Overlay::MarkdownHelp { scroll } => match key.code {
+                KeyCode::Enter | KeyCode::F(1) => false,
+                code => {
+                    update_scroll(
+                        scroll,
+                        code,
+                        crate::markdown_help::MARKDOWN_SYNTAX_HELP.lines().count(),
+                    );
+                    true
+                }
+            },
+            Overlay::SemanticInspector { mapping, selected } => {
+                let count = mapping.segments().len();
+                match key.code {
+                    KeyCode::Up => {
+                        *selected = selected.saturating_sub(1);
+                        true
+                    }
+                    KeyCode::Down => {
+                        *selected = (*selected + 1).min(count.saturating_sub(1));
+                        true
+                    }
+                    KeyCode::PageUp => {
+                        *selected = selected.saturating_sub(10);
+                        true
+                    }
+                    KeyCode::PageDown => {
+                        *selected = (*selected + 10).min(count.saturating_sub(1));
+                        true
+                    }
+                    KeyCode::Home => {
+                        *selected = 0;
+                        true
+                    }
+                    KeyCode::End => {
+                        *selected = count.saturating_sub(1);
+                        true
+                    }
+                    KeyCode::Enter => {
+                        let line = mapping
+                            .segments()
+                            .get(*selected)
+                            .map(|segment| segment.start_line);
+                        if let Some(line) = line {
+                            self.move_editor(CursorMove::Jump(
+                                u16::try_from(line).unwrap_or(u16::MAX),
+                                0,
+                            ));
+                            self.focus = Focus::Editor;
+                            self.narrow_pane = Focus::Editor;
+                        }
+                        false
+                    }
+                    _ => true,
+                }
+            }
+            Overlay::SemanticReader { mapping, scroll } => match key.code {
+                KeyCode::Enter => false,
+                code => {
+                    update_scroll(scroll, code, semantic_reader_line_count(mapping));
+                    true
+                }
+            },
             Overlay::Confirm(action) => match key.code {
                 KeyCode::Char('y') => match action {
                     ConfirmAction::Quit => {
@@ -3138,6 +3323,34 @@ impl App {
     }
 }
 
+fn update_scroll(scroll: &mut u16, code: KeyCode, line_count: usize) {
+    let maximum = u16::try_from(line_count.saturating_sub(1)).unwrap_or(u16::MAX);
+    *scroll = match code {
+        KeyCode::Up => scroll.saturating_sub(1),
+        KeyCode::Down => scroll.saturating_add(1).min(maximum),
+        KeyCode::PageUp => scroll.saturating_sub(10),
+        KeyCode::PageDown => scroll.saturating_add(10).min(maximum),
+        KeyCode::Home => 0,
+        KeyCode::End => maximum,
+        _ => *scroll,
+    };
+}
+
+fn semantic_reader_line_count(mapping: &SemanticBlockMap) -> usize {
+    mapping
+        .reader_segments()
+        .map(|(segment, _)| {
+            segment
+                .source
+                .split('\n')
+                .map(|line| line.chars().count().max(1).div_ceil(68))
+                .sum::<usize>()
+                + 2
+        })
+        .sum::<usize>()
+        .max(1)
+}
+
 fn edit_text_input(input: &mut TextInput, key: KeyEvent) -> bool {
     match key.code {
         KeyCode::Backspace => input.backspace(),
@@ -3475,6 +3688,117 @@ mod tests {
                 "DOCUMENT", "EDIT", "FILES", "MODE", "NAVIGATE", "VIEW"
             ])
         );
+    }
+
+    #[test]
+    fn diagnostic_commands_preserve_official_groups_labels_and_keys() {
+        let expected = [
+            (
+                "EDIT",
+                "Inspect blocks",
+                "b",
+                CommandAction::InspectSemanticBlocks,
+            ),
+            (
+                "EDIT",
+                "Read blocks",
+                "B",
+                CommandAction::ReadSemanticBlocks,
+            ),
+            ("VIEW", "Markdown help", "K", CommandAction::MarkdownHelp),
+            (
+                "VIEW",
+                "Cursor coordinates",
+                "I",
+                CommandAction::InspectCursorCoordinates,
+            ),
+        ];
+        for (group, label, shortcut, action) in expected {
+            assert!(COMMANDS.iter().any(|command| {
+                command.group == group
+                    && command.label == label
+                    && command.shortcut == shortcut
+                    && command.action == action
+            }));
+        }
+    }
+
+    #[test]
+    fn markdown_help_opens_without_a_document_and_scrolls() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let mut app = App::with_state_services(workspace, Config::default(), None, None).unwrap();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('K'), KeyModifiers::NONE));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::MarkdownHelp { scroll: 0 })
+        ));
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::MarkdownHelp { scroll: 1 })
+        ));
+        app.handle_overlay_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert!(app.overlay.is_none());
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        assert!(app.overlay.is_none());
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Open a Markdown document first")
+        );
+    }
+
+    #[test]
+    fn semantic_and_coordinate_overlays_are_read_only_and_navigable() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        let source = "# Heading\n\n- item\n\né🙂\n";
+        fs::write(&path, source).unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::with_state_services(workspace, Config::default(), None, None).unwrap();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        let Some(Overlay::SemanticInspector { mapping, selected }) = &app.overlay else {
+            panic!("semantic inspector did not open");
+        };
+        assert_eq!(*selected, 0);
+        assert_eq!(mapping.segments()[0].kind.label(), "heading");
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.overlay.is_none());
+        assert_eq!(app.active_tab().unwrap().editor.cursor(), (1, 0));
+        assert_eq!(app.focus, Focus::Editor);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::NONE));
+        let Some(Overlay::SemanticReader { mapping, scroll }) = &app.overlay else {
+            panic!("semantic reader did not open");
+        };
+        assert_eq!(*scroll, 0);
+        assert!(mapping.reader_segments().all(|(segment, _)| {
+            segment.kind != crate::semantic_blocks::SemanticBlockKind::Separator
+        }));
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::SemanticReader { scroll: 1, .. })
+        ));
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        app.move_editor(CursorMove::Jump(4, 1));
+        app.handle_key(KeyEvent::new(KeyCode::Char('I'), KeyModifiers::NONE));
+        let Some(Overlay::CoordinateInspector { diagnostic, .. }) = &app.overlay else {
+            panic!("coordinate inspector did not open");
+        };
+        assert_eq!((diagnostic.logical_line, diagnostic.logical_column), (4, 1));
+        assert!(diagnostic.utf8_byte_offset > diagnostic.source_offset);
+        assert!(diagnostic.grapheme_boundary);
+
+        let tab = app.active_tab().unwrap();
+        assert_eq!(tab.document.text, source);
+        assert_eq!(tab.document.saved_text, source);
+        assert!(!tab.document.is_dirty());
     }
 
     #[test]

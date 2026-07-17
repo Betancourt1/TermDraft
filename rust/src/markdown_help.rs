@@ -20,10 +20,10 @@ Rules              ---
 
 Enter continues bullets, numbered lists, tasks, and blockquotes. Press Enter on
 an empty marker to end the list. Press Esc for COMMAND mode and i to return to WRITE mode. In the
-focused preview, Tab and Shift+Tab select links and Enter activates the selection.
+focused preview, links and footnotes remain visible but inert; Tab, Shift+Tab, and Enter do not
+activate them.
 Alt+Down and Alt+Up move between rendered headings and show the current heading position.
-Footnotes navigate internally; external URLs remain inert. Raw HTML is displayed as text and never
-run.
+External URLs remain inert. Raw HTML is displayed as text and never run.
 
 Not rendered yet: math, underline, subscript, and superscript.
 Markdown has no portable __underline__ syntax; double underscores mean bold.
@@ -68,10 +68,11 @@ mod tests {
         for guidance in [
             "Enter continues bullets",
             "Press Esc for COMMAND mode",
-            "Tab and Shift+Tab select links",
+            "links and footnotes remain visible but inert",
+            "Tab, Shift+Tab, and Enter do not\nactivate them",
             "Alt+Down and Alt+Up move between rendered headings",
-            "external URLs remain inert",
-            "Raw HTML is displayed as text and never\nrun.",
+            "External URLs remain inert",
+            "Raw HTML is displayed as text and never run.",
             "Not rendered yet: math, underline, subscript, and superscript.",
             "double underscores mean bold",
             "not \"1.1.\"",

@@ -10,8 +10,11 @@ use crate::app::{
     App, ConfirmAction, FileFinderFocus, FindFocus, Focus, Mode, Overlay, TextInput, UiRegions,
     ViewMode, WorkspaceSearchFocus, command_candidates, text_search_mode_label,
 };
+use crate::coordinate_diagnostic::CoordinateDiagnostic;
 use crate::editor::apply_inline_preview;
+use crate::markdown_help::MARKDOWN_SYNTAX_HELP;
 use crate::search::{TextMatch, TextSearchMode};
+use crate::semantic_blocks::{ReaderPresentation, SemanticBlockMap};
 
 const BACKGROUND: Color = Color::Black;
 const SURFACE: Color = Color::Rgb(16, 16, 16);
@@ -335,7 +338,11 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
 #[allow(clippy::too_many_lines)]
 fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
     let area = match overlay {
-        Overlay::Help => popup(frame.area(), 78, 24),
+        Overlay::Help => popup(frame.area(), 78, 29),
+        Overlay::MarkdownHelp { .. } => popup(frame.area(), 76, 30),
+        Overlay::SemanticInspector { .. } => popup(frame.area(), 82, 34),
+        Overlay::SemanticReader { .. } => popup(frame.area(), 82, 36),
+        Overlay::CoordinateInspector { .. } => popup(frame.area(), 76, 16),
         Overlay::Palette { .. } => popup(frame.area(), 76, 22),
         Overlay::FileFinder { .. } => popup(frame.area(), 76, 23),
         Overlay::RecentDocuments { .. }
@@ -356,6 +363,21 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
         .padding(Padding::horizontal(2));
     match overlay {
         Overlay::Help => draw_help(frame, app, area, block),
+        Overlay::MarkdownHelp { scroll } => {
+            draw_markdown_help(frame, area, block, *scroll);
+        }
+        Overlay::SemanticInspector { mapping, selected } => {
+            draw_semantic_inspector(frame, area, block, mapping, *selected);
+        }
+        Overlay::SemanticReader { mapping, scroll } => {
+            draw_semantic_reader(frame, area, block, mapping, *scroll);
+        }
+        Overlay::CoordinateInspector {
+            diagnostic,
+            screen_position,
+        } => {
+            draw_coordinate_inspector(frame, area, block, diagnostic, *screen_position);
+        }
         Overlay::Palette { input, selected } => {
             let commands = command_candidates(&input.value);
             let items = commands
@@ -604,6 +626,243 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
             area,
         ),
     }
+}
+
+fn draw_markdown_help(frame: &mut Frame, area: Rect, block: Block<'_>, scroll: u16) {
+    let inner = block.inner(area);
+    frame.render_widget(block.title(" Markdown syntax "), area);
+    let [content, footer] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+    frame.render_widget(
+        Paragraph::new(MARKDOWN_SYNTAX_HELP)
+            .style(Style::new().fg(TEXT))
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0)),
+        content,
+    );
+    frame.render_widget(
+        Paragraph::new("↑↓ / PgUp/PgDn scroll · F1 / Enter / Esc close")
+            .style(Style::new().fg(MUTED)),
+        footer,
+    );
+}
+
+fn draw_semantic_inspector(
+    frame: &mut Frame,
+    area: Rect,
+    block: Block<'_>,
+    mapping: &SemanticBlockMap,
+    selected: usize,
+) {
+    let inner = block.inner(area);
+    frame.render_widget(block.title(" Semantic source blocks "), area);
+    let [intro, list_area, detail_area, footer] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Min(6),
+        Constraint::Length(10),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    frame.render_widget(
+        Paragraph::new("Parser ranges are read-only and use zero-based, end-exclusive internals.")
+            .style(Style::new().fg(MUTED))
+            .wrap(Wrap { trim: false }),
+        intro,
+    );
+
+    let segments = mapping.segments();
+    let items = if segments.is_empty() {
+        vec![ListItem::new("No semantic blocks in this document")]
+    } else {
+        segments
+            .iter()
+            .map(|segment| {
+                let detail = segment
+                    .detail
+                    .as_deref()
+                    .map_or_else(String::new, |detail| format!(" · {detail}"));
+                ListItem::new(format!(
+                    "{}{detail} · lines {}-{} · chars {}-{}",
+                    segment.kind.label(),
+                    segment.start_line + 1,
+                    segment.end_line.max(segment.start_line + 1),
+                    segment.start_character,
+                    segment.end_character,
+                ))
+            })
+            .collect()
+    };
+    let selection = (!segments.is_empty()).then(|| selected.min(segments.len() - 1));
+    let mut state = ratatui::widgets::ListState::default().with_selected(selection);
+    frame.render_stateful_widget(
+        List::new(items)
+            .highlight_symbol("› ")
+            .highlight_style(Style::new().bg(Color::Rgb(44, 44, 44)).fg(BRIGHT).bold()),
+        list_area,
+        &mut state,
+    );
+
+    let detail = segments.get(selected).map_or_else(
+        || "Nothing mapped. Empty documents keep an empty source map.".to_owned(),
+        |segment| {
+            let mut characters = segment.source.chars();
+            let mut preview = characters.by_ref().take(1_200).collect::<String>();
+            if characters.next().is_some() {
+                preview.push_str("\n… preview truncated");
+            }
+            format!(
+                "{} · [{}, {}) lines · [{}, {}) characters\n\n{preview}",
+                segment.kind.label(),
+                segment.start_line,
+                segment.end_line,
+                segment.start_character,
+                segment.end_character,
+            )
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(detail)
+            .style(Style::new().fg(TEXT).bg(PANEL))
+            .wrap(Wrap { trim: false }),
+        detail_area,
+    );
+    frame.render_widget(
+        Paragraph::new("↑↓ / PgUp/PgDn select · Enter jump to source · Esc close")
+            .style(Style::new().fg(MUTED)),
+        footer,
+    );
+}
+
+fn draw_semantic_reader(
+    frame: &mut Frame,
+    area: Rect,
+    block: Block<'_>,
+    mapping: &SemanticBlockMap,
+    scroll: u16,
+) {
+    let inner = block.inner(area);
+    frame.render_widget(block.title(" Experimental semantic reading "), area);
+    let [intro, content, footer] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    frame.render_widget(
+        Paragraph::new(
+            "Headings and paragraphs render independently. Every other construct stays visible as exact Markdown source.",
+        )
+        .style(Style::new().fg(MUTED))
+        .wrap(Wrap { trim: false }),
+        intro,
+    );
+
+    let mut lines = Vec::new();
+    for (segment, presentation) in mapping.reader_segments() {
+        let presentation_label = match presentation {
+            ReaderPresentation::Rendered => "rendered",
+            ReaderPresentation::SourceFallback => "source fallback",
+        };
+        lines.push(
+            Line::from(format!(
+                "{} · lines {}-{} · {presentation_label}",
+                segment.kind.label(),
+                segment.start_line + 1,
+                segment.end_line.max(segment.start_line + 1),
+            ))
+            .style(Style::new().fg(MUTED).bold()),
+        );
+        match presentation {
+            ReaderPresentation::Rendered => {
+                lines.extend(tui_markdown::from_str(&segment.source).lines);
+            }
+            ReaderPresentation::SourceFallback => {
+                lines.extend(segment.source.split('\n').map(|source| {
+                    Line::from(source.to_owned()).style(Style::new().fg(TEXT).bg(PANEL))
+                }));
+            }
+        }
+        lines.push(Line::from(""));
+    }
+    if lines.is_empty() {
+        lines.push(
+            Line::from("This document has no visible source blocks.").style(Style::new().fg(MUTED)),
+        );
+    }
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .style(Style::new().fg(TEXT))
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0)),
+        content,
+    );
+    frame.render_widget(
+        Paragraph::new("↑↓ / PgUp/PgDn scroll · Enter / Esc return to source")
+            .style(Style::new().fg(MUTED)),
+        footer,
+    );
+}
+
+fn draw_coordinate_inspector(
+    frame: &mut Frame,
+    area: Rect,
+    block: Block<'_>,
+    diagnostic: &CoordinateDiagnostic,
+    screen_position: Option<(u16, u16)>,
+) {
+    let inner = block.inner(area);
+    frame.render_widget(block.title(" Cursor coordinate diagnostic "), area);
+    let [content, footer] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+    let terminal = screen_position.map_or_else(
+        || "Terminal screen: unavailable".to_owned(),
+        |(row, cell)| format!("Terminal screen: row {row}, cell {cell}"),
+    );
+    let wrap_warning = if diagnostic.wrap_splits_grapheme {
+        "yes — unsafe for block editing"
+    } else {
+        "no"
+    };
+    let text = Text::from(vec![
+        Line::from(format!(
+            "Source character offset: {}",
+            diagnostic.source_offset
+        )),
+        Line::from(format!("UTF-8 byte offset: {}", diagnostic.utf8_byte_offset)),
+        Line::from(format!(
+            "Logical location: line {}, column {}",
+            diagnostic.logical_line, diagnostic.logical_column
+        )),
+        Line::from(format!(
+            "Wrapped location: row {}, cell {}",
+            diagnostic.visual_row, diagnostic.visual_cell
+        )),
+        Line::from(terminal),
+        Line::from(format!(
+            "At grapheme boundary: {}",
+            if diagnostic.grapheme_boundary {
+                "yes"
+            } else {
+                "no"
+            }
+        )),
+        Line::from(format!("Wrap splits a grapheme: {wrap_warning}")),
+        Line::from(""),
+        Line::from(
+            "Coordinates are a read-only snapshot. Terminal width rules, IME input, and bidirectional text remain outside this diagnostic.",
+        )
+        .style(Style::new().fg(MUTED)),
+    ]);
+    frame.render_widget(
+        Paragraph::new(text)
+            .style(Style::new().fg(TEXT))
+            .wrap(Wrap { trim: false }),
+        content,
+    );
+    frame.render_widget(
+        Paragraph::new("Enter / Esc close").style(Style::new().fg(MUTED)),
+        footer,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -943,6 +1202,7 @@ fn control_span(label: &str, focused: bool, enabled: bool) -> Span<'static> {
     Span::styled(label.to_owned(), style)
 }
 
+#[allow(clippy::too_many_lines)]
 fn draw_help(frame: &mut Frame, app: &App, area: Rect, block: Block<'_>) {
     let lines = vec![
         help_line(
@@ -1021,6 +1281,26 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, block: Block<'_>) {
             "Undo / redo",
         ),
         help_line(
+            "EDIT",
+            shortcut(app, &["command_inspect_semantic_blocks"]),
+            "Inspect semantic source blocks",
+        ),
+        help_line(
+            "EDIT",
+            shortcut(app, &["command_read_semantic_blocks"]),
+            "Read semantic blocks",
+        ),
+        help_line(
+            "VIEW",
+            shortcut(app, &["command_markdown_help"]),
+            "Markdown syntax",
+        ),
+        help_line(
+            "VIEW",
+            shortcut(app, &["command_inspect_cursor_coordinates"]),
+            "Cursor coordinates",
+        ),
+        help_line(
             "MENU",
             shortcut(app, &["command_open_palette", "command_palette"]),
             "Open grouped command menu",
@@ -1069,6 +1349,10 @@ fn command_shortcut(app: &App, action: crate::app::CommandAction) -> String {
         CommandAction::CommandMode => return "Esc".to_owned(),
         CommandAction::Undo => &["command_undo", "undo"],
         CommandAction::Redo => &["command_redo", "redo"],
+        CommandAction::MarkdownHelp => &["command_markdown_help"],
+        CommandAction::InspectSemanticBlocks => &["command_inspect_semantic_blocks"],
+        CommandAction::ReadSemanticBlocks => &["command_read_semantic_blocks"],
+        CommandAction::InspectCursorCoordinates => &["command_inspect_cursor_coordinates"],
         CommandAction::Help => &["command_show_help", "show_help"],
     };
     shortcut(app, ids)
@@ -1163,7 +1447,21 @@ mod tests {
 
     use super::*;
     use crate::config::{Config, StartupView};
+    use crate::coordinate_diagnostic::diagnose_coordinate;
+    use crate::semantic_blocks::map_semantic_blocks;
     use crate::workspace::Workspace;
+
+    fn rendered(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 
     #[test]
     fn renders_the_preserved_application_shell() {
@@ -1225,5 +1523,64 @@ mod tests {
         assert!(rendered.contains("Preview"));
         assert!(rendered.contains("COMMAND · PREVIEW"));
         assert!(rendered.contains("Preview 100%"));
+    }
+
+    #[test]
+    fn renders_all_diagnostic_windows_with_the_preserved_popup_chrome() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        let source = "# Heading\n\nParagraph\n\n- exact item\n";
+        fs::write(&path, source).unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(110, 44)).unwrap();
+
+        app.overlay = Some(Overlay::MarkdownHelp { scroll: 0 });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let screen = rendered(&terminal);
+        assert!(screen.contains("Markdown syntax"));
+        assert!(screen.contains("Headings"));
+        assert!(screen.contains("links and footnotes remain visible but inert"));
+
+        let mapping = map_semantic_blocks(source);
+        app.overlay = Some(Overlay::SemanticInspector {
+            mapping: mapping.clone(),
+            selected: 0,
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let screen = rendered(&terminal);
+        assert!(screen.contains("Semantic source blocks"));
+        assert!(screen.contains("Parser ranges are read-only"));
+        assert!(screen.contains("heading · H1 · lines 1-1"));
+        assert!(screen.contains("heading · [0, 1) lines"));
+
+        app.overlay = Some(Overlay::SemanticInspector {
+            mapping: SemanticBlockMap::default(),
+            selected: 0,
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let screen = rendered(&terminal);
+        assert!(screen.contains("No semantic blocks in this document"));
+        assert!(screen.contains("Nothing mapped. Empty documents keep an empty source map."));
+
+        app.overlay = Some(Overlay::SemanticReader { mapping, scroll: 0 });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let screen = rendered(&terminal);
+        assert!(screen.contains("Experimental semantic reading"));
+        assert!(screen.contains("heading · lines 1-1 · rendered"));
+        assert!(screen.contains("bullet list · lines 5-5 · source fallback"));
+        assert!(screen.contains("- exact item"));
+
+        app.overlay = Some(Overlay::CoordinateInspector {
+            diagnostic: diagnose_coordinate(source, (0, 1), 60, 4).unwrap(),
+            screen_position: Some((8, 12)),
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let screen = rendered(&terminal);
+        assert!(screen.contains("Cursor coordinate diagnostic"));
+        assert!(screen.contains("Source character offset: 1"));
+        assert!(screen.contains("Logical location: line 0, column 1"));
+        assert!(screen.contains("Terminal screen: row 8, cell 12"));
+        assert!(screen.contains("Coordinates are a read-only snapshot"));
     }
 }
