@@ -3,6 +3,7 @@
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 const TEXT: Color = Color::Rgb(218, 218, 218);
@@ -34,11 +35,22 @@ struct MarkdownRenderer {
     quote_depth: usize,
     code_block: bool,
     table: Option<TableState>,
+    table_width: Option<usize>,
 }
 
 /// Parse Markdown into terminal-native semantic lines without source markers.
 #[must_use]
 pub fn render_markdown(source: &str) -> Text<'static> {
+    render_markdown_inner(source, None)
+}
+
+/// Render Markdown while keeping table borders within the available terminal width.
+#[must_use]
+pub fn render_markdown_with_width(source: &str, width: usize) -> Text<'static> {
+    render_markdown_inner(source, Some(width.max(1)))
+}
+
+fn render_markdown_inner(source: &str, table_width: Option<usize>) -> Text<'static> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TASKLISTS);
@@ -47,7 +59,10 @@ pub fn render_markdown(source: &str) -> Text<'static> {
     options.insert(Options::ENABLE_DEFINITION_LIST);
     options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
 
-    let mut renderer = MarkdownRenderer::default();
+    let mut renderer = MarkdownRenderer {
+        table_width,
+        ..MarkdownRenderer::default()
+    };
     for event in Parser::new_ext(source, options) {
         renderer.handle(event);
     }
@@ -329,7 +344,7 @@ impl MarkdownRenderer {
             return;
         }
         let columns = table.rows.iter().map(Vec::len).max().unwrap_or_default();
-        let widths = (0..columns)
+        let natural_widths = (0..columns)
             .map(|column| {
                 table
                     .rows
@@ -340,25 +355,43 @@ impl MarkdownRenderer {
                     .unwrap_or_default()
             })
             .collect::<Vec<_>>();
+        let widths = fit_table_widths(natural_widths, self.table_width);
         self.lines.push(table_border('┌', '┬', '┐', &widths));
         for (index, row) in table.rows.iter().enumerate() {
-            let mut spans = vec![Span::styled("│ ", Style::new().fg(MUTED))];
-            for (column, width) in widths.iter().enumerate().take(columns) {
-                let cell = row.get(column).map_or("", String::as_str);
-                let style = if index < table.header_rows {
-                    Style::new().fg(BRIGHT).bold()
-                } else {
-                    Style::new().fg(TEXT)
-                };
-                let alignment = table
-                    .alignments
-                    .get(column)
-                    .copied()
-                    .unwrap_or(Alignment::None);
-                spans.push(Span::styled(align_cell(cell, *width, alignment), style));
-                spans.push(Span::styled(" │ ", Style::new().fg(MUTED)));
+            let wrapped_cells = widths
+                .iter()
+                .enumerate()
+                .map(|(column, width)| {
+                    wrap_cell(row.get(column).map_or("", String::as_str), *width)
+                })
+                .collect::<Vec<_>>();
+            let row_height = wrapped_cells.iter().map(Vec::len).max().unwrap_or(1);
+            for line_index in 0..row_height {
+                let mut spans = vec![Span::styled("│ ", Style::new().fg(MUTED))];
+                for (column, width) in widths.iter().enumerate().take(columns) {
+                    let cell = wrapped_cells[column]
+                        .get(line_index)
+                        .map_or("", String::as_str);
+                    let style = if index < table.header_rows {
+                        Style::new().fg(BRIGHT).bold()
+                    } else {
+                        Style::new().fg(TEXT)
+                    };
+                    let alignment = table
+                        .alignments
+                        .get(column)
+                        .copied()
+                        .unwrap_or(Alignment::None);
+                    spans.push(Span::styled(align_cell(cell, *width, alignment), style));
+                    let divider = if column + 1 == columns {
+                        " │"
+                    } else {
+                        " │ "
+                    };
+                    spans.push(Span::styled(divider, Style::new().fg(MUTED)));
+                }
+                self.lines.push(Line::from(spans));
             }
-            self.lines.push(Line::from(spans));
             if index + 1 == table.header_rows {
                 self.lines.push(table_border('├', '┼', '┤', &widths));
             }
@@ -397,6 +430,84 @@ fn align_cell(cell: &str, width: usize, alignment: Alignment) -> String {
         Alignment::None | Alignment::Left => (0, padding),
     };
     format!("{}{cell}{}", " ".repeat(left), " ".repeat(right))
+}
+
+fn fit_table_widths(mut widths: Vec<usize>, max_width: Option<usize>) -> Vec<usize> {
+    let Some(max_width) = max_width else {
+        return widths;
+    };
+    let border_width = widths.len().saturating_mul(3).saturating_add(1);
+    let available = max_width.saturating_sub(border_width);
+    let natural_total = widths.iter().sum::<usize>();
+    if natural_total <= available {
+        return widths;
+    }
+
+    let preferred_floors = widths
+        .iter()
+        .map(|width| (*width).clamp(1, 3))
+        .collect::<Vec<_>>();
+    let floors = if preferred_floors.iter().sum::<usize>() <= available {
+        preferred_floors
+    } else {
+        vec![1; widths.len()]
+    };
+    let mut total = natural_total;
+    while total > available {
+        let Some((column, _)) = widths
+            .iter()
+            .enumerate()
+            .filter(|(column, width)| **width > floors[*column])
+            .max_by_key(|(_, width)| **width)
+        else {
+            break;
+        };
+        widths[column] -= 1;
+        total -= 1;
+    }
+    widths
+}
+
+fn wrap_cell(cell: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    let mut current = String::new();
+
+    for word in cell.split_whitespace() {
+        let word_width = UnicodeWidthStr::width(word);
+        let gap = usize::from(!current.is_empty());
+        if word_width <= width
+            && UnicodeWidthStr::width(current.as_str()) + gap + word_width <= width
+        {
+            if gap == 1 {
+                current.push(' ');
+            }
+            current.push_str(word);
+            continue;
+        }
+        if !current.is_empty() {
+            lines.push(std::mem::take(&mut current));
+        }
+        if word_width <= width {
+            current.push_str(word);
+            continue;
+        }
+
+        let mut chunk_width = 0;
+        for grapheme in word.graphemes(true) {
+            let grapheme_width = UnicodeWidthStr::width(grapheme);
+            if !current.is_empty() && chunk_width + grapheme_width > width {
+                lines.push(std::mem::take(&mut current));
+                chunk_width = 0;
+            }
+            current.push_str(grapheme);
+            chunk_width += grapheme_width;
+        }
+    }
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(current);
+    }
+    lines
 }
 
 fn heading_style(level: HeadingLevel) -> Style {
@@ -466,6 +577,30 @@ mod tests {
         assert!(screen.contains("│ Name │ Count │ Note │"));
         assert!(screen.contains("├──────┼───────┼──────┤"));
         assert!(screen.contains("│ Ada  │     7 │  Hi  │"));
+    }
+
+    #[test]
+    fn preview_wraps_wide_cells_inside_the_table_border() {
+        let rendered = render_markdown_with_width(
+            "| Key | Action |\n| --- | --- |\n| K | An action that wraps |",
+            24,
+        );
+        let screen = plain(&rendered);
+
+        assert_eq!(
+            screen,
+            "┌─────┬────────────────┐\n\
+│ Key │ Action         │\n\
+├─────┼────────────────┤\n\
+│ K   │ An action that │\n\
+│     │ wraps          │\n\
+└─────┴────────────────┘"
+        );
+        assert!(
+            screen
+                .lines()
+                .all(|line| UnicodeWidthStr::width(line) <= 24)
+        );
     }
 
     #[test]

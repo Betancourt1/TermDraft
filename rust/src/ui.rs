@@ -16,7 +16,7 @@ use crate::app::{
 use crate::coordinate_diagnostic::CoordinateDiagnostic;
 use crate::document::LineEnding;
 use crate::editor::style_cursor;
-use crate::markdown::render_markdown;
+use crate::markdown::render_markdown_with_width;
 use crate::markdown_help::MARKDOWN_SYNTAX_HELP;
 use crate::recovery::{RecoveryRecord, RecoveryRecordStatus};
 use crate::search::{TextMatch, TextSearchMode};
@@ -279,7 +279,6 @@ fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
     let Some(source) = app.active_tab().map(|tab| tab.document.text.clone()) else {
         return;
     };
-    let text = render_markdown(&source);
     let title_style = if app.focus == Focus::Preview {
         Style::new().fg(BRIGHT).bold()
     } else {
@@ -297,6 +296,7 @@ fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
     let area = centered(area, 104);
     let inner = block.inner(area);
     let content_width = usize::from(inner.width.max(1));
+    let text = render_markdown_with_width(&source, content_width);
     let line_count = text
         .lines
         .iter()
@@ -2434,6 +2434,40 @@ mod tests {
         assert!(preview.contains("┌─ CODE · RUST"));
         assert!(preview.contains("│ let x = 1;"));
         assert!(!preview.contains("```"));
+    }
+
+    #[test]
+    fn split_preview_keeps_wrapped_table_rows_inside_their_borders() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(
+            &path,
+            "| Key | Action |\n| --- | --- |\n| K | An action that needs to wrap cleanly inside the preview |",
+        )
+        .unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut config = Config::default();
+        config.editor.view_mode = StartupView::Split;
+        let mut app = App::with_config(workspace, config).unwrap();
+        app.focus = Focus::Preview;
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let preview = rendered_area(&terminal, app.ui_regions.preview.unwrap());
+        let table_lines = preview
+            .lines()
+            .map(str::trim)
+            .filter(|line| matches!(line.chars().next(), Some('┌' | '├' | '└' | '│')))
+            .collect::<Vec<_>>();
+        assert!(table_lines.len() >= 6);
+        assert!(
+            table_lines
+                .iter()
+                .all(|line| { matches!(line.chars().last(), Some('┐' | '┤' | '┘' | '│')) })
+        );
+        assert!(preview.contains("wrap"));
+        assert!(preview.contains("cleanly"));
     }
 
     #[test]
