@@ -256,6 +256,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
     frame.render_widget(&tab.editor, area);
     let cursor_position = if inline {
         let rendered = inline_preview_editor(&tab.editor);
+        frame.render_widget(Clear, area);
         frame.render_widget(&rendered, area);
         rendered.rendered_cursor_position()
     } else {
@@ -314,7 +315,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Focus::Preview => " · PREVIEW",
     };
     let mut spans = vec![Span::styled(
-        format!(" {}{focus} ", app.mode.label()),
+        format!(" {} · {}{focus} ", app.mode.label(), app.view_mode.label()),
         Style::new().fg(BRIGHT).bold(),
     )];
     if let Some(tab) = app.active_tab() {
@@ -2300,11 +2301,10 @@ mod tests {
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
 
+        assert!(rendered(&terminal).contains("COMMAND · HYBRID"));
         let editor = rendered_area(&terminal, app.ui_regions.editor.unwrap());
         assert!(editor.contains("# Current source"));
-        assert!(editor.contains("Inactive"));
-        assert!(editor.contains("bold"));
-        assert!(editor.contains("link"));
+        assert!(editor.contains("Inactive bold link"));
         assert!(!editor.contains("**"));
         assert!(!editor.contains("https://example.com"));
         assert_eq!(app.active_tab().unwrap().document.text, source);
@@ -2413,7 +2413,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(rendered.contains("Preview"));
-        assert!(rendered.contains("COMMAND · PREVIEW"));
+        assert!(rendered.contains("COMMAND · SPLIT · PREVIEW"));
         assert!(rendered.contains("Preview 100%"));
         let preview = rendered_area(&terminal, app.ui_regions.preview.unwrap());
         assert!(preview.contains("Note"));

@@ -18,7 +18,7 @@ view uses a semantic Markdown parser. Links, images, footnotes, and raw HTML are
 
 | Construct | Inline view | Split preview |
 | --- | --- | --- |
-| Headings and common inline markers | Presentation-only styling | Rendered terminal text |
+| Headings and common inline markers | Compact rendered terminal text | Rendered terminal text |
 | Lists, tasks, quotes, and code | Rendered outside the active source line | Rendered terminal text |
 | Tables | Rendered borders outside the active source line | Rendered bordered table |
 | GFM alerts, footnotes, definitions | Source-faithful fallback where unsupported | Rendered labels without interactive navigation |

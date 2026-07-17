@@ -8,6 +8,7 @@ use tui_textarea::{CursorRenderMode, TextArea, WrapMode};
 
 use crate::app::Mode;
 use crate::config::EditorConfig;
+use crate::markdown::render_markdown;
 
 const MUTED: Color = Color::Rgb(92, 92, 92);
 const TEXT: Color = Color::Rgb(218, 218, 218);
@@ -116,6 +117,13 @@ fn apply_inline_styles(
             emphasis(),
             Style::new().fg(TEXT).italic(),
         );
+        highlight_wrapped(
+            editor,
+            row,
+            line,
+            emphasis_underscore(),
+            Style::new().fg(TEXT).italic(),
+        );
         highlight_links(editor, row, line);
         highlight_markers(editor, row, line);
         if table_lines[row] == Some(TableLineKind::Header) {
@@ -126,98 +134,23 @@ fn apply_inline_styles(
 }
 
 fn render_inline_line(source: &str, table_line: Option<TableLineKind>) -> String {
-    let mut characters = source.chars().collect::<Vec<_>>();
-
-    if table_line == Some(TableLineKind::Separator) {
-        render_table_separator(&mut characters);
-        return characters.into_iter().collect();
+    match table_line {
+        Some(TableLineKind::Separator) => compact_table_separator(source),
+        Some(TableLineKind::Header | TableLineKind::Body) => compact_table_row(source),
+        None => render_markdown(source)
+            .lines
+            .into_iter()
+            .filter_map(|line| {
+                let text = line
+                    .spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>();
+                (!text.is_empty()).then_some(text)
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
     }
-    if thematic_break().is_match(source) {
-        for character in &mut characters {
-            if !character.is_whitespace() {
-                *character = '─';
-            }
-        }
-        return characters.into_iter().collect();
-    }
-    if let Some(captures) = heading().captures(source)
-        && let Some(marker) = captures.get(1)
-    {
-        blank_bytes(&mut characters, source, marker.start(), marker.end());
-    } else if let Some(captures) = quote().captures(source)
-        && let Some(marker) = captures.get(1)
-    {
-        replace_byte(&mut characters, source, marker.start(), '│');
-    } else if let Some(captures) = bullet().captures(source)
-        && let Some(marker) = captures.get(1)
-    {
-        replace_byte(&mut characters, source, marker.start(), '•');
-    }
-
-    if let Some(captures) = task().captures(source)
-        && let Some(state) = captures.get(1)
-    {
-        let state_index = byte_to_char(source, state.start());
-        let marker_start = state_index.saturating_sub(1);
-        let marker = if state.as_str().eq_ignore_ascii_case("x") {
-            '☑'
-        } else {
-            '☐'
-        };
-        if marker_start + 2 < characters.len() {
-            characters[marker_start..marker_start + 3].copy_from_slice(&[marker, ' ', ' ']);
-        }
-    }
-    if let Some(captures) = fence().captures(source)
-        && let Some(marker) = captures.get(1)
-    {
-        blank_bytes(&mut characters, source, marker.start(), marker.end());
-    }
-
-    blank_wrapped_markers(&mut characters, source, inline_code());
-    blank_wrapped_markers(&mut characters, source, image());
-    blank_wrapped_markers(&mut characters, source, link());
-    blank_wrapped_markers(&mut characters, source, bold());
-    blank_wrapped_markers(&mut characters, source, bold_underscore());
-    blank_wrapped_markers(&mut characters, source, strike());
-    blank_wrapped_markers(&mut characters, source, emphasis());
-    blank_wrapped_markers(&mut characters, source, emphasis_underscore());
-
-    if matches!(
-        table_line,
-        Some(TableLineKind::Header | TableLineKind::Body)
-    ) {
-        for position in table_pipe_positions(source) {
-            characters[position] = '│';
-        }
-    }
-    characters.into_iter().collect()
-}
-
-fn blank_wrapped_markers(characters: &mut [char], source: &str, regex: &Regex) {
-    for captures in regex.captures_iter(source) {
-        let (Some(whole), Some(content)) = (captures.get(0), captures.get(1)) else {
-            continue;
-        };
-        blank_bytes(characters, source, whole.start(), content.start());
-        blank_bytes(characters, source, content.end(), whole.end());
-    }
-}
-
-fn blank_bytes(characters: &mut [char], source: &str, start: usize, end: usize) {
-    let start = byte_to_char(source, start);
-    let end = byte_to_char(source, end);
-    characters[start..end].fill(' ');
-}
-
-fn replace_byte(characters: &mut [char], source: &str, byte: usize, replacement: char) {
-    if let Some(character) = characters.get_mut(byte_to_char(source, byte)) {
-        *character = replacement;
-    }
-}
-
-fn byte_to_char(source: &str, byte: usize) -> usize {
-    source[..byte].chars().count()
 }
 
 fn highlight_heading(editor: &mut TextArea<'_>, row: usize, line: &str) {
@@ -238,11 +171,8 @@ fn highlight_heading(editor: &mut TextArea<'_>, row: usize, line: &str) {
         3 => Color::Rgb(218, 218, 218),
         _ => Color::Rgb(196, 196, 196),
     };
-    let rendered_line = editor.lines()[row].clone();
-    let start = char_to_byte(&rendered_line, byte_to_char(line, marker.end()));
-    let end = rendered_line.len();
-    editor.custom_highlight(((row, start), (row, end)), Style::new().fg(color).bold(), 5);
-    add_match(editor, row, line, marker, Style::new().fg(MUTED), 30);
+    let end = editor.lines()[row].len();
+    editor.custom_highlight(((row, 0), (row, end)), Style::new().fg(color).bold(), 5);
 }
 
 fn highlight_wrapped(
@@ -256,64 +186,60 @@ fn highlight_wrapped(
         let Some(content) = captures.get(1) else {
             continue;
         };
-        add_match(editor, row, line, content, style, 30);
+        add_rendered_text(editor, row, content.as_str(), style, 30);
     }
 }
 
 fn highlight_links(editor: &mut TextArea<'_>, row: usize, line: &str) {
-    for captures in link().captures_iter(line) {
-        let Some(label) = captures.get(1) else {
-            continue;
-        };
-        add_match(
-            editor,
-            row,
-            line,
-            label,
-            Style::new().fg(TEXT).underlined(),
-            30,
-        );
+    for (pattern, style) in [
+        (link(), Style::new().fg(TEXT).underlined()),
+        (image(), Style::new().fg(TEXT).italic()),
+    ] {
+        for captures in pattern.captures_iter(line) {
+            let Some(label) = captures.get(1) else {
+                continue;
+            };
+            add_rendered_text(editor, row, label.as_str(), style, 30);
+        }
     }
 }
 
 fn highlight_markers(editor: &mut TextArea<'_>, row: usize, line: &str) {
-    for marker in task().find_iter(line) {
-        add_match(
+    if let Some(captures) = task().captures(line)
+        && let Some(state) = captures.get(1)
+    {
+        add_rendered_text(
             editor,
             row,
-            line,
-            marker,
+            if state.as_str().eq_ignore_ascii_case("x") {
+                "☑"
+            } else {
+                "☐"
+            },
             Style::new().fg(BRIGHT).bold(),
             25,
         );
     }
-    if let Some(marker) = bullet().find(line) {
-        add_match(editor, row, line, marker, Style::new().fg(MUTED), 25);
+    if bullet().is_match(line) {
+        add_rendered_text(editor, row, "•", Style::new().fg(MUTED), 25);
     }
-    for marker in table_pipe().find_iter(line) {
-        add_match(editor, row, line, marker, Style::new().fg(MUTED), 10);
+    if quote().is_match(line) {
+        add_rendered_text(editor, row, "│", Style::new().fg(MUTED), 25);
     }
+    add_rendered_text(editor, row, "│", Style::new().fg(MUTED), 10);
 }
 
-fn add_match(
+fn add_rendered_text(
     editor: &mut TextArea<'_>,
     row: usize,
-    source: &str,
-    matched: regex::Match<'_>,
+    text: &str,
     style: Style,
     priority: u8,
 ) {
     let rendered_line = editor.lines()[row].clone();
-    let start = char_to_byte(&rendered_line, byte_to_char(source, matched.start()));
-    let end = char_to_byte(&rendered_line, byte_to_char(source, matched.end()));
-    editor.custom_highlight(((row, start), (row, end)), style, priority);
-}
-
-fn char_to_byte(source: &str, character: usize) -> usize {
-    source
-        .char_indices()
-        .nth(character)
-        .map_or(source.len(), |(byte, _)| byte)
+    for (start, _) in rendered_line.match_indices(text) {
+        editor.custom_highlight(((row, start), (row, start + text.len())), style, priority);
+    }
 }
 
 fn heading() -> &'static Regex {
@@ -374,24 +300,6 @@ fn task() -> &'static Regex {
 fn bullet() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| Regex::new(r"^\s*([-+*])\s+").expect("valid bullet regex"))
-}
-
-fn table_pipe() -> &'static Regex {
-    static REGEX: OnceLock<Regex> = OnceLock::new();
-    REGEX.get_or_init(|| Regex::new(r"\|").expect("valid table regex"))
-}
-
-fn thematic_break() -> &'static Regex {
-    static REGEX: OnceLock<Regex> = OnceLock::new();
-    REGEX.get_or_init(|| {
-        Regex::new(r"^\s{0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")
-            .expect("valid thematic-break regex")
-    })
-}
-
-fn fence() -> &'static Regex {
-    static REGEX: OnceLock<Regex> = OnceLock::new();
-    REGEX.get_or_init(|| Regex::new(r"^\s{0,3}(`{3,}|~{3,})").expect("valid fence regex"))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -456,6 +364,21 @@ fn table_pipe_positions(source: &str) -> Vec<usize> {
         .collect()
 }
 
+fn compact_table_row(source: &str) -> String {
+    let trimmed = source.trim();
+    let mut characters = trimmed.chars().collect::<Vec<_>>();
+    for position in table_pipe_positions(trimmed) {
+        characters[position] = '│';
+    }
+    characters.into_iter().collect()
+}
+
+fn compact_table_separator(source: &str) -> String {
+    let mut characters = source.trim().chars().collect::<Vec<_>>();
+    render_table_separator(&mut characters);
+    characters.into_iter().collect()
+}
+
 fn render_table_separator(characters: &mut [char]) {
     let Some(start) = characters
         .iter()
@@ -501,7 +424,7 @@ mod tests {
         let mut editor = textarea_from_source("á **bold**\ncurrent");
         editor.move_cursor(tui_textarea::CursorMove::Down);
         let rendered = inline_preview_editor(&editor);
-        assert_eq!(rendered.lines()[0], "á   bold  ");
+        assert_eq!(rendered.lines()[0], "á bold");
         assert_eq!(source_from_textarea(&editor), "á **bold**\ncurrent");
     }
 
@@ -511,7 +434,7 @@ mod tests {
         use ratatui::backend::TestBackend;
 
         let mut editor = textarea_from_source(
-            "current\n# Heading\n**bold** and [link](url)\n- [x] finished\n| A | B |\n|---|---|\n| 1 | 2 |",
+            "**current**\n# Heading\n**bold** and [link](url)\n- [x] finished\n| A | B |\n|---|---|\n| 1 | 2 |",
         );
         editor.remove_line_number();
         let rendered_editor = inline_preview_editor(&editor);
@@ -532,15 +455,24 @@ mod tests {
         assert!(screen.contains("Heading"));
         assert!(!screen.contains("# Heading"));
         assert!(screen.contains("bold"));
-        assert!(!screen.contains("**"));
+        assert!(screen.contains("**current**"));
         assert!(screen.contains("link"));
         assert!(!screen.contains("(url)"));
         assert!(screen.contains("• ☑"));
         assert!(screen.contains("├───┼───┤"));
-        assert_eq!(rendered_editor.lines()[0], "current");
+        assert_eq!(rendered_editor.lines()[0], "**current**");
         assert_eq!(
             source_from_textarea(&editor),
-            "current\n# Heading\n**bold** and [link](url)\n- [x] finished\n| A | B |\n|---|---|\n| 1 | 2 |"
+            "**current**\n# Heading\n**bold** and [link](url)\n- [x] finished\n| A | B |\n|---|---|\n| 1 | 2 |"
+        );
+
+        editor.move_cursor(tui_textarea::CursorMove::Down);
+        let moved = inline_preview_editor(&editor);
+        assert_eq!(moved.lines()[0], "current");
+        assert_eq!(moved.lines()[1], "# Heading");
+        assert_eq!(
+            source_from_textarea(&editor),
+            "**current**\n# Heading\n**bold** and [link](url)\n- [x] finished\n| A | B |\n|---|---|\n| 1 | 2 |"
         );
     }
 }

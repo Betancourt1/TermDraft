@@ -111,9 +111,10 @@ The Rust frontend preserves two interaction modes:
 
 It also preserves the two configured view modes:
 
-1. **Inline** keeps the complete source textarea authoritative and gives inactive lines
-   presentation-only styles for common headings, emphasis, strong text, strikeout, inline code,
-   links, tasks, bullets, and table separators. The cursor line remains exact source.
+1. **Inline** keeps the complete source textarea authoritative while semantically compacting
+   inactive lines into rendered headings, emphasis, strong text, strikeout, inline code, links,
+   tasks, bullets, and tables. Delimiters are removed rather than replaced by equal-width gaps;
+   the cursor line remains exact source.
 2. **Split** shows the exact source editor beside a read-only semantic `pulldown-cmark` preview.
    Rust reparses that complete preview synchronously on each draw; Python instead uses a
    revisioned/debounced preview pipeline.

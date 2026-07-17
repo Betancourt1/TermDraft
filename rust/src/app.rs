@@ -82,7 +82,7 @@ impl ViewMode {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Inline => "INLINE",
+            Self::Inline => "HYBRID",
             Self::Split => "SPLIT",
         }
     }

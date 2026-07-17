@@ -15,7 +15,7 @@ keyboard-first workbench without requiring Python or Textual at runtime.
 │  projects/               │                                          │
 │   termdraft.md           │ # Current line is exact Markdown source  │
 ├──────────────────────────┴──────────────────────────────────────────┤
-│ COMMAND INLINE │ journal/2026-07-11.md ● modified │ 36 words      │
+│ COMMAND HYBRID │ journal/2026-07-11.md ● modified │ 36 words      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -107,9 +107,9 @@ summary. [RUST_PORT.md](RUST_PORT.md) also inventories the fixed underlying edit
 
 - A standalone Ratatui/Crossterm frontend with the preserved title, tabs, Files pane, centered
   editor, compact status line, command palette, and explicit terminal cursor shapes
-- Inline Markdown presentation by default: the cursor line stays exact source while the remaining
-  lines are rendered. A configurable resizable split layout adds a semantic read-only preview;
-  neither presentation path rewrites the document
+- Hybrid Markdown presentation by default: the cursor line stays exact source while the remaining
+  lines become compact rendered text without delimiter-sized gaps. A configurable resizable split
+  layout adds a semantic read-only preview; neither presentation path rewrites the document
 - Multiple documents with independent undo histories, restored tabs, active document, and cursor
   positions
 - Fuzzy file finding, four-mode workspace search, active-document find and replace, recent documents,
