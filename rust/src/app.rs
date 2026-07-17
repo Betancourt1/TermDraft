@@ -3216,12 +3216,37 @@ impl App {
             if self.focus == Focus::Editor || !is_navigation_action(action) {
                 self.execute_binding_action(action);
             }
-        } else if key.code == KeyCode::Tab && self.show_explorer {
-            self.focus = if self.focus == Focus::Explorer {
-                Focus::Editor
-            } else {
-                Focus::Explorer
-            };
+        } else {
+            match key.code {
+                KeyCode::Left
+                    if self.focus == Focus::Editor && key.modifiers == KeyModifiers::NONE =>
+                {
+                    self.move_editor(CursorMove::Back);
+                }
+                KeyCode::Down
+                    if self.focus == Focus::Editor && key.modifiers == KeyModifiers::NONE =>
+                {
+                    self.move_editor(CursorMove::Down);
+                }
+                KeyCode::Up
+                    if self.focus == Focus::Editor && key.modifiers == KeyModifiers::NONE =>
+                {
+                    self.move_editor(CursorMove::Up);
+                }
+                KeyCode::Right
+                    if self.focus == Focus::Editor && key.modifiers == KeyModifiers::NONE =>
+                {
+                    self.move_editor(CursorMove::Forward);
+                }
+                KeyCode::Tab if self.show_explorer => {
+                    self.focus = if self.focus == Focus::Explorer {
+                        Focus::Editor
+                    } else {
+                        Focus::Explorer
+                    };
+                }
+                _ => {}
+            }
         }
     }
 
@@ -5703,6 +5728,46 @@ command_manage_recovery = "Z"
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
         assert!(matches!(app.overlay, Some(Overlay::Find { .. })));
+    }
+
+    #[test]
+    fn command_mode_unbound_arrows_navigate_and_bound_arrows_take_priority() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "alpha\nbeta\ncharlie").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.active_tab_mut()
+            .unwrap()
+            .editor
+            .move_cursor(CursorMove::Jump(1, 2));
+
+        for (key, expected) in [
+            (KeyCode::Up, (0, 2)),
+            (KeyCode::Left, (0, 1)),
+            (KeyCode::Down, (1, 1)),
+            (KeyCode::Right, (1, 2)),
+        ] {
+            app.handle_key(KeyEvent::new(key, KeyModifiers::NONE));
+            assert_eq!(app.active_tab().unwrap().editor.cursor(), expected);
+        }
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(app.active_tab().unwrap().editor.cursor(), (1, 2));
+
+        app.config.keybindings = crate::bindings::Keymap::resolve(
+            &[("command_cursor_left".to_owned(), "right".to_owned())]
+                .into_iter()
+                .collect(),
+        )
+        .unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+
+        let tab = app.active_tab().unwrap();
+        assert_eq!(tab.editor.cursor(), (1, 1));
+        assert_eq!(source_from_textarea(&tab.editor), "alpha\nbeta\ncharlie");
+        assert!(!tab.document.is_dirty());
     }
 
     #[test]
