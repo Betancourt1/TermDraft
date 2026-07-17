@@ -50,8 +50,9 @@ cargo install --path . --locked
 termdraft-rs ~/Documents/notes
 ```
 
-No Rust package or Homebrew formula is published for this comparison branch. The interface uses
-ordinary Unicode symbols and does not require a Nerd Font.
+No Rust package or Homebrew formula is published for this comparison branch. The Files pane uses
+the same Yazi-style Nerd Font folder and Markdown icons as the Python application, so a Nerd Font is
+recommended for the intended interface.
 
 Useful non-interactive commands:
 
@@ -93,20 +94,22 @@ press `Esc` to return to COMMAND mode.
 
 In COMMAND mode, the arrow keys and `h`, `j`, `k`, `l` move through the editor. `Tab` moves focus
 between the editor and Files; the same letter keys navigate Files, and `Enter` opens the selected
-document.
+document. While Files is focused, `Shift+Left` and `Shift+Right` resize its pane; its divider can
+also be dragged with the mouse.
 Global shortcuts include `Ctrl+S`, `Ctrl+Q`, `Ctrl+P`, `Ctrl+F`, `Ctrl+B`, `Ctrl+E`, and
 `Ctrl+PageUp` / `Ctrl+PageDown`.
 
 Run `termdraft-rs --commands` for the effective TermDraft COMMAND, Files, global, editor-action, and
-preview-action reference. Press `?` inside the application for a compact scrollable 25-row runtime
+preview-action reference. Press `?` inside the application for a compact scrollable 26-row runtime
 summary. [RUST_PORT.md](RUST_PORT.md) also inventories the fixed underlying editor commands.
 
 ## What is included
 
 - A standalone Ratatui/Crossterm frontend with the preserved title, tabs, Files pane, centered
   editor, compact status line, command palette, and explicit terminal cursor shapes
-- Inline Markdown presentation by default, plus a configurable resizable split source/preview
-  layout; presentation changes appearance only and never reconstructs the document
+- Inline Markdown presentation by default: the cursor line stays exact source while the remaining
+  lines are rendered. A configurable resizable split layout adds a semantic read-only preview;
+  neither presentation path rewrites the document
 - Multiple documents with independent undo histories, restored tabs, active document, and cursor
   positions
 - Fuzzy file finding, four-mode workspace search, active-document find and replace, recent documents,
@@ -118,8 +121,9 @@ summary. [RUST_PORT.md](RUST_PORT.md) also inventories the fixed underlying edit
 - Conflict-checked atomic saves, safe external-conflict choices, per-document guarded exits, crash
   journals, and a recovery inventory/retarget/archive/restore/export/delete/retention manager
 - All 52 compatible application binding IDs, effective remapping, live `R` reload, and an exact
-  32-action command palette in the same groups and order as Python
-- Main-pane mouse focus, Files selection/double-click, wheel scrolling, and resizable dividers
+  32-action command palette using the same grouped grid, order, and descriptions as Python
+- Main-pane mouse focus, Files selection/double-click, wheel scrolling, draggable dividers, and
+  keyboard Files-pane resizing
 - Markdown syntax, semantic-block, experimental reader, and coordinate-diagnostic overlays
 - Markdown continuation for bullets, tasks, numbered lists, and quotes
 

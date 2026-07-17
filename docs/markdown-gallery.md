@@ -12,16 +12,16 @@ If `termdraft-rs` is installed, use `termdraft-rs docs/markdown-gallery.md` inst
 source is always the document. Inline styles and the split preview only present it; neither rewrites
 this file.
 
-The current Rust inline view styles headings, emphasis, strong text, strikeout, inline code, links,
-tasks, bullets, and table separators. The split view uses `tui-markdown` for a broader best-effort
-preview. Links, images, footnotes, and raw HTML are not interactive.
+The current Rust inline view renders headings, emphasis, strong text, strikeout, inline code, links,
+tasks, bullets, quotes, fences, rules, and table borders outside the active source line. The split
+view uses a semantic Markdown parser. Links, images, footnotes, and raw HTML are not interactive.
 
 | Construct | Inline view | Split preview |
 | --- | --- | --- |
 | Headings and common inline markers | Presentation-only styling | Rendered terminal text |
-| Lists, tasks, quotes, and code | Exact source with selected marker styling | Best-effort rendering |
-| Tables | Pipes are styled; source remains exact | Table extension is not enabled |
-| GFM alerts, footnotes, definitions | Exact Markdown source | No dedicated interactive behavior |
+| Lists, tasks, quotes, and code | Rendered outside the active source line | Rendered terminal text |
+| Tables | Rendered borders outside the active source line | Rendered bordered table |
+| GFM alerts, footnotes, definitions | Source-faithful fallback where unsupported | Rendered labels without interactive navigation |
 | Raw HTML | Exact Markdown source | Omitted rather than executed |
 
 ## Headings
@@ -88,8 +88,8 @@ source, and an unknown marker is treated no differently:
 
 ## Table
 
-This remains a useful source-fidelity fixture. The Rust inline view styles the pipe separators, but
-the split renderer is not configured with a table extension and does not reconstruct bordered rows.
+This remains a useful source-fidelity fixture. The Rust inline view renders borders outside the
+active source line, and the split renderer reconstructs a bordered table without changing source.
 
 | Syntax | Preview behavior |
 | --- | --- |

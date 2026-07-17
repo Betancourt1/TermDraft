@@ -39,7 +39,7 @@ For an isolated Rust comparison, set `XDG_STATE_HOME=/tmp/termdraft-rs-state` an
 
 ## Inventory snapshot
 
-This inventory was recounted from the Python source and Rust checkpoint `889215d`:
+This inventory was recounted from the Python source and the current Rust branch:
 
 - both command palettes contain exactly **32 actions** in the same six groups and order;
 - both configuration contracts contain exactly **52 binding IDs**, all of which reach implemented
@@ -49,7 +49,7 @@ This inventory was recounted from the Python source and Rust checkpoint `889215d
   **21 overlay types are currently user-reachable**;
 - shared dialog types serve several workflows, so the operation-by-operation popup matrix below is
   the authoritative interface comparison;
-- the Rust suite passes **155 library tests plus 3 binary tests**; the Python suite passes
+- the Rust suite passes **159 library tests plus 3 binary tests**; the Python suite passes
   **681 tests with 2 platform skips**.
 
 Neither frontend has a native menu bar. In both, the searchable command palette is the application
@@ -85,11 +85,11 @@ menu; the focused Files key layer is a second contextual menu.
 
 | Area | Python/Textual | Rust/Ratatui | User-visible effect |
 | --- | --- | --- | --- |
-| Executable and runtime | Published `termdraft`; Python/Textual and Nerd Font icons | Branch-local `termdraft-rs`; one native executable and ordinary Unicode symbols | Rust starts with less runtime overhead and needs no Nerd Font; Python remains the supported package |
-| Shell chrome | Textual styling and Nerd Font glyphs | Monochrome Ratatui chrome, `RUST PORT` badge, `▸`, `◆`, and `›` | Same hierarchy, not pixel parity |
-| Palette layout | Responsive grouped two-column cheatsheet that stacks when narrow; descriptions below | One searchable list with a group column and shortcut on every row | Actions and order match; Rust shows less explanatory copy at once |
-| Shortcut help | Generated TermDraft-action reference | Scrollable 25-row action summary | Rust `--commands` is the fuller TermDraft-action reference; `?` is intentionally more compact |
-| Preview engine | `markdown-it-py`/Textual with tables, tasks, alerts, footnotes, definitions, link selection, and internal footnote navigation | Presentation-only inline styling plus a best-effort `tui-markdown` split preview | Source remains authoritative in both; richer preview behavior is still Python-only |
+| Executable and runtime | Published `termdraft`; Python/Textual and Nerd Font icons | Branch-local `termdraft-rs`; one native executable with the same Files icons | Rust starts with less runtime overhead; both interfaces expect a Nerd Font for the intended icons |
+| Shell chrome | Textual styling and Nerd Font glyphs | Monochrome Ratatui chrome, `RUST PORT` badge, and Yazi-style Nerd Font glyphs | Same hierarchy and Files icon language, not pixel parity |
+| Palette layout | Responsive grouped two-column cheatsheet that stacks when narrow; descriptions below | Searchable grouped two-column grid with descriptions and a compact narrow fallback | Actions, order, shortcuts, and explanatory copy match |
+| Shortcut help | Generated TermDraft-action reference | Scrollable 26-row action summary | Rust `--commands` is the fuller TermDraft-action reference; `?` is intentionally more compact |
+| Preview engine | `markdown-it-py`/Textual with tables, tasks, alerts, footnotes, definitions, link selection, and internal footnote navigation | Active-line source plus rendered inactive lines by default; semantic `pulldown-cmark` split preview with headings, inline styles, links, code, lists/tasks, quotes, tables, footnotes, and definitions | Source remains authoritative in both; interactive link/footnote navigation and alerts remain Python-only |
 | Explorer model | Lazy, collapsible Textual `DirectoryTree` plus asynchronous indexing | Always-expanded sorted snapshot from `ignore::WalkBuilder` | Rust is simpler and predictable; large trees can occupy more space and delay first frame |
 | Search regex engine | Python `regex`, full case folding, and a per-line timeout | Rust `regex`, a linear-time syntax subset, and the same 500-character input limit | Common regexes work; look-around/backreferences accepted by Python are not Rust syntax |
 | Workspace-search discovery | Fresh cancellable workspace scan for each submission, including scan warnings | Searches the indexed snapshot captured before the popup opened; source reads are cancellable and warn individually | New filesystem entries can be absent in Rust until the popup closes and the next poll refreshes Files |
@@ -103,7 +103,7 @@ menu; the focused Files key layer is a second contextual menu.
 | Recovery startup | Decisions occur before a document is installed; directory launches also offer missing/orphan drafts | Existing readable documents open before Restore/Use disk/Later; missing/orphan records stay visible in Manager | Normal crash recovery works; startup and unavailable-source flows differ |
 | Feedback | Persistent status plus Textual notifications/toasts | Persistent status messages | Rust is quieter and keeps transient feedback in one line |
 | Mouse | Textual tabs, tree, editor, preview links, inputs, rows, and buttons participate | Main-pane focus, Files selection/double-click, wheel scrolling, and divider dragging | Rust overlays remain keyboard-only and editor/tab clicking is incomplete |
-| Inline presentation | Transforms headings, quotes, lists/tasks, rules, fences, images/links, and GFM table borders | Primarily hides/styles ATX and inline markers while leaving more block syntax literal | Editing and bytes match, but Python's Inline view looks substantially more rendered |
+| Inline presentation | Transforms headings, quotes, lists/tasks, rules, fences, images/links, and GFM table borders | Keeps the active line exact and transforms the same common block and inline syntax elsewhere | Editing bytes remain exact while both interfaces provide a rendered writing surface |
 | Directory-copy symlinks | `shutil.copytree` follows nested symlinks by default | Rejects a nested symlink and removes the partial destination | Rust is intentionally stricter and will refuse some Python copies |
 | Windows state and locks | `%LOCALAPPDATA%/TermDraft` plus `msvcrt` recovery locks | Unix-style non-macOS state resolution and no advisory recovery lock outside Unix | Shared default locations and cooperating locks are not Windows-compatible yet |
 
@@ -111,8 +111,8 @@ menu; the focused Files key layer is a second contextual menu.
 
 These are current gaps, not items that were merely absent in the early port:
 
-1. **Rich preview extensions and interaction.** Rust does not reconstruct bordered GFM tables,
-   task/alert/definition/footnote presentation, image placeholders, link selection, internal
+1. **Rich preview extensions and interaction.** Rust renders GFM tables, tasks, definitions,
+   footnotes, and image labels, but does not provide alerts, link selection, internal
    footnote/backlink navigation, or outline-to-preview reveal. Preview links and footnotes are
    deliberately inert.
 2. **Outline query and destination controls.** Rust lists parsed headings and jumps to source, but
@@ -147,8 +147,8 @@ These are current gaps, not items that were merely absent in the early port:
 | --- | --- | --- | --- |
 | Title | App/workspace title | Same plus `RUST PORT` | Deliberate badge |
 | Tabs | Clickable Textual tabs with modified/conflict state | Keyboard tabs with `●` modified and `!` conflict indicators | Keyboard parity; mouse gap |
-| Files | Collapsible tree, icons, click and keyboard | Always-expanded snapshot, Unicode symbols, click/double-click and keyboard | Different tree model |
-| Workbench | Inline editor or resizable split source/preview | Inline editor or resizable split source/preview | Layout parity; Inline presentation differs materially |
+| Files | Collapsible tree, icons, click and keyboard | Always-expanded snapshot, matching Nerd Font icons, click/double-click, keyboard, and keyboard/mouse resizing | Different tree model |
+| Workbench | Inline editor or resizable split source/preview | Active-line source plus rendered inactive lines, or resizable split source/semantic preview | Presentation and layout parity for common Markdown |
 | `v` in Inline/narrow | Switch editor and preview | Switch editor and preview | Parity |
 | `v` in wide Split | Show/hide preview | Show/hide preview | Parity |
 | Modes | COMMAND/WRITE in status; block/bar cursor | COMMAND/WRITE in status; block/bar cursor | Parity |
@@ -183,8 +183,8 @@ prints the group on every row. Both fuzzy-filter the complete 32-action set.
 
 | User-facing surface | Python/Textual | Rust/Ratatui | Status or changed behavior |
 | --- | --- | --- | --- |
-| Command palette | Search, six responsive groups, descriptions, mouse/keyboard | Search, same 32 actions/groups/order, one list, keyboard | Functional parity; layout/mouse differ |
-| Shortcut help | Full TermDraft-action binding reference | Scrollable 25-row action summary | Rust is intentionally shorter; every row remains reachable at 80x24 and `--commands` is fuller |
+| Command palette | Search, six responsive groups, descriptions, mouse/keyboard | Search, same grouped grid/actions/order/descriptions, keyboard | Keyboard and layout parity; mouse remains a gap |
+| Shortcut help | Full TermDraft-action binding reference | Scrollable 26-row action summary | Rust is intentionally shorter; every row remains reachable at 80x24 and `--commands` is fuller |
 | Markdown syntax help | `HelpDialog` with supported syntax and examples | Dedicated scrollable Markdown Help overlay | Parity, with Rust limitations stated truthfully |
 | Find file | Query, include/exclude filter, ranked results | Same fields, filter contract, ranking, and open action | Parity |
 | Workspace search | Query, literal/fuzzy/word/regex, case, filter, fresh-scan warnings/results | Same controls and cancellable source search over the pre-popup index snapshot | Control/result parity; discovery and scan-warning timing differ |
@@ -402,7 +402,7 @@ feature.
 
 ## Verification
 
-Current code checkpoint: `889215d`.
+Current code state: this `rust-port` branch.
 
 ```bash
 cargo fmt --all -- --check
@@ -414,7 +414,7 @@ cargo test --locked --release
 
 Results at this checkpoint:
 
-- 155 Rust library tests and 3 Rust binary tests pass;
+- 159 Rust library tests and 3 Rust binary tests pass;
 - strict Clippy and rustfmt pass;
 - the Python suite passes 681 tests with 2 expected platform skips;
 - source-format and documentation diff checks pass.
@@ -423,7 +423,7 @@ Results at this checkpoint:
 
 The following numbers are preserved from the earlier `987cafc` checkpoint, before the recent
 search, Files, mouse, keymap, diagnostics, mixed-ending, conflict, and Recovery Manager parity work.
-They were **not rerun for `889215d`** and must not be presented as current benchmark results. They do
+They were **not rerun for the current branch** and must not be presented as current benchmark results. They do
 explain why the Rust build can feel more fluid, especially at process start and first frame.
 
 Environment at that historical checkpoint: macOS 26.5.2 on arm64, Python 3.12.13 / TermDraft 1.2.0,

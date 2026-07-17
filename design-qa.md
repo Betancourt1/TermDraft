@@ -1,6 +1,6 @@
 # Rust terminal frontend QA
 
-This checklist covers the Ratatui frontend on the `rust-port` branch at checkpoint `889215d`. The
+This checklist covers the current Ratatui frontend on the `rust-port` branch. The
 goal is to preserve the Python application's recognizable keyboard-first writing hierarchy with the
 fewest interface changes practical, not to claim pixel parity with Textual.
 
@@ -13,18 +13,17 @@ fewest interface changes practical, not to claim pixel parity with Textual.
 | Modes | COMMAND uses a block cursor; WRITE uses a bar cursor; both remain visible in status |
 | Editor | Inline keeps the active line as exact source; configured Split shows source and preview side by side |
 | Preview toggle | `v` switches editor/preview in Inline or narrow layouts and shows/hides preview in wide Split |
-| Files | Ordinary Unicode `▸`, `◆`, and `›`; keyboard navigation plus click selection/double-click open |
+| Files | Yazi-style Nerd Font folder/Markdown icons; keyboard navigation and resizing plus click selection/double-click open |
 | Tabs | Open order, modified `●`, conflict `!`, active state, and keyboard switching remain legible |
-| Menu | Exact 32-action Python group/order contract in one searchable Rust list |
+| Menu | Exact 32-action Python group/order contract in a searchable two-column grid with descriptions |
 | Overlays | Square bordered panels, concise keyboard footer, visible focus, and cancel-default destructive prompts |
 | Recovery | Inventory/detail/target layout, active/quarantine state, protected records, explicit irreversible actions |
 | Mouse | Main-pane focus, Files selection/open, wheel scroll, and draggable Files/Split dividers |
 | Exit | Alternate screen, raw mode, mouse capture, and cursor shape restore on the normal exit path |
 
-The differences are intentional and visible: Python's palette uses a responsive multi-group grid
-with descriptions, Rust uses one grouped list; Python uses Nerd Font icons, Rust ordinary Unicode;
-Python notifications can appear as toasts, Rust keeps feedback in the status line. Rust overlays,
-tabs, preview links, and source click positioning remain keyboard-only.
+The remaining visible differences are intentional: Python notifications can appear as toasts while
+Rust keeps feedback in the status line. Rust overlays, tabs, preview links, and source click
+positioning remain keyboard-only.
 
 ## Automated coverage
 
@@ -57,7 +56,7 @@ cargo test --locked --all-targets
 cargo test --locked --release
 ```
 
-At checkpoint `889215d`, 155 library tests and 3 binary tests pass.
+On the current branch, 159 library tests and 3 binary tests pass.
 
 ## Manual PTY check
 
@@ -74,7 +73,8 @@ XDG_STATE_HOME=/tmp/termdraft-rs-state \
 
 Verify in order:
 
-1. Files and the editor remain readable at 100×24; narrower layouts keep only one workbench pane.
+1. Files and the editor remain readable at 100×24; `Shift+Left`/`Shift+Right` resize Files while it
+   is focused, and narrower layouts keep only one workbench pane.
 2. While Files is focused, `j`/`k` select, Enter opens, and `a/c/x/p/r/m/d` reach the expected
    no-clobber file/folder flows.
 3. `i`, Unicode typing/paste, `Esc`, and `w` preserve the expected bytes.
