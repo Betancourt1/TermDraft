@@ -190,6 +190,7 @@ pub fn sync_inline_preview_cursor(
         replace_presentation_line(rendered, row, &line);
     }
 
+    rendered.cancel_selection();
     rendered.move_cursor(tui_textarea::CursorMove::Jump(
         u16::try_from(cursor.0).unwrap_or(u16::MAX),
         u16::try_from(cursor.1).unwrap_or(u16::MAX),

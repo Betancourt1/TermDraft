@@ -5,6 +5,8 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, stdout};
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -15,7 +17,8 @@ use anyhow::Context;
 use ratatui::crossterm::cursor::SetCursorStyle;
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
@@ -120,9 +123,10 @@ impl UiRegions {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ResizeTarget {
+enum MouseDragTarget {
     Explorer,
     Workbench,
+    EditorSelection,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -726,7 +730,26 @@ impl EditorTab {
         } else if self.inline_cursor != cursor {
             sync_inline_preview_cursor(&mut self.inline_editor, &self.editor, self.inline_cursor.0);
         }
+        self.sync_inline_selection();
         self.inline_cursor = cursor;
+    }
+
+    fn sync_inline_selection(&mut self) {
+        self.inline_editor.cancel_selection();
+        let Some((start, end)) = self.editor.selection_range() else {
+            return;
+        };
+        let cursor = self.editor.cursor();
+        let anchor = if cursor == start { end } else { start };
+        self.inline_editor.move_cursor(CursorMove::Jump(
+            u16::try_from(anchor.0).unwrap_or(u16::MAX),
+            u16::try_from(anchor.1).unwrap_or(u16::MAX),
+        ));
+        self.inline_editor.start_selection();
+        self.inline_editor.move_cursor(CursorMove::Jump(
+            u16::try_from(cursor.0).unwrap_or(u16::MAX),
+            u16::try_from(cursor.1).unwrap_or(u16::MAX),
+        ));
     }
 
     fn scroll_inline_editor(&mut self, mouse: MouseEvent) {
@@ -850,7 +873,7 @@ pub struct App {
     pub split_percent: u16,
     pub ui_regions: UiRegions,
     narrow_pane: Focus,
-    resize_target: Option<ResizeTarget>,
+    mouse_drag_target: Option<MouseDragTarget>,
     last_explorer_click: Option<(usize, Instant)>,
     workspace_clipboard: Option<WorkspaceClipboard>,
     session_store: Option<SessionStore>,
@@ -933,7 +956,7 @@ impl App {
             split_percent: 50,
             ui_regions: UiRegions::default(),
             narrow_pane: Focus::Editor,
-            resize_target: None,
+            mouse_drag_target: None,
             last_explorer_click: None,
             workspace_clipboard: None,
             session_store,
@@ -3221,6 +3244,19 @@ impl App {
     }
 
     fn handle_write_key(&mut self, key: KeyEvent) {
+        if self.focus == Focus::Editor && key.modifiers == KeyModifiers::SUPER {
+            match key.code {
+                KeyCode::Char('c' | 'C') => {
+                    self.copy_editor_selection();
+                    return;
+                }
+                KeyCode::Char('v' | 'V') => {
+                    self.paste_system_clipboard();
+                    return;
+                }
+                _ => {}
+            }
+        }
         if self.focus == Focus::Editor
             && let Some(action) = self
                 .config
@@ -3277,6 +3313,42 @@ impl App {
             self.sync_active_document();
             self.status_message = None;
         }
+    }
+
+    fn copy_editor_selection(&mut self) {
+        let Some(text) = self.active_tab().and_then(selected_text) else {
+            self.status_message = Some("Select text to copy".to_owned());
+            return;
+        };
+        match write_system_clipboard(&text) {
+            Ok(()) => self.status_message = Some("Copied selection".to_owned()),
+            Err(error) => self.status_message = Some(format!("Copy failed · {error}")),
+        }
+    }
+
+    fn paste_system_clipboard(&mut self) {
+        match read_system_clipboard() {
+            Ok(text) => self.paste_into_document(&text),
+            Err(error) => self.status_message = Some(format!("Paste failed · {error}")),
+        }
+    }
+
+    fn paste_into_document(&mut self, text: &str) {
+        if self.mode != Mode::Write {
+            return;
+        }
+        let Some(tab) = self
+            .active_tab_mut()
+            .filter(|tab| tab.document.is_editable())
+        else {
+            self.enforce_active_read_only();
+            return;
+        };
+        let selecting = tab.editor.is_selecting();
+        tab.editor.insert_str(text);
+        tab.record_edit(1 + usize::from(selecting && !text.is_empty()));
+        tab.sync_document();
+        self.status_message = None;
     }
 
     fn handle_command_key(&mut self, key: KeyEvent) {
@@ -3370,15 +3442,15 @@ impl App {
         let row = mouse.row;
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                self.mouse_drag_target = None;
                 if UiRegions::contains(self.ui_regions.explorer_divider, column, row) {
-                    self.resize_target = Some(ResizeTarget::Explorer);
+                    self.mouse_drag_target = Some(MouseDragTarget::Explorer);
                     return;
                 }
                 if UiRegions::contains(self.ui_regions.workbench_divider, column, row) {
-                    self.resize_target = Some(ResizeTarget::Workbench);
+                    self.mouse_drag_target = Some(MouseDragTarget::Workbench);
                     return;
                 }
-                self.resize_target = None;
                 if UiRegions::contains(self.ui_regions.explorer_list, column, row) {
                     self.focus = Focus::Explorer;
                     let list = self.ui_regions.explorer_list.unwrap_or_default();
@@ -3404,19 +3476,22 @@ impl App {
                 } else if UiRegions::contains(self.ui_regions.editor, column, row) {
                     self.focus = Focus::Editor;
                     let inline = self.view_mode == ViewMode::Inline;
+                    let select = inline && self.mode == Mode::Write;
                     if let Some(area) = self.ui_regions.editor.map(ui::editor_area)
                         && let Some(tab) = self.active_tab_mut()
                     {
+                        tab.editor.cancel_selection();
                         tab.place_cursor(area, column, row, inline);
+                        if select {
+                            tab.editor.start_selection();
+                            tab.refresh_inline_editor();
+                            self.mouse_drag_target = Some(MouseDragTarget::EditorSelection);
+                        }
                     }
                 }
             }
-            MouseEventKind::Drag(MouseButton::Left) => match self.resize_target {
-                Some(ResizeTarget::Explorer) => self.resize_explorer(column),
-                Some(ResizeTarget::Workbench) => self.resize_workbench(column),
-                None => {}
-            },
-            MouseEventKind::Up(MouseButton::Left) => self.resize_target = None,
+            MouseEventKind::Drag(MouseButton::Left) => self.handle_mouse_drag(column, row),
+            MouseEventKind::Up(MouseButton::Left) => self.finish_mouse_drag(),
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let direction = if mouse.kind == MouseEventKind::ScrollUp {
                     -2
@@ -3450,6 +3525,39 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn handle_mouse_drag(&mut self, column: u16, row: u16) {
+        match self.mouse_drag_target {
+            Some(MouseDragTarget::Explorer) => self.resize_explorer(column),
+            Some(MouseDragTarget::Workbench) => self.resize_workbench(column),
+            Some(MouseDragTarget::EditorSelection) => {
+                if let Some(area) = self.ui_regions.editor.map(ui::editor_area)
+                    && let Some(tab) = self.active_tab_mut()
+                {
+                    let column = column.clamp(area.x, area.right().saturating_sub(1));
+                    let row = row.clamp(area.y, area.bottom().saturating_sub(1));
+                    tab.place_cursor(area, column, row, true);
+                }
+            }
+            None => {}
+        }
+    }
+
+    fn finish_mouse_drag(&mut self) {
+        if self.mouse_drag_target == Some(MouseDragTarget::EditorSelection)
+            && let Some(tab) = self.active_tab_mut()
+        {
+            if tab
+                .editor
+                .selection_range()
+                .is_some_and(|(start, end)| start == end)
+            {
+                tab.editor.cancel_selection();
+            }
+            tab.refresh_inline_editor();
+        }
+        self.mouse_drag_target = None;
     }
 
     fn resize_explorer(&mut self, column: u16) {
@@ -4667,6 +4775,58 @@ fn edit_text_input(input: &mut TextInput, key: KeyEvent) -> bool {
     true
 }
 
+fn selected_text(tab: &EditorTab) -> Option<String> {
+    let (start, end) = tab.editor.selection_range()?;
+    let source = source_from_textarea(&tab.editor);
+    let start = location_to_offset(&source, start);
+    let end = location_to_offset(&source, end);
+    (start < end).then(|| source.chars().skip(start).take(end - start).collect())
+}
+
+#[cfg(target_os = "macos")]
+fn write_system_clipboard(text: &str) -> io::Result<()> {
+    let mut child = ProcessCommand::new("pbcopy")
+        .stdin(Stdio::piped())
+        .spawn()?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("pbcopy stdin is unavailable"))?;
+    std::io::Write::write_all(&mut stdin, text.as_bytes())?;
+    drop(stdin);
+    let status = child.wait()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other("pbcopy exited unsuccessfully"))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn write_system_clipboard(_text: &str) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "system clipboard integration is available on macOS",
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn read_system_clipboard() -> io::Result<String> {
+    let output = ProcessCommand::new("pbpaste").output()?;
+    if !output.status.success() {
+        return Err(io::Error::other("pbpaste exited unsuccessfully"));
+    }
+    String::from_utf8(output.stdout).map_err(io::Error::other)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_system_clipboard() -> io::Result<String> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "system clipboard integration is available on macOS",
+    ))
+}
+
 const fn input_replaces_selection(key: KeyEvent) -> bool {
     matches!(
         key.code,
@@ -4853,16 +5013,8 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
                             app.handle_key(key);
                         }
                         Event::Paste(text) => {
-                            if !app.paste_into_overlay(&text)
-                                && app.mode == Mode::Write
-                                && let Some(tab) = app
-                                    .active_tab_mut()
-                                    .filter(|tab| tab.document.is_editable())
-                            {
-                                let selecting = tab.editor.is_selecting();
-                                tab.editor.insert_str(&text);
-                                tab.record_edit(1 + usize::from(selecting && !text.is_empty()));
-                                tab.sync_document();
+                            if !app.paste_into_overlay(&text) {
+                                app.paste_into_document(&text);
                             }
                         }
                         Event::Mouse(mouse) => app.handle_mouse(mouse),
@@ -4907,7 +5059,11 @@ struct TerminalExtrasGuard {
 
 impl TerminalExtrasGuard {
     fn enable() -> io::Result<Self> {
-        execute!(stdout(), EnableMouseCapture)?;
+        execute!(
+            stdout(),
+            EnableMouseCapture,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
         let guard = Self { active: true };
         if let Err(error) = execute!(stdout(), SetCursorStyle::SteadyBlock) {
             drop(guard);
@@ -4921,6 +5077,7 @@ impl TerminalExtrasGuard {
             execute!(
                 stdout(),
                 DisableMouseCapture,
+                PopKeyboardEnhancementFlags,
                 SetCursorStyle::DefaultUserShape
             )?;
             self.active = false;
@@ -4935,6 +5092,7 @@ impl Drop for TerminalExtrasGuard {
             let _ = execute!(
                 stdout(),
                 DisableMouseCapture,
+                PopKeyboardEnhancementFlags,
                 SetCursorStyle::DefaultUserShape
             );
         }
@@ -5927,6 +6085,62 @@ command_manage_recovery = "Z"
         });
 
         assert_eq!(app.active_tab().unwrap().editor.cursor().0, 2);
+    }
+
+    #[test]
+    fn hybrid_write_mode_drag_selects_source_and_keeps_the_selection_visible() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "alpha bravo\n**charlie**").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut config = Config::default();
+        config.editor.startup_mode = StartupMode::Write;
+        let mut app = App::with_config(workspace, config).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 16)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let cursor = app
+            .active_tab()
+            .unwrap()
+            .inline_editor
+            .rendered_cursor_position()
+            .unwrap();
+        let mouse = |kind, column| MouseEvent {
+            kind,
+            column,
+            row: cursor.y,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), cursor.x));
+        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), cursor.x + 5));
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), cursor.x + 5));
+
+        let tab = app.active_tab().unwrap();
+        assert_eq!(selected_text(tab).as_deref(), Some("alpha"));
+        assert_eq!(
+            tab.inline_editor.selection_range(),
+            tab.editor.selection_range()
+        );
+    }
+
+    #[test]
+    fn hybrid_write_mode_paste_and_command_undo_share_grouped_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "alpha bravo").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut config = Config::default();
+        config.editor.startup_mode = StartupMode::Write;
+        let mut app = App::with_config(workspace, config).unwrap();
+        let tab = app.active_tab_mut().unwrap();
+        tab.editor.start_selection();
+        tab.editor.move_cursor(CursorMove::Jump(0, 5));
+
+        app.paste_into_document("café");
+        assert_eq!(app.active_tab().unwrap().document.text, "café bravo");
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::SUPER));
+
+        assert_eq!(app.active_tab().unwrap().document.text, "alpha bravo");
     }
 
     #[test]

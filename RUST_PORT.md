@@ -100,7 +100,7 @@ menu; the focused Files key layer is a second contextual menu.
 | Save hardening | Parent-descriptor-bound publication, stable-read retry, post-publication digest verification, detailed directory-sync uncertainty | Same-directory atomic save with two destination snapshot checks and directory sync, but path-based publication | Both reject observed conflicts; Python remains stronger against parent-directory replacement races |
 | Recovery startup | Decisions occur before a document is installed; directory launches also offer missing/orphan drafts | Existing readable documents open before Restore/Use disk/Later; missing/orphan records stay visible in Manager | Normal crash recovery works; startup and unavailable-source flows differ |
 | Feedback | Persistent status plus Textual notifications/toasts | Persistent status messages | Rust is quieter and keeps transient feedback in one line |
-| Mouse | Textual tabs, tree, editor, preview links, inputs, rows, and buttons participate | Main-pane focus, Files selection/double-click, wheel scrolling, and divider dragging | Rust overlays remain keyboard-only and editor/tab clicking is incomplete |
+| Mouse | Textual tabs, tree, editor, preview links, inputs, rows, and buttons participate | Main-pane focus, Files selection/double-click, hybrid-editor click/drag selection, wheel scrolling, and divider dragging | Rust overlays remain keyboard-only and tab clicking is incomplete |
 | Inline presentation | Transforms headings, quotes, lists/tasks, rules, fences, images/links, and GFM table borders | Keeps the active line exact and transforms the same common block and inline syntax elsewhere | Editing bytes remain exact while both interfaces provide a rendered writing surface |
 | Directory-copy symlinks | `shutil.copytree` follows nested symlinks by default | Rejects a nested symlink and removes the partial destination | Rust is intentionally stricter and will refuse some Python copies |
 | Windows state and locks | `%LOCALAPPDATA%/TermDraft` plus `msvcrt` recovery locks | Unix-style non-macOS state resolution and no advisory recovery lock outside Unix | Shared default locations and cooperating locks are not Windows-compatible yet |
@@ -117,8 +117,8 @@ These are current gaps, not items that were merely absent in the early port:
    has no filter input and no separate Show in preview action.
 3. **Collapsible/lazy Files and proactive inactive-tab monitoring.** Rust uses an always-expanded
    synchronous snapshot, silently drops individual walk errors, and checks only the active document.
-4. **Complete mouse interaction.** Tabs, editor click positioning/selection, preview links, and all
-   overlays are keyboard-only. The implemented main-pane mouse actions are listed below.
+4. **Complete mouse interaction.** Tabs, preview links, and all overlays are keyboard-only. The
+   implemented main-pane mouse actions are listed below.
 5. **Missing/orphan recovery opening.** Manager inventories and can retarget/archive unavailable
    records, but Rust cannot install their source safely without a trustworthy `FileSnapshot`.
    Python can restore them into an unavailable-path conflict and then Save As.
@@ -301,6 +301,10 @@ Bracketed terminal paste still inserts source in Rust, but it is an `Event::Past
 editor command. Rust's private yank buffer has no reachable default paste key because TermDraft's
 configured redo owns Ctrl+Y before `tui-textarea` can treat it as yank.
 
+On macOS, `Super+C` copies the editor selection to the system clipboard without clearing it,
+`Super+V` uses Ghostty's bracketed-paste event (with a direct clipboard fallback), and `Super+Z`
+reaches TermDraft's grouped undo through the Kitty keyboard protocol.
+
 ### Python-only fixed editor controls
 
 | Behavior | Python keys |
@@ -310,7 +314,7 @@ configured redo owns Ctrl+Y before `tui-textarea` can treat it as yank.
 | Delete complete line(s) intersecting selection | `Ctrl+Shift+K` |
 | Select current line | `F6` |
 | Select all | `F7` |
-| Application-clipboard cut/copy aliases | `Super+X`, `Super+C` |
+| Application-clipboard cut alias | `Super+X` |
 
 ### Rust-only fixed editor controls
 
@@ -376,7 +380,7 @@ configurable `h`/`j`/`k`/`l`, `0`/`$`, and `g`/`G` commands provide its Yazi/Vim
 | Preview links | Python: Tab/Shift+Tab/Enter; Rust: inert | Python selects internal links/footnotes; Rust consumes these keys without activation |
 | Popup lists | `↑`/`↓`, Home/End where shown, Enter, Esc | Keyboard selection/submission/cancel |
 | Popup fields | Tab/Shift+Tab, arrows, Home/End, Ctrl+A/Ctrl+E, paste | Rust implements Unicode-aware keyboard editing; Python additionally supports mouse focus/buttons |
-| Rust mouse | Click Files/editor/preview focus; Files select/double-click; wheel; drag dividers | Tabs, editor positioning/selection, links, and overlays remain unhandled |
+| Rust mouse | Click Files/editor/preview focus; Files select/double-click; hybrid editor position/selection; wheel; drag dividers | Tabs, links, and overlays remain unhandled |
 
 ## Complete CLI comparison
 
