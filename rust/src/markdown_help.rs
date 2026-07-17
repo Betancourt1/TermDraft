@@ -10,12 +10,14 @@ Tasks              - [ ] pending   - [x] done
 Quotes             > quoted text
 Alerts             > [!NOTE] then > body (NOTE/TIP/IMPORTANT/WARNING/CAUTION)
 Links              [label](https://example.com)
-Images             ![alt](path) (shown as a terminal placeholder)
+Images             ![alt](path) (alt text only; image data is omitted)
 Code               `inline` or fenced ``` blocks
 Tables             | A | B | with a | --- | --- | separator row
 Footnote ref       Text[^note]
 Footnote body      [^note]: source (on its own later line)
 Definitions        Term followed on the next line by : Definition
+Subscript          H~2~O
+Superscript        x^2^
 Rules              ---
 
 Enter continues bullets, numbered lists, tasks, and blockquotes. Press Enter on
@@ -23,9 +25,10 @@ an empty marker to end the list. Press Esc for COMMAND mode and i to return to W
 focused preview, links and footnotes remain visible but inert; Tab, Shift+Tab, and Enter do not
 activate them.
 Alt+Down and Alt+Up move between rendered headings and show the current heading position.
-External URLs remain inert. Raw HTML is displayed as text and never run.
+External URLs remain inert. Raw HTML is ignored and omitted from the preview.
+Subscript and superscript render as dim italic text.
 
-Not rendered yet: math, underline, subscript, and superscript.
+Not rendered yet: image data, raw HTML, math, and underline.
 Markdown has no portable __underline__ syntax; double underscores mean bold.
 A nested ordered item is "   1. item", not "1.1.".
 "#;
@@ -52,6 +55,8 @@ mod tests {
             "Footnote ref",
             "Footnote body",
             "Definitions",
+            "Subscript",
+            "Superscript",
             "Rules",
         ] {
             assert!(
@@ -72,8 +77,10 @@ mod tests {
             "Tab, Shift+Tab, and Enter do not\nactivate them",
             "Alt+Down and Alt+Up move between rendered headings",
             "External URLs remain inert",
-            "Raw HTML is displayed as text and never run.",
-            "Not rendered yet: math, underline, subscript, and superscript.",
+            "Images             ![alt](path) (alt text only; image data is omitted)",
+            "Raw HTML is ignored and omitted from the preview.",
+            "Subscript and superscript render as dim italic text.",
+            "Not rendered yet: image data, raw HTML, math, and underline.",
             "double underscores mean bold",
             "not \"1.1.\"",
         ] {
@@ -82,6 +89,8 @@ mod tests {
                 "missing Markdown guidance {guidance}"
             );
         }
+        assert!(!MARKDOWN_SYNTAX_HELP.contains("terminal placeholder"));
+        assert!(!MARKDOWN_SYNTAX_HELP.contains("Raw HTML is displayed as text"));
         assert!(!MARKDOWN_SYNTAX_HELP.contains('\r'));
         assert!(MARKDOWN_SYNTAX_HELP.ends_with('\n'));
     }

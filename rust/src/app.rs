@@ -3158,9 +3158,7 @@ impl App {
         }
         let auto_continue = self.config.editor.auto_continue_lists
             && key.code == KeyCode::Enter
-            && !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+            && key.modifiers == KeyModifiers::NONE;
         let modified = self.active_tab_mut().is_some_and(|tab| {
             let selecting = tab.editor.is_selecting();
             let mut history_items = 1;
@@ -5524,6 +5522,36 @@ command_manage_recovery = "Z"
             source_from_textarea(&app.active_tab().unwrap().editor),
             "- item\n- "
         );
+    }
+
+    #[test]
+    fn modified_enter_bypasses_markdown_continuation() {
+        for modifiers in [
+            KeyModifiers::SHIFT,
+            KeyModifiers::SUPER,
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("note.md");
+            fs::write(&path, "- item").unwrap();
+            let workspace = Workspace::from_target(&path).unwrap();
+            let mut config = Config::default();
+            config.editor.startup_mode = StartupMode::Write;
+            let mut app = App::with_config(workspace, config).unwrap();
+            app.active_tab_mut()
+                .unwrap()
+                .editor
+                .move_cursor(CursorMove::End);
+
+            app.handle_key(KeyEvent::new(KeyCode::Enter, modifiers));
+
+            assert_eq!(
+                source_from_textarea(&app.active_tab().unwrap().editor),
+                "- item\n",
+                "{modifiers:?}+Enter should reach the editor without list continuation"
+            );
+        }
     }
 
     #[test]
