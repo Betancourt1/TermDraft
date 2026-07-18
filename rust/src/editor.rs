@@ -73,8 +73,88 @@ pub fn cursor_at_screen_position(
         return None;
     }
 
-    let mut probe = editor.clone();
-    let mut position = render_cursor(&probe, area)?;
+    let line_number_width = editor.line_number_style().map_or(0, |_| {
+        u16::try_from(editor.lines().len().max(1).ilog10() + 3).unwrap_or(u16::MAX)
+    });
+    let content_width = area.width.saturating_sub(line_number_width).max(1);
+    let line_heights = editor
+        .lines()
+        .iter()
+        .map(|line| rendered_line_height(editor, line, content_width))
+        .collect::<Vec<_>>();
+    let (cursor_row, cursor_column) = editor.cursor();
+    let cursor_line_position = rendered_line_cursor(
+        editor,
+        &editor.lines()[cursor_row],
+        content_width,
+        cursor_column,
+    )?;
+    let cursor_visual_row =
+        line_heights[..cursor_row].iter().sum::<usize>() + usize::from(cursor_line_position.y);
+    let cursor_screen_row = editor
+        .rendered_cursor_position()
+        .or_else(|| render_cursor(&editor.clone(), area))?
+        .y
+        .saturating_sub(area.y);
+    let target_visual_row = cursor_visual_row.saturating_sub(usize::from(cursor_screen_row))
+        + usize::from(row.saturating_sub(area.y));
+    let mut line_start = 0;
+    let target_source_row = line_heights.iter().position(|height| {
+        let contains_target = target_visual_row < line_start + height;
+        line_start += height;
+        contains_target
+    })?;
+    let target_line_row =
+        target_visual_row.saturating_sub(line_start - line_heights[target_source_row]);
+    let target_column = column.saturating_sub(area.x.saturating_add(line_number_width));
+    let mut probe = line_probe(editor, &editor.lines()[target_source_row]);
+    cursor_in_rendered_area(
+        &mut probe,
+        Rect::new(
+            0,
+            0,
+            content_width,
+            u16::try_from(line_heights[target_source_row]).unwrap_or(u16::MAX),
+        ),
+        target_column,
+        u16::try_from(target_line_row).unwrap_or(u16::MAX),
+    )
+    .map(|(_, column)| (target_source_row, column))
+}
+
+fn rendered_line_height(editor: &TextArea<'_>, line: &str, width: u16) -> usize {
+    usize::from(line_probe(editor, line).measure(width).content_rows.max(1))
+}
+
+fn rendered_line_cursor(
+    editor: &TextArea<'_>,
+    line: &str,
+    width: u16,
+    column: usize,
+) -> Option<Position> {
+    let mut probe = line_probe(editor, line);
+    probe.move_cursor(CursorMove::Jump(
+        0,
+        u16::try_from(column).unwrap_or(u16::MAX),
+    ));
+    let height = probe.measure(width).content_rows.max(1);
+    render_cursor(&probe, Rect::new(0, 0, width, height))
+}
+
+fn line_probe(editor: &TextArea<'_>, line: &str) -> TextArea<'static> {
+    let mut probe = TextArea::new(vec![line.to_owned()]);
+    probe.set_wrap_mode(editor.wrap_mode());
+    probe.set_tab_length(editor.tab_length());
+    probe
+}
+
+fn cursor_in_rendered_area(
+    probe: &mut TextArea<'_>,
+    area: Rect,
+    column: u16,
+    row: u16,
+) -> Option<(usize, usize)> {
+    let mut position = render_cursor(probe, area)?;
     let vertical_move = if row < position.y {
         CursorMove::Up
     } else {
@@ -86,7 +166,7 @@ pub fn cursor_at_screen_position(
         if probe.cursor() == before {
             break;
         }
-        let next = render_cursor(&probe, area)?;
+        let next = render_cursor(probe, area)?;
         if position.y.abs_diff(row) <= next.y.abs_diff(row) {
             probe.move_cursor(CursorMove::Jump(
                 u16::try_from(before.0).unwrap_or(u16::MAX),
@@ -109,7 +189,7 @@ pub fn cursor_at_screen_position(
         if probe.cursor() == before {
             break;
         }
-        let next = render_cursor(&probe, area)?;
+        let next = render_cursor(probe, area)?;
         if next.y != target_row || position.x.abs_diff(column) < next.x.abs_diff(column) {
             probe.move_cursor(CursorMove::Jump(
                 u16::try_from(before.0).unwrap_or(u16::MAX),

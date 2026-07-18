@@ -27,7 +27,9 @@ struct TableState {
 #[derive(Debug, Default)]
 struct MarkdownRenderer {
     lines: Vec<Line<'static>>,
+    source_lines: Vec<usize>,
     current: Vec<Span<'static>>,
+    current_source_line: usize,
     styles: Vec<Style>,
     lists: Vec<ListState>,
     item_depth: usize,
@@ -39,6 +41,12 @@ struct MarkdownRenderer {
 /// Parse Markdown into terminal-native semantic lines without source markers.
 #[must_use]
 pub fn render_markdown(source: &str) -> Text<'static> {
+    render_markdown_with_source_lines(source).0
+}
+
+/// Parse Markdown and retain the source line represented by each rendered line.
+#[must_use]
+pub(crate) fn render_markdown_with_source_lines(source: &str) -> (Text<'static>, Vec<usize>) {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TASKLISTS);
@@ -48,11 +56,17 @@ pub fn render_markdown(source: &str) -> Text<'static> {
     options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
 
     let mut renderer = MarkdownRenderer::default();
-    for event in Parser::new_ext(source, options) {
+    let line_starts = std::iter::once(0)
+        .chain(source.match_indices('\n').map(|(index, _)| index + 1))
+        .collect::<Vec<_>>();
+    for (event, range) in Parser::new_ext(source, options).into_offset_iter() {
+        renderer.current_source_line = line_starts
+            .partition_point(|start| *start <= range.start)
+            .saturating_sub(1);
         renderer.handle(event);
     }
     renderer.flush_line();
-    Text::from(renderer.lines)
+    (Text::from(renderer.lines), renderer.source_lines)
 }
 
 impl MarkdownRenderer {
@@ -256,6 +270,7 @@ impl MarkdownRenderer {
         for (index, part) in text.split('\n').enumerate() {
             if index > 0 {
                 self.flush_line();
+                self.current_source_line += 1;
             }
             if !part.is_empty() {
                 self.push_styled(part, self.current_style());
@@ -298,15 +313,20 @@ impl MarkdownRenderer {
     fn separate_block(&mut self) {
         self.flush_line();
         if self.lines.last().is_some_and(|line| !line.spans.is_empty()) {
-            self.lines.push(Line::default());
+            self.push_line(Line::default());
         }
     }
 
     fn flush_line(&mut self) {
         if !self.current.is_empty() {
-            self.lines
-                .push(Line::from(std::mem::take(&mut self.current)));
+            let line = Line::from(std::mem::take(&mut self.current));
+            self.push_line(line);
         }
+    }
+
+    fn push_line(&mut self, line: Line<'static>) {
+        self.lines.push(line);
+        self.source_lines.push(self.current_source_line);
     }
 
     fn current_style(&self) -> Style {
@@ -340,7 +360,7 @@ impl MarkdownRenderer {
                     .unwrap_or_default()
             })
             .collect::<Vec<_>>();
-        self.lines.push(table_border('┌', '┬', '┐', &widths));
+        self.push_line(table_border('┌', '┬', '┐', &widths));
         for (index, row) in table.rows.iter().enumerate() {
             let mut spans = vec![Span::styled("│ ", Style::new().fg(MUTED))];
             for (column, width) in widths.iter().enumerate().take(columns) {
@@ -363,12 +383,12 @@ impl MarkdownRenderer {
                 };
                 spans.push(Span::styled(divider, Style::new().fg(MUTED)));
             }
-            self.lines.push(Line::from(spans));
+            self.push_line(Line::from(spans));
             if index + 1 == table.header_rows {
-                self.lines.push(table_border('├', '┼', '┤', &widths));
+                self.push_line(table_border('├', '┼', '┤', &widths));
             }
         }
-        self.lines.push(table_border('└', '┴', '┘', &widths));
+        self.push_line(table_border('└', '┴', '┘', &widths));
     }
 }
 
@@ -460,6 +480,15 @@ mod tests {
         assert!(screen.contains("• ☑ done"));
         assert!(screen.contains("│ Name │ Role   │"));
         assert!(screen.contains("│ Ada  │ Writer │"));
+    }
+
+    #[test]
+    fn preview_lines_retain_their_source_lines() {
+        let source = "# First\n\nSecond paragraph\n\n- Third";
+        let (rendered, source_lines) = render_markdown_with_source_lines(source);
+
+        assert_eq!(rendered.lines.len(), source_lines.len());
+        assert_eq!(source_lines, [0, 2, 2, 4]);
     }
 
     #[test]

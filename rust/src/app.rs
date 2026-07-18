@@ -34,6 +34,7 @@ use crate::editor::{
     apply_editor_config, cursor_at_screen_position, inline_preview_editor, source_from_textarea,
     style_cursor, sync_inline_preview_cursor, textarea_from_source,
 };
+use crate::markdown::render_markdown_with_source_lines;
 use crate::path_filter::parse_path_filter;
 use crate::persistence::{LoadedFile, SaveError, load_file, normalize_line_endings, save_atomic};
 use time::{Duration as TimeDuration, OffsetDateTime};
@@ -783,6 +784,41 @@ impl EditorTab {
         if inline {
             self.refresh_inline_editor();
         }
+    }
+
+    fn place_cursor_from_preview(&mut self, area: Rect, column: u16, row: u16, scroll: u16) {
+        if area.is_empty()
+            || column < area.x
+            || column >= area.right()
+            || row < area.y
+            || row >= area.bottom()
+        {
+            return;
+        }
+        let (rendered, source_lines) = render_markdown_with_source_lines(&self.document.text);
+        let target_row = usize::from(scroll) + usize::from(row.saturating_sub(area.y));
+        let width = usize::from(area.width.max(1));
+        let mut rendered_row = 0;
+        let source_row = rendered.lines.iter().enumerate().find_map(|(index, line)| {
+            let height = ui::preview_line_height(line, width);
+            let contains_target = target_row < rendered_row + height;
+            rendered_row += height;
+            contains_target
+                .then(|| source_lines.get(index).copied())
+                .flatten()
+        });
+        let Some(source_row) = source_row.filter(|row| *row < self.editor.lines().len()) else {
+            return;
+        };
+        let source_column = self.editor.lines()[source_row]
+            .chars()
+            .position(|character| !character.is_whitespace())
+            .unwrap_or_default();
+        self.editor.move_cursor(CursorMove::Jump(
+            u16::try_from(source_row).unwrap_or(u16::MAX),
+            u16::try_from(source_column).unwrap_or(u16::MAX),
+        ));
+        self.refresh_inline_editor();
     }
 
     fn record_edit(&mut self, history_items: usize) {
@@ -3515,6 +3551,12 @@ impl App {
                     }
                 } else if UiRegions::contains(self.ui_regions.preview, column, row) {
                     self.focus = Focus::Preview;
+                    if let Some(area) = self.ui_regions.preview.map(ui::preview_content_area) {
+                        let scroll = self.preview_scroll;
+                        if let Some(tab) = self.active_tab_mut() {
+                            tab.place_cursor_from_preview(area, column, row, scroll);
+                        }
+                    }
                 } else if UiRegions::contains(self.ui_regions.editor, column, row) {
                     self.focus = Focus::Editor;
                     let inline = self.view_mode == ViewMode::Inline;
@@ -6218,6 +6260,78 @@ command_manage_recovery = "Z"
         });
 
         assert_eq!(app.active_tab().unwrap().editor.cursor().0, 2);
+    }
+
+    #[test]
+    fn mouse_click_places_the_hybrid_cursor_low_in_the_viewport() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        let source = (0..20)
+            .map(|line| format!("Line {line:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, source).unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.view_mode = ViewMode::Inline;
+        let mut terminal = Terminal::new(TestBackend::new(100, 18)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let editor = ui::editor_area(app.ui_regions.editor.unwrap());
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: editor.x.saturating_add(8),
+            row: editor.y.saturating_add(10),
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(app.active_tab().unwrap().editor.cursor().0, 10);
+    }
+
+    #[test]
+    fn mouse_click_places_the_hybrid_cursor_after_wrapped_lines() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        let source = "# TermDraft Markdown gallery\n\nOpen this file in TermDraft. With the default Inline configuration, `v` switches between the\nsource editor and rendered preview. With `editor.view_mode = \"split\"` in a wide terminal, `v`\nshows or hides the preview beside the source editor:\n\n```bash\ncargo run --release --locked -- docs/markdown-gallery.md\n```\n\nIf `termdraft` is installed, use `termdraft docs/markdown-gallery.md` instead.";
+        fs::write(&path, source).unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.view_mode = ViewMode::Inline;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let editor = ui::editor_area(app.ui_regions.editor.unwrap());
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: editor.x.saturating_add(15),
+            row: editor.y.saturating_add(16),
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(app.active_tab().unwrap().editor.cursor().0, 10);
+    }
+
+    #[test]
+    fn mouse_click_on_preview_relocates_the_source_cursor() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "# First\n\nSecond paragraph\n\nThird").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.view_mode = ViewMode::Split;
+        let mut terminal = Terminal::new(TestBackend::new(120, 18)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let preview = ui::preview_content_area(app.ui_regions.preview.unwrap());
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: preview.x.saturating_add(3),
+            row: preview.y.saturating_add(2),
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(app.focus, Focus::Preview);
+        assert_eq!(app.active_tab().unwrap().editor.cursor(), (2, 0));
     }
 
     #[test]

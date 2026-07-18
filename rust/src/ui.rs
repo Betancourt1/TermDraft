@@ -333,7 +333,7 @@ fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
     let line_count = text
         .lines
         .iter()
-        .map(|line| line.width().max(1).div_ceil(content_width))
+        .map(|line| preview_line_height(line, content_width))
         .sum::<usize>();
     let preview = Paragraph::new(text)
         .block(block)
@@ -2265,6 +2265,24 @@ fn centered(area: Rect, max_width: u16) -> Rect {
 #[must_use]
 pub(crate) fn editor_area(area: Rect) -> Rect {
     centered(area, 108)
+}
+
+#[must_use]
+pub(crate) fn preview_content_area(area: Rect) -> Rect {
+    let area = centered(area, 104);
+    Block::new()
+        .borders(Borders::TOP)
+        .padding(Padding::horizontal(2))
+        .inner(area)
+}
+
+#[must_use]
+pub(crate) fn preview_line_height(line: &Line<'_>, width: usize) -> usize {
+    if is_rendered_table_line(line) {
+        1
+    } else {
+        line.width().max(1).div_ceil(width.max(1))
+    }
 }
 
 fn popup(area: Rect, width: u16, height: u16) -> Rect {
