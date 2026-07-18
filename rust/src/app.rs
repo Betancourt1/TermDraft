@@ -1,6 +1,6 @@
 //! Ratatui event/update coordinator.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, stdout};
@@ -863,6 +863,7 @@ pub struct App {
     pub config: Config,
     pub entries: Vec<WorkspaceEntry>,
     pub explorer_state: ListState,
+    expanded_directories: HashSet<PathBuf>,
     pub tabs: Vec<EditorTab>,
     pub active_tab: Option<usize>,
     pub mode: Mode,
@@ -926,10 +927,12 @@ impl App {
         recovery_journal: Option<RecoveryJournal>,
     ) -> anyhow::Result<Self> {
         let entries = workspace.scan();
-        let selected = workspace
-            .initial_file
-            .as_ref()
-            .and_then(|initial| entries.iter().position(|entry| entry.path == *initial));
+        let selected = workspace.initial_file.as_ref().and_then(|initial| {
+            entries
+                .iter()
+                .filter(|entry| entry.depth == 0)
+                .position(|entry| entry.path == *initial)
+        });
         let mut explorer_state = ListState::default();
         explorer_state.select(selected.or_else(|| (!entries.is_empty()).then_some(0)));
 
@@ -946,6 +949,7 @@ impl App {
             config,
             entries,
             explorer_state,
+            expanded_directories: HashSet::new(),
             tabs: Vec::new(),
             active_tab: None,
             mode: Mode::Command,
@@ -2699,9 +2703,7 @@ impl App {
     }
 
     fn selected_workspace_path(&self, fallback_to_document: bool) -> PathBuf {
-        self.explorer_state
-            .selected()
-            .and_then(|index| self.entries.get(index))
+        self.selected_explorer_entry()
             .map(|entry| entry.path.clone())
             .or_else(|| {
                 fallback_to_document
@@ -3198,9 +3200,13 @@ impl App {
 
     fn refresh_entries(&mut self, selected_path: Option<&Path>) {
         self.entries = self.workspace.scan();
+        self.retain_existing_expanded_directories();
+        if let Some(path) = selected_path {
+            self.expand_ancestors(path);
+        }
         let selected = selected_path
-            .and_then(|path| self.entries.iter().position(|entry| entry.path == path))
-            .or_else(|| (!self.entries.is_empty()).then_some(0));
+            .and_then(|path| self.visible_position(path))
+            .or_else(|| (!self.visible_entry_indices().is_empty()).then_some(0));
         self.explorer_state.select(selected);
     }
 
@@ -3455,8 +3461,9 @@ impl App {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.move_explorer(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_explorer(1),
-            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.open_selected_entry(),
-            KeyCode::Left | KeyCode::Char('h') => self.focus = Focus::Editor,
+            KeyCode::Enter => self.open_selected_entry(),
+            KeyCode::Right | KeyCode::Char('l') => self.expand_or_open_selected_entry(),
+            KeyCode::Left | KeyCode::Char('h') => self.collapse_selected_entry(),
             KeyCode::Char('a') => self.open_workspace_input(WorkspaceInputAction::Create),
             KeyCode::Char('c') => self.set_workspace_clipboard(false),
             KeyCode::Char('x') => self.set_workspace_clipboard(true),
@@ -3493,7 +3500,7 @@ impl App {
                         .explorer_state
                         .offset()
                         .saturating_add(usize::from(row.saturating_sub(list.y)));
-                    if index < self.entries.len() {
+                    if index < self.visible_entry_indices().len() {
                         self.explorer_state.select(Some(index));
                         let now = Instant::now();
                         let double_click =
@@ -3635,11 +3642,12 @@ impl App {
     }
 
     fn move_explorer(&mut self, direction: isize) {
-        if self.entries.is_empty() {
+        let visible_count = self.visible_entry_indices().len();
+        if visible_count == 0 {
             return;
         }
         let current = self.explorer_state.selected().unwrap_or_default();
-        let maximum = self.entries.len() - 1;
+        let maximum = visible_count - 1;
         let next = if direction < 0 {
             current.saturating_sub(1)
         } else {
@@ -3649,16 +3657,20 @@ impl App {
     }
 
     fn open_selected_entry(&mut self) {
-        let Some(index) = self.explorer_state.selected() else {
-            return;
-        };
-        let Some(entry) = self.entries.get(index) else {
+        let Some(entry) = self.selected_explorer_entry().cloned() else {
             return;
         };
         if entry.is_dir {
+            let expanded = if self.expanded_directories.remove(&entry.relative) {
+                false
+            } else {
+                self.expanded_directories.insert(entry.relative.clone());
+                true
+            };
             self.status_message = Some(format!(
-                "{} · folders are expanded",
-                entry.relative.display()
+                "{} · {}",
+                entry.relative.display(),
+                if expanded { "expanded" } else { "collapsed" }
             ));
             return;
         }
@@ -3666,6 +3678,93 @@ impl App {
         if let Err(error) = self.open_document(&path) {
             self.status_message = Some(format!("Open failed · {error}"));
         }
+    }
+
+    fn expand_or_open_selected_entry(&mut self) {
+        let Some(entry) = self.selected_explorer_entry().cloned() else {
+            return;
+        };
+        if entry.is_dir {
+            self.expanded_directories.insert(entry.relative.clone());
+            self.status_message = Some(format!("{} · expanded", entry.relative.display()));
+        } else {
+            self.open_selected_entry();
+        }
+    }
+
+    fn collapse_selected_entry(&mut self) {
+        let Some(entry) = self.selected_explorer_entry().cloned() else {
+            self.focus = Focus::Editor;
+            return;
+        };
+        if entry.is_dir && self.expanded_directories.remove(&entry.relative) {
+            self.status_message = Some(format!("{} · collapsed", entry.relative.display()));
+            return;
+        }
+        let Some(parent) = entry
+            .relative
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+        else {
+            self.focus = Focus::Editor;
+            return;
+        };
+        let parent = self.workspace.root.join(parent);
+        if let Some(index) = self.visible_position(&parent) {
+            self.explorer_state.select(Some(index));
+        }
+    }
+
+    pub(crate) fn visible_entry_indices(&self) -> Vec<usize> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| self.entry_is_visible(entry).then_some(index))
+            .collect()
+    }
+
+    pub(crate) fn directory_is_expanded(&self, entry: &WorkspaceEntry) -> bool {
+        entry.is_dir && self.expanded_directories.contains(&entry.relative)
+    }
+
+    fn entry_is_visible(&self, entry: &WorkspaceEntry) -> bool {
+        entry
+            .relative
+            .ancestors()
+            .skip(1)
+            .filter(|ancestor| !ancestor.as_os_str().is_empty())
+            .all(|ancestor| self.expanded_directories.contains(ancestor))
+    }
+
+    fn selected_explorer_entry(&self) -> Option<&WorkspaceEntry> {
+        let visible_index = self.explorer_state.selected()?;
+        let entry_index = *self.visible_entry_indices().get(visible_index)?;
+        self.entries.get(entry_index)
+    }
+
+    fn visible_position(&self, path: &Path) -> Option<usize> {
+        self.visible_entry_indices()
+            .into_iter()
+            .position(|index| self.entries[index].path == path)
+    }
+
+    fn expand_ancestors(&mut self, path: &Path) {
+        let relative = self.workspace.relative(path);
+        self.expanded_directories.extend(
+            relative
+                .ancestors()
+                .skip(1)
+                .filter(|ancestor| !ancestor.as_os_str().is_empty())
+                .map(Path::to_path_buf),
+        );
+    }
+
+    fn retain_existing_expanded_directories(&mut self) {
+        self.expanded_directories.retain(|relative| {
+            self.entries
+                .iter()
+                .any(|entry| entry.is_dir && entry.relative == *relative)
+        });
     }
 
     #[allow(clippy::too_many_lines)]
@@ -4588,17 +4687,16 @@ impl App {
         self.sync_active_document();
         let mut changed = self.poll_active_document();
         let selected_path = self
-            .explorer_state
-            .selected()
-            .and_then(|index| self.entries.get(index))
+            .selected_explorer_entry()
             .map(|entry| entry.path.clone());
         let entries = self.workspace.scan();
         if entries != self.entries {
             self.entries = entries;
+            self.retain_existing_expanded_directories();
             let selection = selected_path
                 .as_ref()
-                .and_then(|path| self.entries.iter().position(|entry| entry.path == *path))
-                .or_else(|| (!self.entries.is_empty()).then_some(0));
+                .and_then(|path| self.visible_position(path))
+                .or_else(|| (!self.visible_entry_indices().is_empty()).then_some(0));
             self.explorer_state.select(selection);
             changed = true;
         }
@@ -6281,6 +6379,53 @@ command_manage_recovery = "Z"
     }
 
     #[test]
+    fn explorer_starts_collapsed_and_folders_can_be_toggled() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir_all(directory.path().join("notes/2026")).unwrap();
+        fs::write(directory.path().join("notes/2026/draft.md"), "draft").unwrap();
+        fs::write(directory.path().join("readme.md"), "readme").unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.focus = Focus::Explorer;
+        let visible_paths = |app: &App| {
+            app.visible_entry_indices()
+                .into_iter()
+                .map(|index| app.entries[index].relative.clone())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            visible_paths(&app),
+            [PathBuf::from("notes"), PathBuf::from("readme.md")]
+        );
+        assert!(!app.file_candidates("draft").is_empty());
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            visible_paths(&app),
+            [
+                PathBuf::from("notes"),
+                PathBuf::from("notes/2026"),
+                PathBuf::from("readme.md"),
+            ]
+        );
+
+        app.explorer_state.select(Some(1));
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(visible_paths(&app).contains(&PathBuf::from("notes/2026/draft.md")));
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert!(!visible_paths(&app).contains(&PathBuf::from("notes/2026/draft.md")));
+
+        app.explorer_state.select(Some(0));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            visible_paths(&app),
+            [PathBuf::from("notes"), PathBuf::from("readme.md")]
+        );
+        assert_eq!(app.status_message.as_deref(), Some("notes · collapsed"));
+    }
+
+    #[test]
     fn effective_keymap_drives_exact_global_and_command_shortcuts() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("note.md");
@@ -6374,19 +6519,12 @@ command_manage_recovery = "Z"
         app.close_active_discarding();
 
         let note = root.join("a/note.md");
-        let note_index = app
-            .entries
-            .iter()
-            .position(|entry| entry.path == note)
-            .unwrap();
+        app.expand_ancestors(&note);
+        let note_index = app.visible_position(&note).unwrap();
         app.explorer_state.select(Some(note_index));
         app.set_workspace_clipboard(false);
         let b = root.join("b");
-        let b_index = app
-            .entries
-            .iter()
-            .position(|entry| entry.path == b)
-            .unwrap();
+        let b_index = app.visible_position(&b).unwrap();
         app.explorer_state.select(Some(b_index));
         app.paste_workspace_entry();
         assert_eq!(fs::read_to_string(root.join("b/note.md")).unwrap(), "note");
@@ -6394,18 +6532,10 @@ command_manage_recovery = "Z"
 
         app.open_document(&note).unwrap();
         let a = root.join("a");
-        let a_index = app
-            .entries
-            .iter()
-            .position(|entry| entry.path == a)
-            .unwrap();
+        let a_index = app.visible_position(&a).unwrap();
         app.explorer_state.select(Some(a_index));
         app.set_workspace_clipboard(true);
-        let b_index = app
-            .entries
-            .iter()
-            .position(|entry| entry.path == b)
-            .unwrap();
+        let b_index = app.visible_position(&b).unwrap();
         app.explorer_state.select(Some(b_index));
         app.paste_workspace_entry();
 
@@ -6429,11 +6559,7 @@ command_manage_recovery = "Z"
             renamed.join("note.md")
         );
 
-        let renamed_index = app
-            .entries
-            .iter()
-            .position(|entry| entry.path == renamed)
-            .unwrap();
+        let renamed_index = app.visible_position(&renamed).unwrap();
         app.explorer_state.select(Some(renamed_index));
         app.request_trash_entry();
         assert!(app.overlay.is_none());

@@ -35,6 +35,8 @@ const BRIGHT: Color = Color::Rgb(242, 242, 242);
 const SHORTCUT_HELP_LINE_COUNT: u16 = 27;
 const MARKDOWN_ICON: &str = "";
 const FOLDER_ICON: &str = "";
+const COLLAPSED_FOLDER: &str = "▸";
+const EXPANDED_FOLDER: &str = "▾";
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     app.update_viewport_width(frame.area().width);
@@ -185,29 +187,44 @@ fn draw_explorer(frame: &mut Frame, app: &mut App, area: Rect) {
         .borders(Borders::TOP)
         .border_style(Style::new().fg(BORDER))
         .style(Style::new().bg(SURFACE));
-    let items = app.entries.iter().map(|entry| {
-        let indent = "  ".repeat(entry.depth);
-        let icon = if entry.is_dir {
-            FOLDER_ICON
-        } else {
-            MARKDOWN_ICON
-        };
-        let name = entry
-            .relative
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy();
-        let icon_style = if entry.is_dir {
-            Style::new().fg(Color::Rgb(142, 142, 142))
-        } else {
-            Style::new().fg(Color::Rgb(184, 184, 184))
-        };
-        ListItem::new(Line::from(vec![
-            Span::raw(indent),
-            Span::styled(format!("{icon} "), icon_style),
-            Span::styled(name.to_string(), Style::new().fg(TEXT)),
-        ]))
-    });
+    let items = app
+        .visible_entry_indices()
+        .into_iter()
+        .map(|index| &app.entries[index])
+        .map(|entry| {
+            let indent = "  ".repeat(entry.depth);
+            let icon = if entry.is_dir {
+                FOLDER_ICON
+            } else {
+                MARKDOWN_ICON
+            };
+            let name = entry
+                .relative
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy();
+            let icon_style = if entry.is_dir {
+                Style::new().fg(Color::Rgb(142, 142, 142))
+            } else {
+                Style::new().fg(Color::Rgb(184, 184, 184))
+            };
+            let disclosure = if entry.is_dir {
+                if app.directory_is_expanded(entry) {
+                    EXPANDED_FOLDER
+                } else {
+                    COLLAPSED_FOLDER
+                }
+            } else {
+                " "
+            };
+            ListItem::new(Line::from(vec![
+                Span::raw(indent),
+                Span::styled(format!("{disclosure} "), Style::new().fg(MUTED)),
+                Span::styled(format!("{icon} "), icon_style),
+                Span::styled(name.to_string(), Style::new().fg(TEXT)),
+            ]))
+        })
+        .collect::<Vec<_>>();
     let list = List::new(items)
         .block(block)
         .highlight_symbol("› ")
