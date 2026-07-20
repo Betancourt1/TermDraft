@@ -1,7 +1,8 @@
 # Releasing TermDraft
 
-This checklist publishes the Rust application as the canonical `termdraft` executable. TermDraft
-1.2.0 remains the final Python release and rollback point; 2.x releases do not publish to PyPI.
+This checklist publishes the pre-1.0 Rust application as the canonical `termdraft` executable.
+The Python implementation remains a compatibility reference; native releases do not publish to
+PyPI.
 
 ## Distribution boundary
 
@@ -10,8 +11,8 @@ This checklist publishes the Rust application as the canonical `termdraft` execu
 - The release workflow verifies Rust formatting, Clippy, debug tests, and release tests before
   building native archives for Linux and macOS on x86_64 and arm64.
 - A successful workflow creates a draft GitHub release with four archives and `SHA256SUMS`.
-- `Betancourt1/homebrew-tap` is updated only after that immutable GitHub release is verified.
-- The Python package under `src/termdraft` remains a compatibility oracle, not a 2.x artifact.
+- `Betancourt1/homebrew-tap` is updated only after the GitHub release is verified.
+- The Python package under `src/termdraft` remains a compatibility oracle, not a release artifact.
 
 The Cargo package is intentionally not published to crates.io. Supported installations are the
 Homebrew formula, GitHub release archives, or `cargo install --path . --locked` from a checkout.
@@ -49,7 +50,7 @@ cargo build --locked --release
 .venv/bin/pytest -q
 ```
 
-The Python suite is a regression check only. Do not build or upload Python wheels for a 2.x tag.
+The Python suite is a regression check only. Do not build or upload Python wheels for a native tag.
 
 Commit and push the release change, then wait for every hosted CI job on that exact commit. Local
 success is not a substitute for hosted macOS and Linux verification.
@@ -102,6 +103,7 @@ release is complete only when all three point to the same TermDraft version.
 
 ## Rollback
 
-GitHub releases and tags are immutable. A Homebrew regression is rolled back with a new tap commit
-that restores the previous verified formula; do not rewrite the release tag. Python 1.2.0 remains
-available from its original GitHub/PyPI artifacts but is not republished under a 2.x version.
+Do not reuse a published GitHub release tag. A Homebrew regression is rolled back with a new tap
+commit that restores the previous verified formula. The Python implementation remains available in
+repository history and from its existing PyPI artifacts, but it is not republished as a native
+release.

@@ -218,9 +218,10 @@ open -na Ghostty.app --args \
 
 ## Project status
 
-TermDraft 2.0 is the Rust/Ratatui application on `main`. It replaces the Python/Textual runtime and
-does not require Python at runtime. Python 1.2 remains in `src/termdraft` as a legacy release,
-compatibility reference, and regression oracle.
+TermDraft 0.4 is the pre-1.0 Rust/Ratatui application on `main`. It replaces the Python/Textual
+runtime and does not require Python at runtime. The Python implementation remains in
+`src/termdraft` as a compatibility reference and regression oracle while the Rust interface and
+workflows continue to stabilize toward 1.0.
 
 The largest remaining differences are richer Python preview and link/footnote interactions,
 outline filtering and preview reveal, collapsible/lazy Files and inactive-tab monitoring, complete
@@ -235,7 +236,7 @@ TCSS themes. See [RUST_PORT.md](RUST_PORT.md) for the accepted parity boundary.
 - [Semantic editing](docs/semantic-editing.md) — future block-aware editing boundary
 - [Design QA](design-qa.md) — Ratatui frontend acceptance checks
 - [Release guide](docs/releasing.md) — native artifact, GitHub, and Homebrew checklist
-- [Changelog](CHANGELOG.md) — Rust 2.x and legacy Python 1.x history
+- [Changelog](CHANGELOG.md) — current pre-1.0 development and withdrawn release snapshots
 
 ## Development
 
@@ -249,7 +250,7 @@ cargo test --locked --release
 ```
 
 The Python reference suite can still be run from the prepared development environment with
-`.venv/bin/pytest -q`. Public 2.x releases package only the Rust application.
+`.venv/bin/pytest -q`. Public releases package only the Rust application.
 
 ## License
 
