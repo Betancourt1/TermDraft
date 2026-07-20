@@ -3,17 +3,35 @@
 Notable changes to TermDraft are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use semantic versioning.
 
-The 1.x releases describe the legacy Python/Textual application. TermDraft 2.x is the native
-Rust/Ratatui application.
+TermDraft is intentionally pre-1.0 while the Rust/Ratatui interface and workflows stabilize. The
+former 1.x and 2.0 tags were withdrawn on 2026-07-20; their notes remain below as development
+history rather than supported releases.
 
 ## [Unreleased]
+
+## [0.4.0] - 2026-07-20
+
+### Changed
+
+- Reset the public version line to 0.4.0 so the release number communicates the product's current
+  pre-1.0 maturity without reusing any previously published tag.
+- Made the native Rust/Ratatui application the canonical `termdraft` executable while keeping the
+  Python implementation as a compatibility reference and regression oracle.
 
 ### Added
 
 - Added Paper and Linen light themes plus Midnight and Carbon dark themes. Press `t` in COMMAND
   mode, or choose **Change theme** from the command palette, to cycle through them.
+- Added native mouse cursor placement, preview-position alignment, and click-to-source navigation
+  across the Editor, Hybrid, and Preview surfaces.
+- Added native Command-key editing shortcuts in Hybrid mode.
 
-## [2.0.0] - 2026-07-16
+### Fixed
+
+- Restored compact folder collapsing in Files and viewport-aware cursor placement in long rendered
+  documents.
+
+## 2.0.0 — withdrawn development snapshot (2026-07-16)
 
 ### Changed
 
@@ -45,7 +63,7 @@ Rust/Ratatui application.
   popup, command, safety, verification, and historical-performance inventories in
   [RUST_PORT.md](RUST_PORT.md).
 
-## [1.2.0] - 2026-07-16
+## 1.2.0 — withdrawn development snapshot (2026-07-16)
 
 ### Added
 
@@ -68,14 +86,14 @@ Rust/Ratatui application.
 
 - Kept the Files pane open after creating a file or folder so keyboard workflows retain context.
 
-## [1.1.1] - 2026-07-15
+## 1.1.1 — withdrawn development snapshot (2026-07-15)
 
 ### Fixed
 
 - Wait for complete UI results in asynchronous save, recovery, footnote navigation, workspace
   watcher, and theme reload tests instead of racing their worker and interface callbacks.
 
-## [1.1.0] - 2026-07-15
+## 1.1.0 — withdrawn development snapshot (2026-07-15)
 
 ### Added
 
@@ -97,7 +115,7 @@ Rust/Ratatui application.
   from `n` to `]`, previous tab from `p` to `[`, close tab from `c` to `C`, and redo from `r` to `U`.
   Explicit keybinding overrides remain supported.
 
-## [1.0.0] - 2026-07-14
+## 1.0.0 — withdrawn development snapshot (2026-07-14)
 
 ### Added
 
@@ -134,9 +152,5 @@ Rust/Ratatui application.
 - Established the local-first terminal writing loop with a file explorer, Markdown source editor,
   rendered preview, protected saves, and crash-recovery journals.
 
-[Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v2.0.0...HEAD
-[2.0.0]: https://github.com/Betancourt1/TermDraft/compare/v1.2.0...v2.0.0
-[1.2.0]: https://github.com/Betancourt1/TermDraft/compare/v1.1.1...v1.2.0
-[1.1.1]: https://github.com/Betancourt1/TermDraft/compare/v1.1.0...v1.1.1
-[1.1.0]: https://github.com/Betancourt1/TermDraft/compare/v1.0.0...v1.1.0
-[1.0.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v1.0.0
+[Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.4.0

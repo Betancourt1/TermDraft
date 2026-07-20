@@ -1,8 +1,8 @@
 # TermDraft Rust architecture
 
-This document describes the Rust implementation distributed as TermDraft 2.x. The Python/Textual
-implementation under `src/termdraft` remains a compatibility and regression reference for the
-legacy 1.x releases.
+This document describes the pre-1.0 Rust implementation distributed as TermDraft. The
+Python/Textual implementation under `src/termdraft` remains a historical compatibility and
+regression reference.
 
 The Rust port keeps the same product boundary: ordinary files are authoritative, workspace content
 cannot define commands or visual rules, the terminal owns only live editing state, and uncertain

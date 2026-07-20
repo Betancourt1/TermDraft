@@ -1,14 +1,14 @@
 # TermDraft implementation inventory
 
-This document compares the legacy Python/Textual 1.x application with the Rust/Ratatui application
-distributed as TermDraft 2.x. Both edit the same ordinary `.md`, `.markdown`, and `.txt` files and
-use compatible configuration, session, and recovery formats. Their default state locations align
-on macOS and Linux/XDG; Windows differences are inventoried below.
+This document compares the legacy Python/Textual implementation with the pre-1.0 Rust/Ratatui
+application. Both edit the same ordinary `.md`, `.markdown`, and `.txt` files and use compatible
+configuration, session, and recovery formats. Their default state locations align on macOS and
+Linux/XDG; Windows differences are inventoried below.
 
 Rust is now the primary source implementation: it preserves nearly all of the keyboard-first
 workflow, feels materially more immediate in use, and the historical measurements below show much
-lower process-start and first-frame latency. TermDraft 2.0 makes this implementation the public
-`termdraft` command and Homebrew package. Python 1.2 remains an immutable legacy release.
+lower process-start and first-frame latency. TermDraft 0.4 makes this implementation the public
+`termdraft` command and Homebrew package. Python remains a historical compatibility reference.
 
 ## Run either implementation
 
@@ -383,7 +383,7 @@ configurable `h`/`j`/`k`/`l`, `0`/`$`, and `g`/`G` commands provide its Yazi/Vim
 
 ## Complete CLI comparison
 
-| CLI surface | Legacy Python `termdraft` | TermDraft 2.x `termdraft` |
+| CLI surface | Legacy Python `termdraft` | Pre-1.0 Rust `termdraft` |
 | --- | --- | --- |
 | Positional `TARGET` | Directory or editable file; defaults to `.` | Same |
 | `--config-dir PATH` | Select configuration root | Same |
