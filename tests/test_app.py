@@ -2275,6 +2275,7 @@ async def test_recovery_manager_restores_quarantine_into_guarded_open_flow(
                 break
             await pilot.pause(0.01)
         assert isinstance(app.screen, RecoveryDialog)
+        await pilot.pause()
         await pilot.click("#recovery-restore")
         await _wait_until(
             pilot,
