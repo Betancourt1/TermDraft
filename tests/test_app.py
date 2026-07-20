@@ -1458,6 +1458,10 @@ async def test_dirty_edit_is_journaled_and_successful_save_clears_recovery(
         assert app.document.recovery_saved
 
         await pilot.press("ctrl+s")
+        await _wait_until(
+            pilot,
+            lambda: bool(app.document and not app.document.dirty and not app._critical_io),
+        )
 
         assert path.read_text(encoding="utf-8") == "xbase"
         assert journal.load(path) is None
