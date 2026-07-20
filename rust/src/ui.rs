@@ -32,7 +32,7 @@ const POPUP_BORDER: Color = Color::Rgb(82, 82, 82);
 const TEXT: Color = Color::Rgb(218, 218, 218);
 const MUTED: Color = Color::Rgb(118, 118, 118);
 const BRIGHT: Color = Color::Rgb(242, 242, 242);
-const SHORTCUT_HELP_LINE_COUNT: u16 = 27;
+const SHORTCUT_HELP_LINE_COUNT: u16 = 28;
 const MARKDOWN_ICON: &str = "";
 const FOLDER_ICON: &str = "";
 const COLLAPSED_FOLDER: &str = "▸";
@@ -63,6 +63,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let Some(overlay) = &app.overlay {
         draw_overlay(frame, app, overlay);
     }
+    app.theme.apply(frame.buffer_mut());
 }
 
 fn draw_title(frame: &mut Frame, app: &App, area: Rect) {
@@ -508,7 +509,8 @@ fn update_help_scroll_bounds(frame_area: Rect, overlay: &mut Option<Overlay>) {
 fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
     let area = match overlay {
         Overlay::Help { .. } => popup(frame.area(), 78, 30),
-        Overlay::MarkdownHelp { .. } | Overlay::Palette { .. } => popup(frame.area(), 76, 30),
+        Overlay::MarkdownHelp { .. } => popup(frame.area(), 76, 30),
+        Overlay::Palette { .. } => popup(frame.area(), 76, 31),
         Overlay::SemanticInspector { .. } => popup(frame.area(), 82, 34),
         Overlay::SemanticReader { .. } => popup(frame.area(), 82, 36),
         Overlay::CoordinateInspector { .. } => popup(frame.area(), 76, 16),
@@ -1904,6 +1906,11 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, block: Block<'_>, scroll:
             shortcut(app, &["command_toggle_preview", "toggle_preview"]),
             "Show / hide preview",
         ),
+        help_line(
+            "VIEW",
+            shortcut(app, &["command_change_theme"]),
+            "Change theme",
+        ),
         help_line("VIEW", "← / → / h / l", "Scroll preview table horizontally"),
         help_line(
             "EDIT",
@@ -1998,6 +2005,7 @@ fn command_shortcut(app: &App, action: crate::app::CommandAction) -> String {
         CommandAction::Undo => &["command_undo", "undo"],
         CommandAction::Redo => &["command_redo", "redo"],
         CommandAction::ReloadConfig => &["command_reload_config"],
+        CommandAction::ChangeTheme => &["command_change_theme"],
         CommandAction::ManageRecovery => &["command_manage_recovery"],
         CommandAction::MarkdownHelp => &["command_markdown_help"],
         CommandAction::InspectSemanticBlocks => &["command_inspect_semantic_blocks"],
@@ -2050,7 +2058,7 @@ fn draw_command_palette(
                 .alignment(Alignment::Center),
             results,
         );
-    } else if results.width >= 58 && results.height >= 24 {
+    } else if results.width >= 58 && results.height >= 25 {
         draw_command_grid(frame, app, results, &commands, selected);
     } else {
         draw_compact_command_list(frame, app, results, &commands, selected);
@@ -2083,7 +2091,7 @@ fn draw_command_grid(
         Constraint::Length(1),
         Constraint::Length(8),
         Constraint::Length(1),
-        Constraint::Min(7),
+        Constraint::Min(8),
     ])
     .areas(area);
     for (row_area, groups) in [first, second, third].into_iter().zip(COMMAND_GROUP_ROWS) {
@@ -2192,6 +2200,7 @@ const fn command_description(action: CommandAction) -> &'static str {
         CommandAction::Undo => "Undo the last editor change",
         CommandAction::Redo => "Redo the last undone editor change",
         CommandAction::ReloadConfig => "Reload keybindings, editor, and retention options",
+        CommandAction::ChangeTheme => "Cycle through Paper, Linen, Midnight, and Carbon",
         CommandAction::ManageRecovery => "Restore, retarget, export, or clean recovery drafts",
         CommandAction::MarkdownHelp => "Show supported Markdown syntax and examples",
         CommandAction::InspectSemanticBlocks => "Inspect parser ranges for the active source",
@@ -2328,6 +2337,7 @@ mod tests {
     use crate::persistence::load_file;
     use crate::recovery::RecoveryJournal;
     use crate::semantic_blocks::map_semantic_blocks;
+    use crate::theme::Theme;
     use crate::workspace::Workspace;
 
     fn rendered(terminal: &Terminal<TestBackend>) -> String {
@@ -2411,6 +2421,31 @@ mod tests {
     }
 
     #[test]
+    fn paper_theme_recolors_the_complete_rendered_frame() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.theme = Theme::Paper;
+        app.overlay = Some(Overlay::Message("Done".to_owned()));
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let popup_area = popup(terminal.backend().buffer().area, 62, 7);
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(1, 0)].fg, Color::Rgb(23, 77, 70));
+        assert_eq!(buffer[(99, 12)].bg, Color::Rgb(247, 243, 234));
+        assert_eq!(
+            buffer[(popup_area.x + 3, popup_area.y + 1)].bg,
+            Color::Rgb(255, 253, 248)
+        );
+        assert_eq!(
+            buffer[(popup_area.x, popup_area.y)].fg,
+            Color::Rgb(128, 149, 140)
+        );
+    }
+
+    #[test]
     fn shortcut_help_keeps_every_command_reachable_at_80_by_24() {
         let directory = tempfile::tempdir().unwrap();
         let workspace = Workspace::from_target(directory.path()).unwrap();
@@ -2429,7 +2464,7 @@ mod tests {
         let Some(Overlay::Help { scroll, max_scroll }) = &mut app.overlay else {
             panic!("shortcut help should remain open");
         };
-        assert_eq!(*max_scroll, 8);
+        assert_eq!(*max_scroll, 9);
         *scroll = *max_scroll;
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();

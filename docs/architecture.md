@@ -43,7 +43,8 @@ most of that work through Textual workers.
 | `main.rs` | CLI arguments, effective command reference, and `--inspect` |
 | `app.rs` | modes, tabs, focus, overlays, events, polling, search worker, transitions, sessions, recovery UI |
 | `ui.rs` | responsive Ratatui layout, workbench regions, popup rendering, inline status |
-| `bindings.rs` | canonical 52-action contract, parsing, scopes, collision/reserved-key validation |
+| `theme.rs` | four built-in palettes and final-frame semantic color mapping |
+| `bindings.rs` | 53-action contract, parsing, scopes, collision/reserved-key validation |
 | `config.rs` | strict compatible TOML, generated templates, paths, editor and recovery settings |
 | `editor.rs` | `tui-textarea-2` setup, cursor styling, and inline presentation |
 | `document.rs` | live/saved source, exact mixed source, encoding, line endings, conflict state, fingerprint |
@@ -231,18 +232,19 @@ rather than Python's pre-install Cancel opening.
 sections/fields, invalid editor values, zero or unrepresentable retention ages, unknown binding IDs,
 empty/malformed keys, reserved preview controls, duplicate tokens, and cross-action collisions.
 
-The generated `config.toml` template documents all 52 binding IDs. Rust applies every global,
-editor, preview, and COMMAND override; effective mappings drive runtime dispatch, the 32-action
+The generated `config.toml` template documents all 53 binding IDs. Rust applies every global,
+editor, preview, and COMMAND override; effective mappings drive runtime dispatch, the 33-action
 palette, `?`, and `--commands`. `R` validates and applies editor, view, retention, and binding changes
 as one replacement; a failed reload leaves the previous configuration untouched. Startup mode
 remains startup-only.
 
 `theme.tcss` is created as a no-clobber compatibility template but is never parsed or watched.
-Rust always uses its built-in theme, so `--safe-mode` is behaviorally redundant.
+Rust instead provides Paper and Linen light themes plus Midnight and Carbon dark themes. `t` cycles
+them for the current run; `--safe-mode` remains behaviorally redundant.
 
-The command palette contains the same 32 actions in the same six groups/order as Python, rendered as
-a searchable grouped two-column grid with descriptions and a compact fallback for narrow terminals.
-Rust's `?` screen is a scrollable 26-row action summary; `--commands` is the fuller TermDraft-action
+The command palette preserves Python's 32 actions and adds the native Change theme action, rendered
+as a searchable grouped two-column grid with descriptions and a compact fallback for narrow
+terminals. Rust's `?` screen is a scrollable 28-row action summary; `--commands` is the fuller action
 reference. Neither substitutes for the underlying editor-key inventory in
 [RUST_PORT.md](../RUST_PORT.md).
 

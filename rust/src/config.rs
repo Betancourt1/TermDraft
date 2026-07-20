@@ -55,6 +55,7 @@ retention_days = 30
 # command_palette = "ctrl+backslash"
 # Single-key COMMAND bindings are remappable too.
 # command_write_mode = "i"
+# command_change_theme = "t"
 # command_save = "w"
 # command_save_as = "W"
 # command_duplicate_document = "D"
@@ -91,8 +92,8 @@ retention_days = 30
 
 pub const THEME_TEMPLATE: &str = r"/* TermDraft user theme overrides.
 
-   The Rust comparison build preserves the built-in monochrome frontend and does not
-   currently evaluate Textual CSS.
+   The Rust frontend does not evaluate Textual CSS. Press t in COMMAND mode to
+   cycle through its four built-in themes.
 */
 ";
 
@@ -425,7 +426,7 @@ retention_days = 45
         assert_eq!(config.keybindings["save"], "ctrl+alt+s");
         assert_eq!(config.keybindings["redo"], "ctrl+r,ctrl+shift+r");
         assert_eq!(config.keybindings["quit"], "ctrl+q");
-        assert_eq!(config.keybindings.len(), 52);
+        assert_eq!(config.keybindings.len(), 53);
     }
 
     #[test]

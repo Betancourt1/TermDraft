@@ -49,6 +49,7 @@ use crate::search::{
 };
 use crate::semantic_blocks::{SemanticBlockMap, map_semantic_blocks};
 use crate::session::{DocumentViewState, MAX_SESSION_DOCUMENTS, SessionState, SessionStore};
+use crate::theme::Theme;
 use crate::ui;
 use crate::workspace::{
     Workspace, WorkspaceEntry, has_editable_suffix, paths_are_spelling_aliases,
@@ -474,6 +475,7 @@ pub enum CommandAction {
     Undo,
     Redo,
     ReloadConfig,
+    ChangeTheme,
     ManageRecovery,
     MarkdownHelp,
     InspectSemanticBlocks,
@@ -652,6 +654,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         label: "Preview",
         shortcut: "v",
         action: CommandAction::TogglePreview,
+    },
+    CommandSpec {
+        group: "VIEW",
+        label: "Change theme",
+        shortcut: "t",
+        action: CommandAction::ChangeTheme,
     },
     CommandSpec {
         group: "VIEW",
@@ -903,6 +911,7 @@ pub struct App {
     pub tabs: Vec<EditorTab>,
     pub active_tab: Option<usize>,
     pub mode: Mode,
+    pub theme: Theme,
     pub view_mode: ViewMode,
     pub focus: Focus,
     pub show_explorer: bool,
@@ -989,6 +998,7 @@ impl App {
             tabs: Vec::new(),
             active_tab: None,
             mode: Mode::Command,
+            theme: Theme::default(),
             view_mode,
             focus: Focus::Editor,
             show_explorer: true,
@@ -2268,6 +2278,7 @@ impl App {
                 });
             }
             BindingAction::EnterWriteMode => self.execute_command(CommandAction::WriteMode),
+            BindingAction::ChangeTheme => self.execute_command(CommandAction::ChangeTheme),
             BindingAction::DuplicateDocument => self.execute_command(CommandAction::Duplicate),
             BindingAction::ReloadConfig => self.execute_command(CommandAction::ReloadConfig),
             BindingAction::ManageRecovery => self.execute_command(CommandAction::ManageRecovery),
@@ -2345,8 +2356,7 @@ impl App {
                     self.focus = Focus::Editor;
                 }
                 self.config = config;
-                self.status_message =
-                    Some("Reloaded config.toml · theme changes still require Python".to_owned());
+                self.status_message = Some("Reloaded config.toml".to_owned());
             }
             Err(error) => {
                 self.status_message = Some(format!("Configuration not reloaded · {error}"));
@@ -2421,6 +2431,15 @@ impl App {
                 }
             }
             CommandAction::ReloadConfig => self.reload_config(),
+            CommandAction::ChangeTheme => {
+                self.theme = self.theme.next();
+                let mode = if self.theme.is_light() {
+                    "light"
+                } else {
+                    "dark"
+                };
+                self.status_message = Some(format!("Theme · {} ({mode})", self.theme.name()));
+            }
             CommandAction::ManageRecovery => self.open_recovery_manager(),
             CommandAction::MarkdownHelp => {
                 self.overlay = Some(Overlay::MarkdownHelp { scroll: 0 });
@@ -5308,7 +5327,7 @@ mod tests {
     }
 
     #[test]
-    fn command_palette_matches_official_python_order() {
+    fn command_palette_preserves_order_with_the_native_theme_command() {
         let expected = [
             ("DOCUMENT", "Save", "w", CommandAction::Save),
             ("DOCUMENT", "Save as", "W", CommandAction::SaveAs),
@@ -5357,6 +5376,7 @@ mod tests {
                 CommandAction::ReadSemanticBlocks,
             ),
             ("VIEW", "Preview", "v", CommandAction::TogglePreview),
+            ("VIEW", "Change theme", "t", CommandAction::ChangeTheme),
             (
                 "VIEW",
                 "Recovery drafts",
@@ -5386,6 +5406,27 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(commands, expected);
+    }
+
+    #[test]
+    fn theme_command_cycles_all_four_built_in_themes() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let mut app = App::new(workspace).unwrap();
+
+        for expected in Theme::ALL {
+            app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+            assert_eq!(app.theme, expected);
+            assert_eq!(
+                app.status_message.as_deref(),
+                Some(format!(
+                    "Theme · {} ({})",
+                    expected.name(),
+                    if expected.is_light() { "light" } else { "dark" }
+                ))
+                .as_deref()
+            );
+        }
     }
 
     #[test]
@@ -6547,7 +6588,7 @@ command_manage_recovery = "Z"
         let workspace = Workspace::from_target(&path).unwrap();
         let config = Config {
             keybindings: crate::bindings::Keymap::resolve(
-                &[("command_save".to_owned(), "t".to_owned())]
+                &[("command_save".to_owned(), "z".to_owned())]
                     .into_iter()
                     .collect(),
             )
@@ -6559,7 +6600,7 @@ command_manage_recovery = "Z"
 
         app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
         assert_eq!(fs::read_to_string(&path).unwrap(), "disk");
-        app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
         assert_eq!(fs::read_to_string(&path).unwrap(), "local disk");
 
         app.handle_key(KeyEvent::new(

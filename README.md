@@ -51,6 +51,7 @@ return to COMMAND mode.
 | `s` | Find and replace in the active document |
 | `S` | Open the document outline |
 | `v` | Switch editor/preview, or show/hide preview in a wide split layout |
+| `t` | Change theme: Paper, Linen, Midnight, or Carbon |
 | `e` | Show or hide Files |
 | `[` / `]` | Switch tabs |
 | `:` / `?` | Open the command palette / shortcut help |
@@ -141,6 +142,7 @@ When running without `cargo install`, replace `termdraft` with
 - UTF-8 and UTF-8 BOM support with LF, CRLF, or CR preservation
 - Mouse focus, Files selection and double-click, hybrid-editor text selection, wheel scrolling,
   draggable dividers, and keyboard Files-pane resizing
+- Two light themes (Paper and Linen) and two dark themes (Midnight and Carbon)
 - Markdown continuation for bullets, tasks, numbered lists, and quotes
 
 <details>
@@ -154,8 +156,8 @@ When running without `cargo install`, replace `termdraft` with
   after consent
 - Conflict-checked atomic saves, safe external-conflict choices, per-document guarded exits, crash
   journals, and a recovery inventory/retarget/archive/restore/export/delete/retention manager
-- All 52 compatible application binding IDs, effective remapping, live `R` reload, and an exact
-  32-action command palette
+- All 52 compatible application binding IDs plus the native `command_change_theme` binding,
+  effective remapping, live `R` reload, and a 33-action command palette
 - Markdown syntax, semantic-block, experimental reader, and coordinate-diagnostic overlays
 - Sessions remain content-free; crash-recovery journals contain dirty source and share their v2
   data format with the legacy Python implementation
@@ -188,12 +190,13 @@ startup_mode = "command" # or "write"
 view_mode = "inline"     # or "split"
 ```
 
-Configuration is strict. The generated template documents all 52 `[keybindings]` IDs; valid
+Configuration is strict. The generated template documents all 53 `[keybindings]` IDs; valid
 overrides apply to global, editor, preview, and COMMAND actions. Collisions, reserved keys, and
 unknown settings are rejected. Invalid live reloads leave the active configuration untouched.
 
-`theme.tcss` is created for compatibility but is not evaluated by the Rust frontend, which uses its
-built-in monochrome theme. Use `--config-dir PATH` for an isolated configuration.
+`theme.tcss` is created for compatibility but is not evaluated by the Rust frontend. Press `t` in
+COMMAND mode to cycle from the default Carbon theme through Paper, Linen, and Midnight. Use
+`--config-dir PATH` for an isolated configuration.
 
 For a fully isolated comparison, set `XDG_STATE_HOME=/tmp/termdraft-test-state` and pass
 `--config-dir /tmp/termdraft-test-config`.

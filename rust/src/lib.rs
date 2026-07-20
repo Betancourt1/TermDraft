@@ -15,6 +15,7 @@ pub mod recovery;
 pub mod search;
 pub mod semantic_blocks;
 pub mod session;
+pub mod theme;
 pub mod ui;
 pub mod workspace;
 pub mod workspace_entries;

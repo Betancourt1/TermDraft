@@ -7,6 +7,7 @@ use termdraft::{Workspace, app};
 
 const COMMAND_ROWS: &[(&str, &str)] = &[
     ("command_write_mode", "Enter WRITE mode"),
+    ("command_change_theme", "Change the interface theme"),
     ("command_save", "Save the current document"),
     ("command_save_as", "Save the current document as"),
     (
@@ -119,7 +120,7 @@ struct Arguments {
     #[arg(long)]
     config_dir: Option<PathBuf>,
 
-    /// Keep the built-in Rust theme for this launch.
+    /// Ignore compatibility theme.tcss for this launch (currently a no-op).
     #[arg(long)]
     safe_mode: bool,
 
@@ -353,6 +354,7 @@ mod tests {
         }
         for guidance in [
             "i                                 Enter WRITE mode",
+            "t                                 Change the interface theme",
             "a                                 Create a file or folder",
             "Ctrl+S                            Save the current document",
             "Preview links remain visible but cannot be selected",
@@ -374,7 +376,7 @@ mod tests {
     #[test]
     fn command_help_uses_effective_remapped_keys_and_editor_settings() {
         let overrides = BTreeMap::from([
-            ("command_write_mode".to_owned(), "t".to_owned()),
+            ("command_write_mode".to_owned(), "z".to_owned()),
             ("command_open_palette".to_owned(), "@".to_owned()),
             ("command_palette".to_owned(), "ctrl+alt+p".to_owned()),
             ("save".to_owned(), "ctrl+alt+s".to_owned()),
@@ -390,7 +392,7 @@ mod tests {
 
         let help = format_command_help(&config);
 
-        assert!(help.contains("t                                 Enter WRITE mode"));
+        assert!(help.contains("z                                 Enter WRITE mode"));
         assert!(help.contains("Ctrl+Alt+S"));
         assert!(help.contains("Press @ in COMMAND mode or Ctrl+Alt+P in either mode"));
         assert!(!help.contains("Enter in a list"));

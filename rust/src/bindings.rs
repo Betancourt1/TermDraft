@@ -30,6 +30,7 @@ pub enum Action {
     ShowHelp,
     CommandPalette,
     EnterWriteMode,
+    ChangeTheme,
     DuplicateDocument,
     ReloadConfig,
     ManageRecovery,
@@ -108,6 +109,7 @@ pub const BINDING_DEFINITIONS: &[BindingDefinition] = &[
     binding!("show_help", ShowHelp, Global, "f1"),
     binding!("command_palette", CommandPalette, Global, "ctrl+backslash"),
     binding!("command_write_mode", EnterWriteMode, Command, "i"),
+    binding!("command_change_theme", ChangeTheme, Command, "t"),
     binding!("command_save", Save, Command, "w"),
     binding!("command_save_as", SaveAs, Command, "W"),
     binding!(
@@ -500,13 +502,14 @@ mod tests {
     fn official_defaults_are_complete_and_resolve() {
         let keymap = Keymap::default();
 
-        assert_eq!(BINDING_DEFINITIONS.len(), 52);
-        assert_eq!(keymap.len(), 52);
+        assert_eq!(BINDING_DEFINITIONS.len(), 53);
+        assert_eq!(keymap.len(), 53);
         assert_eq!(keymap["command_save_as"], "W");
         assert_eq!(keymap["command_next_tab"], "]");
         assert_eq!(keymap["command_previous_tab"], "[");
         assert_eq!(keymap["command_redo"], "U");
         assert_eq!(keymap["command_markdown_help"], "K");
+        assert_eq!(keymap["command_change_theme"], "t");
     }
 
     #[test]

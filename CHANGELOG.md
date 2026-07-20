@@ -6,6 +6,13 @@ Notable changes to TermDraft are recorded here. The format follows
 The 1.x releases describe the legacy Python/Textual application. TermDraft 2.x is the native
 Rust/Ratatui application.
 
+## [Unreleased]
+
+### Added
+
+- Added Paper and Linen light themes plus Midnight and Carbon dark themes. Press `t` in COMMAND
+  mode, or choose **Change theme** from the command palette, to cycle through them.
+
 ## [2.0.0] - 2026-07-16
 
 ### Changed
