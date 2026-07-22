@@ -260,13 +260,17 @@ async def test_switch_and_clean_quit_persist_multiple_document_views(tmp_path: P
         app.editor.scroll_to(y=8, animate=False, immediate=True)
         await pilot.press("ctrl+p")
         await pilot.press("s", "e", "c", "o", "n", "d", "enter")
-        await pilot.pause(0.03)
+        await _wait_until(
+            pilot,
+            lambda: app.document is not None and app.document.path == second,
+        )
 
         assert app.document is not None
         assert app.document.path == second
         app.editor.move_cursor((15, 2))
         app.editor.scroll_to(y=10, animate=False, immediate=True)
         await pilot.press("ctrl+q")
+        await _wait_until(pilot, lambda: not app.is_running)
 
     state = store.load(tmp_path).state
     assert state is not None
