@@ -1,8 +1,7 @@
 # Releasing TermDraft
 
-This checklist publishes the pre-1.0 Rust application as the canonical `termdraft` executable.
-The Python implementation remains a compatibility reference; native releases do not publish to
-PyPI.
+This checklist publishes the Rust application as the canonical `termdraft` executable. The Python
+implementation remains a compatibility reference; native releases do not publish to PyPI.
 
 ## Distribution boundary
 

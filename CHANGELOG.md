@@ -3,18 +3,25 @@
 Notable changes to TermDraft are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use semantic versioning.
 
-TermDraft is intentionally pre-1.0 while the Rust/Ratatui interface and workflows stabilize. The
-former 1.x and 2.0 tags were withdrawn on 2026-07-20; their notes remain below as development
-history rather than supported releases.
+TermDraft currently releases on the 0.x line, with no 1.0 roadmap at present. The former 1.x and
+2.0 tags were withdrawn on 2026-07-20; their notes remain below as development history rather than
+supported releases.
 
 ## [Unreleased]
+
+### Added
+
+- Added selectable preview links, internal footnote and backlink navigation, and titled GFM alert
+  rendering. External destinations remain visible without launching another process.
+- Added Unicode-aware outline filtering with explicit source and preview reveal actions.
+- Added pointer activation for tabs and preview links plus overlay scrolling, field/control focus,
+  list selection, double-click activation, and guarded action prompts.
 
 ## [0.4.0] - 2026-07-20
 
 ### Changed
 
-- Reset the public version line to 0.4.0 so the release number communicates the product's current
-  pre-1.0 maturity without reusing any previously published tag.
+- Reset the public version line to 0.4.0 without reusing any previously published tag.
 - Made the native Rust/Ratatui application the canonical `termdraft` executable while keeping the
   Python implementation as a compatibility reference and regression oracle.
 

@@ -212,11 +212,11 @@ fn format_command_help(config: &Config) -> String {
         ),
         (
             "Tab / Shift+Tab in preview".to_owned(),
-            "Preview links remain visible but cannot be selected",
+            "Select the next or previous rendered link",
         ),
         (
             "Enter in preview".to_owned(),
-            "Links and footnotes remain inert",
+            "Follow an internal footnote link or backlink",
         ),
     ];
     if config.editor.auto_continue_lists {
@@ -357,8 +357,8 @@ mod tests {
             "t                                 Change the interface theme",
             "a                                 Create a file or folder",
             "Ctrl+S                            Save the current document",
-            "Preview links remain visible but cannot be selected",
-            "Links and footnotes remain inert",
+            "Select the next or previous rendered link",
+            "Follow an internal footnote link or backlink",
             "Left / Right / h / l in preview",
             "Move to the left or right edge of a wide table",
             "Enter in a list",
