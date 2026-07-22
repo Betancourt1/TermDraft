@@ -28,8 +28,9 @@ ordinary URLs remain selectable but inert, image data is omitted, and raw HTML n
 
 ## Headings
 
-Press `S` in COMMAND mode to open the current heading outline. Choose a heading with the arrow keys
-and `Enter`; the source cursor moves to that line.
+Press `S` in COMMAND mode to open the current heading outline. Type to filter by heading text, use
+the arrow keys to choose a match, then press `Enter` to jump to its source or `Ctrl+Enter` to reveal
+it in the preview.
 
 ### Third-level heading
 

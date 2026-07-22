@@ -876,23 +876,12 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
                 *selected,
             );
         }
-        Overlay::Outline { items, selected } => {
-            let lines = items
-                .iter()
-                .map(|(_, level, title)| {
-                    Line::from(format!("{}{}", "  ".repeat(level.saturating_sub(1)), title))
-                        .style(Style::new().fg(TEXT))
-                })
-                .collect();
-            draw_picker(
-                frame,
-                area,
-                block.title(" Document outline "),
-                None,
-                lines,
-                *selected,
-            );
-        }
+        Overlay::Outline {
+            matches,
+            query,
+            selected,
+            ..
+        } => draw_outline(frame, area, block, matches, query, *selected),
         Overlay::Confirm(action) => {
             let message = match action {
                 ConfirmAction::Quit => {
@@ -2201,7 +2190,7 @@ const fn command_description(action: CommandAction) -> &'static str {
         CommandAction::PreviousTab => "Activate the previous open Markdown buffer",
         CommandAction::WorkspaceSearch => "Search Markdown source across the workspace",
         CommandAction::Find => "Find and replace in the active document",
-        CommandAction::Outline => "Filter headings and jump to the source line",
+        CommandAction::Outline => "Filter headings and reveal them in source or preview",
         CommandAction::ToggleExplorer => "Show or hide the workspace tree",
         CommandAction::TogglePreview => "Show, hide, or switch to the rendered preview",
         CommandAction::WriteMode => "Edit the active Markdown source",
@@ -2247,6 +2236,59 @@ fn draw_picker(
     frame.render_widget(
         Paragraph::new("↑↓ select · Enter open · Esc close").style(Style::new().fg(MUTED)),
         footer,
+    );
+}
+
+fn draw_outline(
+    frame: &mut Frame,
+    area: Rect,
+    block: Block<'_>,
+    matches: &[(usize, usize, String)],
+    query: &TextInput,
+    selected: usize,
+) {
+    let inner = block.inner(area);
+    frame.render_widget(block.title(" Document outline "), area);
+    let [input_area, status_area, results_area, footer_area] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    frame.render_widget(
+        Paragraph::new(labeled_input_line("Filter", query, true, false)),
+        input_area,
+    );
+    let noun = if matches.len() == 1 {
+        "heading"
+    } else {
+        "headings"
+    };
+    frame.render_widget(
+        Paragraph::new(format!("{} {noun}", matches.len())).style(Style::new().fg(MUTED)),
+        status_area,
+    );
+    let items = matches.iter().map(|(line, level, title)| {
+        ListItem::new(
+            Line::from(format!(
+                "{}H{level} {title} · line {}",
+                "  ".repeat(level.saturating_sub(1)),
+                line + 1
+            ))
+            .style(Style::new().fg(TEXT)),
+        )
+    });
+    let list = List::new(items)
+        .highlight_symbol("› ")
+        .highlight_style(Style::new().bg(Color::Rgb(44, 44, 44)).fg(BRIGHT).bold());
+    let selection = (!matches.is_empty()).then_some(selected);
+    let mut state = ratatui::widgets::ListState::default().with_selected(selection);
+    frame.render_stateful_widget(list, results_area, &mut state);
+    frame.render_widget(
+        Paragraph::new("↑↓ select · Enter source · Ctrl+Enter preview · Esc close")
+            .style(Style::new().fg(MUTED)),
+        footer_area,
     );
 }
 

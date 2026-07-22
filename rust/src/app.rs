@@ -238,6 +238,8 @@ pub enum Overlay {
     },
     Outline {
         items: Vec<(usize, usize, String)>,
+        matches: Vec<(usize, usize, String)>,
+        query: TextInput,
         selected: usize,
     },
     PathInput {
@@ -2546,8 +2548,45 @@ impl App {
         if items.is_empty() {
             self.status_message = Some("No headings in this document".to_owned());
         } else {
-            self.overlay = Some(Overlay::Outline { items, selected: 0 });
+            self.overlay = Some(Overlay::Outline {
+                matches: items.clone(),
+                items,
+                query: TextInput::default(),
+                selected: 0,
+            });
         }
+    }
+
+    fn jump_to_outline_source(&mut self, line: usize) {
+        self.narrow_pane = Focus::Editor;
+        self.focus = Focus::Editor;
+        self.move_editor(CursorMove::Jump(u16::try_from(line).unwrap_or(u16::MAX), 0));
+    }
+
+    fn show_outline_in_preview(&mut self, line: usize, level: usize, title: &str) {
+        let Some(source) = self.active_tab().map(|tab| tab.document.text.clone()) else {
+            return;
+        };
+        let rendered = render_markdown_document(&source, None);
+        let width = self.preview_content_width();
+        let rendered_line = rendered
+            .source_lines
+            .iter()
+            .position(|source_line| *source_line == line)
+            .unwrap_or_default();
+        let visual_row = rendered
+            .text
+            .lines
+            .iter()
+            .take(rendered_line)
+            .map(|preview_line| ui::preview_line_height(preview_line, width))
+            .sum::<usize>();
+        self.preview_visible = true;
+        self.narrow_pane = Focus::Preview;
+        self.focus = Focus::Preview;
+        self.preview_selected_link = None;
+        self.preview_scroll = u16::try_from(visual_row).unwrap_or(u16::MAX);
+        self.status_message = Some(format!("H{level} · {title}"));
     }
 
     fn open_document_find(&mut self) {
@@ -4633,23 +4672,36 @@ impl App {
                 }
                 _ => true,
             },
-            Overlay::Outline { items, selected } => match key.code {
+            Overlay::Outline {
+                items,
+                matches,
+                query,
+                selected,
+            } => match key.code {
                 KeyCode::Up => {
                     *selected = selected.saturating_sub(1);
                     true
                 }
                 KeyCode::Down => {
-                    *selected = (*selected + 1).min(items.len().saturating_sub(1));
+                    *selected = (*selected + 1).min(matches.len().saturating_sub(1));
                     true
                 }
-                KeyCode::Enter => {
-                    if let Some((line, _, _)) = items.get(*selected) {
-                        self.move_editor(CursorMove::Jump(
-                            u16::try_from(*line).unwrap_or(u16::MAX),
-                            0,
-                        ));
+                KeyCode::Enter if key.modifiers == KeyModifiers::CONTROL => {
+                    if let Some((line, level, title)) = matches.get(*selected) {
+                        self.show_outline_in_preview(*line, *level, title);
                     }
                     false
+                }
+                KeyCode::Enter => {
+                    if let Some((line, _, _)) = matches.get(*selected) {
+                        self.jump_to_outline_source(*line);
+                    }
+                    false
+                }
+                _ if edit_text_input(query, key) => {
+                    *matches = filter_outline_items(items, &query.value);
+                    *selected = 0;
+                    true
                 }
                 _ => true,
             },
@@ -4732,6 +4784,17 @@ impl App {
                 if *focus == RecoveryManagerFocus::Target =>
             {
                 target.insert(text);
+                true
+            }
+            Overlay::Outline {
+                items,
+                matches,
+                query,
+                selected,
+            } => {
+                query.insert(text);
+                *matches = filter_outline_items(items, &query.value);
+                *selected = 0;
                 true
             }
             _ => false,
@@ -5133,6 +5196,18 @@ fn preview_link_visual_row(rendered: &RenderedMarkdown, link: &PreviewLink, widt
         .map(|line| ui::preview_line_height(line, width))
         .sum::<usize>();
     preceding + link.start_column / width.max(1)
+}
+
+fn filter_outline_items(
+    items: &[(usize, usize, String)],
+    query: &str,
+) -> Vec<(usize, usize, String)> {
+    let query = query.trim().to_lowercase();
+    items
+        .iter()
+        .filter(|(_, _, title)| query.is_empty() || title.to_lowercase().contains(&query))
+        .cloned()
+        .collect()
 }
 
 #[cfg(target_os = "macos")]
@@ -6419,6 +6494,57 @@ command_manage_recovery = "Z"
         assert_eq!(app.focus, Focus::Preview);
         assert_eq!(app.preview_selected_link, Some(1));
         assert_eq!(app.status_message.as_deref(), Some("Footnote note"));
+    }
+
+    #[test]
+    fn outline_filters_unicode_labels_and_jumps_to_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "# Overview\n\n## Résumé Details\n\n### Finish\n").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+
+        app.execute_command(CommandAction::Outline);
+        assert!(app.paste_into_overlay("RÉSUMÉ"));
+        let Some(Overlay::Outline {
+            matches, selected, ..
+        }) = &app.overlay
+        else {
+            panic!("outline should be open");
+        };
+        assert_eq!(*selected, 0);
+        assert_eq!(matches, &[(2, 2, "Résumé Details".to_owned())]);
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.overlay.is_none());
+        assert_eq!(app.focus, Focus::Editor);
+        assert_eq!(app.active_tab().unwrap().editor.cursor(), (2, 0));
+    }
+
+    #[test]
+    fn outline_can_reveal_a_filtered_heading_in_narrow_preview() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        let filler = (0..12)
+            .map(|index| format!("Paragraph {index}."))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        fs::write(&path, format!("# Overview\n\n{filler}\n\n## Details\n")).unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.viewport_width = 70;
+        app.ui_regions.preview = Some(Rect::new(0, 0, 70, 12));
+
+        app.execute_command(CommandAction::Outline);
+        assert!(app.paste_into_overlay("details"));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
+
+        assert!(app.overlay.is_none());
+        assert_eq!(app.focus, Focus::Preview);
+        assert!(app.preview_is_visible());
+        assert!(!app.editor_is_visible());
+        assert!(app.preview_scroll > 0);
+        assert_eq!(app.status_message.as_deref(), Some("H2 · Details"));
     }
 
     #[test]
