@@ -1,6 +1,8 @@
 //! Semantic Markdown rendering for the read-only preview pane.
 
-use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{
+    Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
+};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use unicode_width::UnicodeWidthStr;
@@ -9,6 +11,34 @@ const TEXT: Color = Color::Rgb(218, 218, 218);
 const MUTED: Color = Color::Rgb(118, 118, 118);
 const BRIGHT: Color = Color::Rgb(242, 242, 242);
 const CODE_BACKGROUND: Color = Color::Rgb(28, 28, 28);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum PreviewLinkTarget {
+    External(String),
+    FootnoteDefinition(String),
+    FootnoteBackReference(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PreviewLink {
+    pub rendered_line: usize,
+    pub start_column: usize,
+    pub end_column: usize,
+    pub target: PreviewLinkTarget,
+}
+
+pub(crate) struct RenderedMarkdown {
+    pub text: Text<'static>,
+    pub source_lines: Vec<usize>,
+    pub links: Vec<PreviewLink>,
+}
+
+#[derive(Debug)]
+struct PendingLink {
+    rendered_line: usize,
+    start_column: usize,
+    target: PreviewLinkTarget,
+}
 
 #[derive(Debug)]
 struct ListState {
@@ -36,17 +66,31 @@ struct MarkdownRenderer {
     quote_depth: usize,
     code_block: bool,
     table: Option<TableState>,
+    links: Vec<PreviewLink>,
+    pending_link: Option<PendingLink>,
+    selected_link: Option<usize>,
+    alert_depth: Option<usize>,
+    alert_body_pending: bool,
 }
 
 /// Parse Markdown into terminal-native semantic lines without source markers.
 #[must_use]
 pub fn render_markdown(source: &str) -> Text<'static> {
-    render_markdown_with_source_lines(source).0
+    render_markdown_document(source, None).text
 }
 
 /// Parse Markdown and retain the source line represented by each rendered line.
 #[must_use]
 pub(crate) fn render_markdown_with_source_lines(source: &str) -> (Text<'static>, Vec<usize>) {
+    let rendered = render_markdown_document(source, None);
+    (rendered.text, rendered.source_lines)
+}
+
+#[must_use]
+pub(crate) fn render_markdown_document(
+    source: &str,
+    selected_link: Option<usize>,
+) -> RenderedMarkdown {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TASKLISTS);
@@ -54,8 +98,12 @@ pub(crate) fn render_markdown_with_source_lines(source: &str) -> (Text<'static>,
     options.insert(Options::ENABLE_FOOTNOTES);
     options.insert(Options::ENABLE_DEFINITION_LIST);
     options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
+    options.insert(Options::ENABLE_GFM);
 
-    let mut renderer = MarkdownRenderer::default();
+    let mut renderer = MarkdownRenderer {
+        selected_link,
+        ..MarkdownRenderer::default()
+    };
     let line_starts = std::iter::once(0)
         .chain(source.match_indices('\n').map(|(index, _)| index + 1))
         .collect::<Vec<_>>();
@@ -66,7 +114,11 @@ pub(crate) fn render_markdown_with_source_lines(source: &str) -> (Text<'static>,
         renderer.handle(event);
     }
     renderer.flush_line();
-    (Text::from(renderer.lines), renderer.source_lines)
+    RenderedMarkdown {
+        text: Text::from(renderer.lines),
+        source_lines: renderer.source_lines,
+        links: renderer.links,
+    }
 }
 
 impl MarkdownRenderer {
@@ -83,7 +135,13 @@ impl MarkdownRenderer {
                 self.push_styled(&math, Style::new().fg(BRIGHT).italic());
                 self.flush_line();
             }
-            Event::SoftBreak => self.push_text(" "),
+            Event::SoftBreak => {
+                if self.alert_depth.is_some() {
+                    self.flush_line();
+                } else {
+                    self.push_text(" ");
+                }
+            }
             Event::HardBreak => self.flush_line(),
             Event::Rule => {
                 self.separate_block();
@@ -97,7 +155,11 @@ impl MarkdownRenderer {
                 self.push_styled(if checked { "☑ " } else { "☐ " }, Style::new().fg(BRIGHT));
             }
             Event::FootnoteReference(label) => {
-                self.push_styled(&format!("[{label}]"), Style::new().fg(BRIGHT).underlined());
+                self.push_link_text(
+                    &format!("[{label}]"),
+                    PreviewLinkTarget::FootnoteDefinition(label.to_string()),
+                    Style::new().fg(BRIGHT).underlined(),
+                );
             }
             Event::Html(_) | Event::InlineHtml(_) => {}
         }
@@ -106,7 +168,9 @@ impl MarkdownRenderer {
     fn start(&mut self, tag: Tag<'_>) {
         match tag {
             Tag::Paragraph => {
-                if self.item_depth == 0 {
+                if self.alert_body_pending {
+                    self.alert_body_pending = false;
+                } else if self.item_depth == 0 {
                     self.separate_block();
                 }
             }
@@ -114,11 +178,18 @@ impl MarkdownRenderer {
                 self.separate_block();
                 self.push_style(heading_style(level));
             }
-            Tag::BlockQuote(_) => {
+            Tag::BlockQuote(kind) => {
                 if self.quote_depth == 0 {
                     self.separate_block();
                 }
                 self.quote_depth += 1;
+                if let Some(kind) = kind {
+                    self.alert_depth = Some(self.quote_depth);
+                    let (label, color) = alert_label(kind);
+                    self.push_styled(label, Style::new().fg(color).bold());
+                    self.flush_line();
+                    self.alert_body_pending = true;
+                }
             }
             Tag::CodeBlock(kind) => {
                 self.separate_block();
@@ -136,14 +207,21 @@ impl MarkdownRenderer {
             Tag::Strong | Tag::DefinitionListTitle => self.push_style(Style::new().bold()),
             Tag::Strikethrough => self.push_style(Style::new().crossed_out()),
             Tag::Superscript | Tag::Subscript => self.push_style(Style::new().dim()),
-            Tag::Link { .. } => self.push_style(Style::new().fg(BRIGHT).underlined()),
+            Tag::Link { dest_url, .. } => {
+                self.start_link(PreviewLinkTarget::External(dest_url.to_string()));
+            }
             Tag::Image { .. } => {
                 self.push_styled("▧ ", Style::new().fg(MUTED));
                 self.push_style(Style::new().italic());
             }
             Tag::FootnoteDefinition(label) => {
                 self.separate_block();
-                self.push_styled(&format!("[{label}] "), Style::new().fg(BRIGHT).bold());
+                self.push_link_text(
+                    &format!("[{label}]"),
+                    PreviewLinkTarget::FootnoteBackReference(label.to_string()),
+                    Style::new().fg(BRIGHT).bold().underlined(),
+                );
+                self.push_styled(" ", Style::new());
             }
             Tag::DefinitionList => self.separate_block(),
             Tag::DefinitionListDefinition => {
@@ -183,6 +261,9 @@ impl MarkdownRenderer {
             }
             TagEnd::BlockQuote(_) => {
                 self.flush_line();
+                if self.alert_depth == Some(self.quote_depth) {
+                    self.alert_depth = None;
+                }
                 self.quote_depth = self.quote_depth.saturating_sub(1);
             }
             TagEnd::CodeBlock => {
@@ -202,12 +283,15 @@ impl MarkdownRenderer {
                 self.flush_line();
                 self.item_depth = self.item_depth.saturating_sub(1);
             }
+            TagEnd::Link => {
+                self.finish_link();
+                self.pop_style();
+            }
             TagEnd::Emphasis
             | TagEnd::Strong
             | TagEnd::Strikethrough
             | TagEnd::Superscript
             | TagEnd::Subscript
-            | TagEnd::Link
             | TagEnd::Image
             | TagEnd::DefinitionListTitle
             | TagEnd::MetadataBlock(_) => self.pop_style(),
@@ -344,6 +428,65 @@ impl MarkdownRenderer {
         self.styles.pop();
     }
 
+    fn start_link(&mut self, target: PreviewLinkTarget) {
+        self.ensure_quote_prefix();
+        let index = self.links.len();
+        let mut style = Style::new().fg(BRIGHT).underlined();
+        if self.selected_link == Some(index) {
+            style = style.reversed().bold();
+        }
+        self.pending_link = Some(PendingLink {
+            rendered_line: self.lines.len(),
+            start_column: self.current_width(),
+            target,
+        });
+        self.push_style(style);
+    }
+
+    fn finish_link(&mut self) {
+        let Some(pending) = self.pending_link.take() else {
+            return;
+        };
+        if pending.rendered_line != self.lines.len() {
+            return;
+        }
+        let end_column = self.current_width();
+        if pending.start_column < end_column {
+            self.links.push(PreviewLink {
+                rendered_line: pending.rendered_line,
+                start_column: pending.start_column,
+                end_column,
+                target: pending.target,
+            });
+        }
+    }
+
+    fn push_link_text(&mut self, text: &str, target: PreviewLinkTarget, style: Style) {
+        self.ensure_quote_prefix();
+        let index = self.links.len();
+        let rendered_line = self.lines.len();
+        let start_column = self.current_width();
+        let style = if self.selected_link == Some(index) {
+            style.reversed().bold()
+        } else {
+            style
+        };
+        self.push_styled(text, style);
+        self.links.push(PreviewLink {
+            rendered_line,
+            start_column,
+            end_column: self.current_width(),
+            target,
+        });
+    }
+
+    fn current_width(&self) -> usize {
+        self.current
+            .iter()
+            .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+            .sum()
+    }
+
     fn render_table(&mut self, table: &TableState) {
         if table.rows.is_empty() {
             return;
@@ -389,6 +532,16 @@ impl MarkdownRenderer {
             }
         }
         self.push_line(table_border('└', '┴', '┘', &widths));
+    }
+}
+
+fn alert_label(kind: BlockQuoteKind) -> (&'static str, Color) {
+    match kind {
+        BlockQuoteKind::Note => ("NOTE", Color::Rgb(110, 168, 254)),
+        BlockQuoteKind::Tip => ("TIP", Color::Rgb(93, 196, 140)),
+        BlockQuoteKind::Important => ("IMPORTANT", Color::Rgb(194, 151, 255)),
+        BlockQuoteKind::Warning => ("WARNING", Color::Rgb(235, 177, 71)),
+        BlockQuoteKind::Caution => ("CAUTION", Color::Rgb(244, 112, 103)),
     }
 }
 
@@ -519,5 +672,47 @@ mod tests {
         assert!(screen.contains("┌─ BASH\n│ echo hello\n└─"));
         assert!(screen.contains("┌─ CODE · PYTHON\n│ print('hello')\n└─"));
         assert!(screen.contains("┌─ CODE\n│ plain\n└─"));
+    }
+
+    #[test]
+    fn preview_indexes_links_and_internal_footnote_navigation() {
+        let source =
+            "Read [the guide](https://example.com) and this note[^one].\n\n[^one]: Detail.";
+        let rendered = render_markdown_document(source, Some(1));
+
+        assert_eq!(rendered.links.len(), 3);
+        assert_eq!(
+            rendered.links[0].target,
+            PreviewLinkTarget::External("https://example.com".to_owned())
+        );
+        assert_eq!(
+            rendered.links[1].target,
+            PreviewLinkTarget::FootnoteDefinition("one".to_owned())
+        );
+        assert_eq!(
+            rendered.links[2].target,
+            PreviewLinkTarget::FootnoteBackReference("one".to_owned())
+        );
+        assert!(
+            rendered.text.lines[rendered.links[1].rendered_line]
+                .spans
+                .iter()
+                .any(|span| span
+                    .style
+                    .add_modifier
+                    .contains(ratatui::style::Modifier::REVERSED))
+        );
+    }
+
+    #[test]
+    fn preview_renders_supported_alerts_as_titled_callouts() {
+        let rendered = render_markdown(
+            "> [!NOTE]\n> Read this.\n\n> [!CAUTION]\n> Be careful.\n\n> [!DANGER]\n> Stays literal.",
+        );
+        let screen = plain(&rendered);
+
+        assert!(screen.contains("│ NOTE\n│ Read this."), "{screen}");
+        assert!(screen.contains("│ CAUTION\n│ Be careful."));
+        assert!(screen.contains("│ [!DANGER] Stays literal."));
     }
 }

@@ -16,7 +16,9 @@ use crate::app::{
 use crate::coordinate_diagnostic::CoordinateDiagnostic;
 use crate::document::LineEnding;
 use crate::editor::style_cursor;
+#[cfg(test)]
 use crate::markdown::render_markdown;
+use crate::markdown::render_markdown_document;
 use crate::markdown_help::MARKDOWN_SYNTAX_HELP;
 use crate::recovery::{RecoveryRecord, RecoveryRecordStatus};
 use crate::search::{TextMatch, TextSearchMode};
@@ -313,7 +315,14 @@ fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
     let area = centered(area, 104);
     let inner = block.inner(area);
     let content_width = usize::from(inner.width.max(1));
-    let text = render_markdown(&source);
+    let rendered = render_markdown_document(&source, app.preview_selected_link);
+    if app
+        .preview_selected_link
+        .is_some_and(|selected| selected >= rendered.links.len())
+    {
+        app.preview_selected_link = None;
+    }
+    let text = rendered.text;
     let horizontal_max = text
         .lines
         .iter()
@@ -2707,7 +2716,7 @@ mod tests {
         let screen = rendered(&terminal);
         assert!(screen.contains("Markdown syntax"));
         assert!(screen.contains("Headings"));
-        assert!(screen.contains("links and footnotes remain visible but inert"));
+        assert!(screen.contains("Tab and Shift+Tab select links"));
 
         let mapping = map_semantic_blocks(source);
         app.overlay = Some(Overlay::SemanticInspector {

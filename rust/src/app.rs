@@ -34,7 +34,10 @@ use crate::editor::{
     apply_editor_config, cursor_at_screen_position, inline_preview_editor, source_from_textarea,
     style_cursor, sync_inline_preview_cursor, textarea_from_source,
 };
-use crate::markdown::render_markdown_with_source_lines;
+use crate::markdown::{
+    PreviewLink, PreviewLinkTarget, RenderedMarkdown, render_markdown_document,
+    render_markdown_with_source_lines,
+};
 use crate::path_filter::parse_path_filter;
 use crate::persistence::{LoadedFile, SaveError, load_file, normalize_line_endings, save_atomic};
 use time::{Duration as TimeDuration, OffsetDateTime};
@@ -923,6 +926,7 @@ pub struct App {
     pub preview_horizontal_scroll: u16,
     pub preview_horizontal_max_scroll: u16,
     pub preview_page: u16,
+    pub preview_selected_link: Option<usize>,
     pub viewport_width: u16,
     pub explorer_width: u16,
     pub split_percent: u16,
@@ -1010,6 +1014,7 @@ impl App {
             preview_horizontal_scroll: 0,
             preview_horizontal_max_scroll: 0,
             preview_page: 1,
+            preview_selected_link: None,
             viewport_width: 100,
             explorer_width: EXPLORER_DEFAULT_WIDTH,
             split_percent: 50,
@@ -1686,6 +1691,7 @@ impl App {
             self.focus = Focus::Editor;
             self.preview_scroll = 0;
             self.preview_horizontal_scroll = 0;
+            self.preview_selected_link = None;
             self.narrow_pane = Focus::Editor;
             if show_prompts {
                 self.mark_recent(&path);
@@ -1710,6 +1716,7 @@ impl App {
         self.focus = Focus::Editor;
         self.preview_scroll = 0;
         self.preview_horizontal_scroll = 0;
+        self.preview_selected_link = None;
         self.narrow_pane = Focus::Editor;
         if show_prompts && !self.ensure_active_mixed_open_prompt(previous_active) {
             self.mark_recent(&path);
@@ -2236,6 +2243,7 @@ impl App {
         }
         self.preview_scroll = 0;
         self.preview_horizontal_scroll = 0;
+        self.preview_selected_link = None;
         self.narrow_pane = Focus::Editor;
         self.ensure_active_mixed_open_prompt(Some(current));
         self.enforce_active_read_only();
@@ -2324,6 +2332,7 @@ impl App {
             current.map_or(0, |index| (index + 1).min(headings.len() - 1))
         };
         let (line, level, title) = &headings[selected];
+        self.preview_selected_link = None;
         self.preview_scroll = u16::try_from(*line)
             .unwrap_or(u16::MAX)
             .min(self.preview_max_scroll);
@@ -2728,10 +2737,137 @@ impl App {
             KeyCode::Char('$') => {
                 self.preview_horizontal_scroll = self.preview_horizontal_max_scroll;
             }
-            KeyCode::Tab | KeyCode::Enter => {}
+            KeyCode::Tab => {
+                self.select_preview_link(1);
+            }
+            KeyCode::BackTab => {
+                self.select_preview_link(-1);
+            }
+            KeyCode::Enter => self.activate_preview_link(),
             _ => return false,
         }
         true
+    }
+
+    fn select_preview_link(&mut self, direction: isize) {
+        let Some(source) = self.active_tab().map(|tab| tab.document.text.clone()) else {
+            return;
+        };
+        let rendered = render_markdown_document(&source, None);
+        if rendered.links.is_empty() {
+            self.preview_selected_link = None;
+            self.status_message = Some("No links in this preview".to_owned());
+            return;
+        }
+        let count = rendered.links.len();
+        let selected = match (self.preview_selected_link, direction < 0) {
+            (Some(0) | None, true) => count - 1,
+            (Some(index), true) => index.saturating_sub(1),
+            (Some(index), false) => (index + 1) % count,
+            (None, false) => 0,
+        };
+        self.preview_selected_link = Some(selected);
+        self.reveal_preview_link(&rendered, selected);
+        self.status_message = Some(format!("Preview link {}/{}", selected + 1, count));
+    }
+
+    fn activate_preview_link(&mut self) {
+        let Some(selected) = self.preview_selected_link else {
+            return;
+        };
+        let Some(source) = self.active_tab().map(|tab| tab.document.text.clone()) else {
+            return;
+        };
+        let rendered = render_markdown_document(&source, None);
+        let Some(link) = rendered.links.get(selected) else {
+            self.preview_selected_link = None;
+            return;
+        };
+        match &link.target {
+            PreviewLinkTarget::External(_) => {
+                self.status_message =
+                    Some("External links are intentionally inert in preview".to_owned());
+            }
+            PreviewLinkTarget::FootnoteDefinition(label) => {
+                if let Some(index) = rendered.links.iter().position(|candidate| {
+                    candidate.target == PreviewLinkTarget::FootnoteBackReference(label.clone())
+                }) {
+                    self.preview_selected_link = Some(index);
+                    self.reveal_preview_link(&rendered, index);
+                    self.status_message = Some(format!("Footnote {label}"));
+                }
+            }
+            PreviewLinkTarget::FootnoteBackReference(label) => {
+                if let Some(index) = rendered.links.iter().rposition(|candidate| {
+                    candidate.target == PreviewLinkTarget::FootnoteDefinition(label.clone())
+                }) {
+                    self.preview_selected_link = Some(index);
+                    self.reveal_preview_link(&rendered, index);
+                    self.status_message = Some(format!("Back to footnote {label} reference"));
+                }
+            }
+        }
+    }
+
+    fn reveal_preview_link(&mut self, rendered: &RenderedMarkdown, index: usize) {
+        let Some(link) = rendered.links.get(index) else {
+            return;
+        };
+        let width = self.preview_content_width();
+        let visual_row = preview_link_visual_row(rendered, link, width);
+        let page = usize::from(self.preview_page.max(1));
+        let current = usize::from(self.preview_scroll);
+        let next = if visual_row < current {
+            visual_row
+        } else if visual_row >= current + page {
+            visual_row.saturating_sub(page - 1)
+        } else {
+            current
+        };
+        self.preview_scroll = u16::try_from(next)
+            .unwrap_or(u16::MAX)
+            .min(self.preview_max_scroll);
+    }
+
+    fn preview_content_width(&self) -> usize {
+        self.ui_regions
+            .preview
+            .map(ui::preview_content_area)
+            .map_or_else(
+                || usize::from(self.viewport_width.max(1)),
+                |area| usize::from(area.width.max(1)),
+            )
+    }
+
+    fn preview_link_at_position(&self, area: Rect, column: u16, row: u16) -> Option<usize> {
+        if area.is_empty()
+            || column < area.x
+            || column >= area.right()
+            || row < area.y
+            || row >= area.bottom()
+        {
+            return None;
+        }
+        let source = &self.active_tab()?.document.text;
+        let rendered = render_markdown_document(source, None);
+        let width = usize::from(area.width.max(1));
+        let target_row = usize::from(self.preview_scroll) + usize::from(row.saturating_sub(area.y));
+        let mut visual_row = 0;
+        for (rendered_line, line) in rendered.text.lines.iter().enumerate() {
+            let height = ui::preview_line_height(line, width);
+            if target_row < visual_row + height {
+                let wrapped_row = target_row.saturating_sub(visual_row);
+                let target_column =
+                    wrapped_row * width + usize::from(column.saturating_sub(area.x));
+                return rendered.links.iter().position(|link| {
+                    link.rendered_line == rendered_line
+                        && target_column >= link.start_column
+                        && target_column < link.end_column
+                });
+            }
+            visual_row += height;
+        }
+        None
     }
 
     fn open_recent_documents(&mut self) {
@@ -3569,13 +3705,7 @@ impl App {
                         }
                     }
                 } else if UiRegions::contains(self.ui_regions.preview, column, row) {
-                    self.focus = Focus::Preview;
-                    if let Some(area) = self.ui_regions.preview.map(ui::preview_content_area) {
-                        let scroll = self.preview_scroll;
-                        if let Some(tab) = self.active_tab_mut() {
-                            tab.place_cursor_from_preview(area, column, row, scroll);
-                        }
-                    }
+                    self.handle_preview_click(column, row);
                 } else if UiRegions::contains(self.ui_regions.editor, column, row) {
                     self.focus = Focus::Editor;
                     let inline = self.view_mode == ViewMode::Inline;
@@ -3644,6 +3774,23 @@ impl App {
                 }
             }
             None => {}
+        }
+    }
+
+    fn handle_preview_click(&mut self, column: u16, row: u16) {
+        self.focus = Focus::Preview;
+        let Some(area) = self.ui_regions.preview.map(ui::preview_content_area) else {
+            return;
+        };
+        if let Some(index) = self.preview_link_at_position(area, column, row) {
+            self.preview_selected_link = Some(index);
+            self.activate_preview_link();
+        } else {
+            self.preview_selected_link = None;
+            let scroll = self.preview_scroll;
+            if let Some(tab) = self.active_tab_mut() {
+                tab.place_cursor_from_preview(area, column, row, scroll);
+            }
         }
     }
 
@@ -4977,6 +5124,17 @@ fn selected_text(tab: &EditorTab) -> Option<String> {
     (start < end).then(|| source.chars().skip(start).take(end - start).collect())
 }
 
+fn preview_link_visual_row(rendered: &RenderedMarkdown, link: &PreviewLink, width: usize) -> usize {
+    let preceding = rendered
+        .text
+        .lines
+        .iter()
+        .take(link.rendered_line)
+        .map(|line| ui::preview_line_height(line, width))
+        .sum::<usize>();
+    preceding + link.start_column / width.max(1)
+}
+
 #[cfg(target_os = "macos")]
 fn write_system_clipboard(text: &str) -> io::Result<()> {
     let mut child = ProcessCommand::new("pbcopy")
@@ -6196,6 +6354,71 @@ command_manage_recovery = "Z"
         app.handle_key(KeyEvent::new(KeyCode::Char('0'), KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         assert_eq!(app.preview_horizontal_scroll, 0);
+    }
+
+    #[test]
+    fn preview_keyboard_selects_links_and_navigates_footnotes_internally() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        let filler = (0..20)
+            .map(|index| format!("Paragraph {index}."))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        fs::write(
+            &path,
+            format!(
+                "Start[^note] and [external](https://example.com).\n\n{filler}\n\n[^note]: Detail."
+            ),
+        )
+        .unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.focus = Focus::Preview;
+        app.preview_max_scroll = 100;
+        app.preview_page = 5;
+        app.ui_regions.preview = Some(Rect::new(0, 0, 60, 10));
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.preview_selected_link, Some(0));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.preview_selected_link, Some(2));
+        assert!(app.preview_scroll > 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.preview_selected_link, Some(0));
+        assert_eq!(app.preview_scroll, 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.preview_selected_link, Some(1));
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("External links are intentionally inert in preview")
+        );
+    }
+
+    #[test]
+    fn preview_mouse_click_activates_a_rendered_footnote_link() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "Read[^note].\n\n[^note]: Detail.").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.ui_regions.preview = Some(Rect::new(0, 0, 60, 10));
+        app.preview_max_scroll = 10;
+        app.preview_page = 5;
+        let content = ui::preview_content_area(app.ui_regions.preview.unwrap());
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: content.x + 4,
+            row: content.y,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(app.focus, Focus::Preview);
+        assert_eq!(app.preview_selected_link, Some(1));
+        assert_eq!(app.status_message.as_deref(), Some("Footnote note"));
     }
 
     #[test]

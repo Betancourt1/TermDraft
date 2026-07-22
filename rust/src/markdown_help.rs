@@ -22,8 +22,8 @@ Rules              ---
 
 Enter continues bullets, numbered lists, tasks, and blockquotes. Press Enter on
 an empty marker to end the list. Press Esc for COMMAND mode and i to return to WRITE mode. In the
-focused preview, links and footnotes remain visible but inert; Tab, Shift+Tab, and Enter do not
-activate them.
+focused preview, Tab and Shift+Tab select links. Enter follows footnote references and backlinks
+inside the preview; ordinary URLs remain inert.
 Wide tables keep their natural columns. Use Left/Right or h/l to scroll them horizontally; 0 and $
 move to their left and right edges.
 Alt+Down and Alt+Up move between rendered headings and show the current heading position.
@@ -75,8 +75,8 @@ mod tests {
         for guidance in [
             "Enter continues bullets",
             "Press Esc for COMMAND mode",
-            "links and footnotes remain visible but inert",
-            "Tab, Shift+Tab, and Enter do not\nactivate them",
+            "Tab and Shift+Tab select links",
+            "Enter follows footnote references and backlinks",
             "Wide tables keep their natural columns",
             "Use Left/Right or h/l to scroll them horizontally",
             "Alt+Down and Alt+Up move between rendered headings",

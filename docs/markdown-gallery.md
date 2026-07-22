@@ -14,8 +14,8 @@ this file.
 
 The current Rust inline view renders headings, emphasis, strong text, strikeout, inline code, links,
 indented lists, quotes, labeled code fences, rules, and aligned table borders outside the active
-source line. The split view uses a semantic Markdown parser. Links, images, footnotes, and raw HTML
-are not interactive.
+source line. The split view uses a semantic Markdown parser. Footnotes navigate inside the preview;
+ordinary URLs remain selectable but inert, image data is omitted, and raw HTML never executes.
 
 | Construct | Inline view | Split preview |
 | --- | --- | --- |
@@ -23,7 +23,7 @@ are not interactive.
 | Lists, tasks, and quotes | Rendered with nested indentation | Rendered with nested indentation |
 | Fenced code | `BASH`, `CODE`, or `CODE · LANGUAGE` rail | Labeled rail with a dark surface |
 | Tables | Aligned borders outside the active source line | Aligned bordered table |
-| GFM alerts, footnotes, definitions | Source-faithful fallback where unsupported | Rendered labels without interactive navigation |
+| GFM alerts, footnotes, definitions | Source-faithful fallback where unsupported | Titled alerts and internal footnote navigation |
 | Raw HTML | Exact Markdown source | Omitted rather than executed |
 
 ## Headings
@@ -42,8 +42,9 @@ and `Enter`; the source cursor moves to that line.
 ## Inline text
 
 Plain text can contain *emphasis*, **strong emphasis**, ~~strikethrough~~, `inline code`, and an
-[ordinary link](https://example.com). The Rust frontend does not open links or load images; Inline
-and the source editor retain image syntax, while the preview can present only terminal text:
+[ordinary link](https://example.com). In the focused preview, `Tab` and `Shift+Tab` select links and
+`Enter` follows footnotes without opening external URLs. Inline and the source editor retain image
+syntax, while the preview can present only terminal text:
 
 ![Mountain silhouette](mountain.png)
 
@@ -82,8 +83,8 @@ line break.
 > [!CAUTION]
 > A possible negative outcome.
 
-The Rust port does not add special alert controls or actions. These remain Markdown blockquote
-source, and an unknown marker is treated no differently:
+The split preview turns the five supported alert markers into titled callouts. An unknown marker
+remains an ordinary blockquote:
 
 > [!DANGER]
 > This is a normal blockquote, not a sixth alert type.
@@ -115,8 +116,8 @@ def greeting(name: str) -> str:
 
 ## Footnotes
 
-A statement can refer to a named footnote.[^source] This syntax remains a parsing fixture; footnote
-navigation and backlinks are not ported.
+A statement can refer to a named footnote.[^source] Select the rendered reference with `Tab` and
+press `Enter` to reveal its definition; activate the definition label to return to the reference.
 
 [^source]: A named footnote definition remains part of the exact source.
 
