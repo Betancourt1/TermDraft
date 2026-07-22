@@ -61,7 +61,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_tabs(frame, app, tabs_area);
     }
     draw_workspace(frame, app, main_area);
+    app.ui_regions.tabs = (tab_height > 0).then_some(tabs_area);
     draw_status(frame, app, status_area);
+    app.ui_regions.overlay = app
+        .overlay
+        .as_ref()
+        .map(|overlay| overlay_area(frame.area(), overlay));
     if let Some(overlay) = &app.overlay {
         draw_overlay(frame, app, overlay);
     }
@@ -514,30 +519,43 @@ fn update_help_scroll_bounds(frame_area: Rect, overlay: &mut Option<Overlay>) {
     *scroll = (*scroll).min(*max_scroll);
 }
 
-#[allow(clippy::too_many_lines)]
-fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
-    let area = match overlay {
-        Overlay::Help { .. } => popup(frame.area(), 78, 30),
-        Overlay::MarkdownHelp { .. } => popup(frame.area(), 76, 30),
-        Overlay::Palette { .. } => popup(frame.area(), 76, 31),
-        Overlay::SemanticInspector { .. } => popup(frame.area(), 82, 34),
-        Overlay::SemanticReader { .. } => popup(frame.area(), 82, 36),
-        Overlay::CoordinateInspector { .. } => popup(frame.area(), 76, 16),
-        Overlay::FileFinder { .. } => popup(frame.area(), 76, 23),
+#[must_use]
+pub(crate) fn overlay_area(frame_area: Rect, overlay: &Overlay) -> Rect {
+    match overlay {
+        Overlay::Help { .. } => popup(frame_area, 78, 30),
+        Overlay::MarkdownHelp { .. } => popup(frame_area, 76, 30),
+        Overlay::Palette { .. } => popup(frame_area, 76, 31),
+        Overlay::SemanticInspector { .. } => popup(frame_area, 82, 34),
+        Overlay::SemanticReader { .. } => popup(frame_area, 82, 36),
+        Overlay::CoordinateInspector { .. } => popup(frame_area, 76, 16),
+        Overlay::FileFinder { .. } => popup(frame_area, 76, 23),
         Overlay::RecentDocuments { .. }
         | Overlay::SearchResults { .. }
-        | Overlay::Outline { .. } => popup(frame.area(), 76, 20),
-        Overlay::Find { .. } => popup(frame.area(), 70, 13),
-        Overlay::WorkspaceSearch { .. } => popup(frame.area(), 80, 24),
-        Overlay::PathInput { .. } | Overlay::WorkspaceInput { .. } => popup(frame.area(), 66, 7),
-        Overlay::Recovery { .. } | Overlay::MixedLineEndings { .. } => popup(frame.area(), 70, 9),
-        Overlay::RecoveryManager { .. } => popup(frame.area(), 88, 34),
-        Overlay::RecoveryDeleteConfirm { .. } => popup(frame.area(), 74, 9),
-        Overlay::RecoveryCleanupConfirm { .. } => popup(frame.area(), 82, 30),
-        Overlay::Conflict { .. } => popup(frame.area(), 74, 10),
-        Overlay::TrashConfirm { .. } => popup(frame.area(), 70, 8),
-        Overlay::Confirm(_) | Overlay::Message(_) => popup(frame.area(), 62, 7),
-    };
+        | Overlay::Outline { .. } => popup(frame_area, 76, 20),
+        Overlay::Find { .. } => popup(frame_area, 70, 13),
+        Overlay::WorkspaceSearch { .. } => popup(frame_area, 80, 24),
+        Overlay::PathInput { .. } | Overlay::WorkspaceInput { .. } => popup(frame_area, 66, 7),
+        Overlay::Recovery { .. } | Overlay::MixedLineEndings { .. } => popup(frame_area, 70, 9),
+        Overlay::RecoveryManager { .. } => popup(frame_area, 88, 34),
+        Overlay::RecoveryDeleteConfirm { .. } => popup(frame_area, 74, 9),
+        Overlay::RecoveryCleanupConfirm { .. } => popup(frame_area, 82, 30),
+        Overlay::Conflict { .. } => popup(frame_area, 74, 10),
+        Overlay::TrashConfirm { .. } => popup(frame_area, 70, 8),
+        Overlay::Confirm(_) | Overlay::Message(_) => popup(frame_area, 62, 7),
+    }
+}
+
+#[must_use]
+pub(crate) fn overlay_inner_area(area: Rect) -> Rect {
+    Block::new()
+        .borders(Borders::ALL)
+        .padding(Padding::horizontal(2))
+        .inner(area)
+}
+
+#[allow(clippy::too_many_lines)]
+fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
+    let area = overlay_area(frame.area(), overlay);
     frame.render_widget(Clear, area);
     let block = Block::new()
         .borders(Borders::ALL)

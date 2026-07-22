@@ -140,8 +140,8 @@ When running without `cargo install`, replace `termdraft` with
 - File and folder creation, copy, cut, paste, rename, move, Trash, Save As, and duplication through
   no-clobber workspace-relative paths
 - UTF-8 and UTF-8 BOM support with LF, CRLF, or CR preservation
-- Mouse focus, Files selection and double-click, hybrid-editor text selection, wheel scrolling,
-  draggable dividers, and keyboard Files-pane resizing
+- Mouse focus, clickable tabs and preview links, Files and overlay row selection/activation,
+  hybrid-editor text selection, wheel scrolling, draggable dividers, and keyboard Files-pane resizing
 - Two light themes (Paper and Linen) and two dark themes (Midnight and Carbon)
 - Markdown continuation for bullets, tasks, numbered lists, and quotes
 

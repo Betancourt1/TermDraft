@@ -124,9 +124,10 @@ There is no separate Source view. In Inline or a narrow terminal, `v` switches b
 preview. In a wide Split layout, it hides or shows the preview. Reading-width limits affect only
 rendering and never insert line breaks into the file.
 
-Mouse regions support workbench focus, Files row selection/double-click, Files/editor/preview wheel
-scrolling, and dragging the Files and Split dividers. Tabs, source click positioning/selection,
-preview links, and every overlay remain keyboard-only.
+Mouse regions support tab activation, source click positioning/selection, preview-link activation,
+Files and overlay row selection/double-click, field/control focus, wheel scrolling, and dragging the
+Files and Split dividers. Destructive overlay actions still require a click on their explicit action
+label; clicks outside the popup remain inert.
 
 Markdown continuation runs only for an unmodified Enter in editable WRITE mode without a
 selection. The pure continuation service either continues a supported marker, ends an empty marker,

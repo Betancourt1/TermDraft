@@ -24,6 +24,7 @@ use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
 use ratatui::widgets::ListState;
 use tui_textarea::{CursorMove, TextArea};
+use unicode_width::UnicodeWidthStr;
 
 use crate::bindings::{Action as BindingAction, BindingScope};
 use crate::config::{self, Config, EditorConfig, StartupMode, StartupView};
@@ -106,6 +107,8 @@ pub enum Focus {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct UiRegions {
+    pub tabs: Option<Rect>,
+    pub overlay: Option<Rect>,
     pub workspace: Rect,
     pub explorer: Option<Rect>,
     pub explorer_list: Option<Rect>,
@@ -936,6 +939,7 @@ pub struct App {
     narrow_pane: Focus,
     mouse_drag_target: Option<MouseDragTarget>,
     last_explorer_click: Option<(usize, Instant)>,
+    last_overlay_click: Option<(u16, Instant)>,
     workspace_clipboard: Option<WorkspaceClipboard>,
     session_store: Option<SessionStore>,
     last_session_state: Option<SessionState>,
@@ -1024,6 +1028,7 @@ impl App {
             narrow_pane: Focus::Editor,
             mouse_drag_target: None,
             last_explorer_click: None,
+            last_overlay_click: None,
             workspace_clipboard: None,
             session_store,
             last_session_state: None,
@@ -2238,8 +2243,19 @@ impl App {
         }
         let len = isize::try_from(self.tabs.len()).unwrap_or(isize::MAX);
         let next = (isize::try_from(current).unwrap_or_default() + direction).rem_euclid(len);
+        if let Ok(next) = usize::try_from(next) {
+            self.activate_tab(next);
+        }
+    }
+
+    fn activate_tab(&mut self, index: usize) {
+        if index >= self.tabs.len() || self.active_tab == Some(index) {
+            return;
+        }
+        self.sync_active_document();
+        let previous = self.active_tab;
         self.cache_active_view();
-        self.active_tab = usize::try_from(next).ok();
+        self.active_tab = Some(index);
         if let Some(path) = self.active_tab().map(|tab| tab.document.path.clone()) {
             self.mark_recent(&path);
         }
@@ -2247,7 +2263,7 @@ impl App {
         self.preview_horizontal_scroll = 0;
         self.preview_selected_link = None;
         self.narrow_pane = Focus::Editor;
-        self.ensure_active_mixed_open_prompt(Some(current));
+        self.ensure_active_mixed_open_prompt(previous);
         self.enforce_active_read_only();
     }
 
@@ -3708,6 +3724,7 @@ impl App {
 
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         if self.overlay.is_some() {
+            self.handle_overlay_mouse(mouse);
             return;
         }
         let column = mouse.column;
@@ -3715,6 +3732,12 @@ impl App {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 self.mouse_drag_target = None;
+                if UiRegions::contains(self.ui_regions.tabs, column, row) {
+                    if let Some(index) = self.tab_at_position(column, row) {
+                        self.activate_tab(index);
+                    }
+                    return;
+                }
                 if UiRegions::contains(self.ui_regions.explorer_divider, column, row) {
                     self.mouse_drag_target = Some(MouseDragTarget::Explorer);
                     return;
@@ -3796,6 +3819,302 @@ impl App {
                 self.scroll_preview_horizontally_by(direction);
             }
             _ => {}
+        }
+    }
+
+    fn tab_at_position(&self, column: u16, row: u16) -> Option<usize> {
+        let area = self.ui_regions.tabs?;
+        if !UiRegions::contains(Some(area), column, row) {
+            return None;
+        }
+        let mut x = area.x;
+        for (index, tab) in self.tabs.iter().enumerate() {
+            if index > 0 {
+                x = x.saturating_add(3);
+            }
+            let name = tab
+                .document
+                .path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy();
+            let dirty = if tab.document.is_dirty() { " ●" } else { "" };
+            let conflict = if tab.document.conflict { " !" } else { "" };
+            let label = format!(" {name}{dirty}{conflict} ");
+            let width = u16::try_from(UnicodeWidthStr::width(label.as_str())).unwrap_or(u16::MAX);
+            if column >= x && column < x.saturating_add(width) {
+                return Some(index);
+            }
+            x = x.saturating_add(width);
+        }
+        None
+    }
+
+    fn handle_overlay_mouse(&mut self, mouse: MouseEvent) {
+        let Some(area) = self.ui_regions.overlay else {
+            return;
+        };
+        if !UiRegions::contains(Some(area), mouse.column, mouse.row) {
+            return;
+        }
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                self.handle_overlay_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+            }
+            MouseEventKind::ScrollDown => {
+                self.handle_overlay_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.handle_overlay_click(area, mouse.column, mouse.row);
+            }
+            _ => {}
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn handle_overlay_click(&mut self, area: Rect, column: u16, row: u16) {
+        let inner = ui::overlay_inner_area(area);
+        let now = Instant::now();
+        let double_click = self.last_overlay_click.is_some_and(|(previous, instant)| {
+            previous == row && now.duration_since(instant) <= Duration::from_millis(400)
+        });
+        self.last_overlay_click = Some((row, now));
+
+        let Some(mut overlay) = self.overlay.take() else {
+            return;
+        };
+        let mut activation = None;
+        match &mut overlay {
+            Overlay::Palette { input, selected } => {
+                let candidates = command_candidates(&input.value);
+                if let Some(index) =
+                    command_at_overlay_position(column, row, inner, &candidates, *selected)
+                {
+                    *selected = index;
+                    if double_click {
+                        activation = Some(KeyCode::Enter);
+                    }
+                }
+            }
+            Overlay::RecentDocuments { paths, selected } => {
+                if let Some(index) = overlay_list_index(
+                    row,
+                    inner.y.saturating_add(2),
+                    inner.height.saturating_sub(3),
+                    paths.len(),
+                    *selected,
+                ) {
+                    *selected = index;
+                    activation = double_click.then_some(KeyCode::Enter);
+                }
+            }
+            Overlay::SearchResults { results, selected } => {
+                if let Some(index) = overlay_list_index(
+                    row,
+                    inner.y.saturating_add(2),
+                    inner.height.saturating_sub(3),
+                    results.len(),
+                    *selected,
+                ) {
+                    *selected = index;
+                    activation = double_click.then_some(KeyCode::Enter);
+                }
+            }
+            Overlay::Outline {
+                matches, selected, ..
+            } => {
+                if let Some(index) = overlay_list_index(
+                    row,
+                    inner.y.saturating_add(3),
+                    inner.height.saturating_sub(4),
+                    matches.len(),
+                    *selected,
+                ) {
+                    *selected = index;
+                    activation = double_click.then_some(KeyCode::Enter);
+                }
+            }
+            Overlay::SemanticInspector { mapping, selected } => {
+                let count = mapping.segments().len();
+                if let Some(index) = overlay_list_index(
+                    row,
+                    inner.y.saturating_add(2),
+                    inner.height.saturating_sub(13),
+                    count,
+                    *selected,
+                ) {
+                    *selected = index;
+                    activation = double_click.then_some(KeyCode::Enter);
+                }
+            }
+            Overlay::FileFinder {
+                focus,
+                selected,
+                query,
+                filter,
+                ..
+            } => {
+                if row < inner.y.saturating_add(2) {
+                    *focus = FileFinderFocus::Query;
+                } else if row < inner.y.saturating_add(4) {
+                    *focus = FileFinderFocus::Filter;
+                } else {
+                    let count = self
+                        .filtered_file_candidates(&query.value, &filter.value)
+                        .map_or(0, |candidates| candidates.len());
+                    if let Some(index) = overlay_list_index(
+                        row,
+                        inner.y.saturating_add(5),
+                        inner.height.saturating_sub(6),
+                        count,
+                        *selected,
+                    ) {
+                        *focus = FileFinderFocus::Results;
+                        *selected = index;
+                        activation = double_click.then_some(KeyCode::Enter);
+                    }
+                }
+            }
+            Overlay::Find {
+                focus, read_only, ..
+            } => {
+                let offset = row.saturating_sub(inner.y);
+                *focus = match offset {
+                    0..=1 => FindFocus::Query,
+                    2..=3 if !*read_only => FindFocus::Replacement,
+                    4 => FindFocus::Case,
+                    6 => find_action_at(column.saturating_sub(inner.x), *read_only),
+                    _ => *focus,
+                };
+                if offset == 4 || offset == 6 {
+                    activation = Some(KeyCode::Enter);
+                }
+            }
+            Overlay::WorkspaceSearch {
+                focus,
+                results,
+                selected,
+                ..
+            } => {
+                let offset = row.saturating_sub(inner.y);
+                match offset {
+                    0..=1 => *focus = WorkspaceSearchFocus::Query,
+                    2 => {
+                        *focus = if column < inner.x.saturating_add(16) {
+                            WorkspaceSearchFocus::Mode
+                        } else {
+                            WorkspaceSearchFocus::Case
+                        };
+                        activation = Some(KeyCode::Enter);
+                    }
+                    3..=4 => *focus = WorkspaceSearchFocus::Filter,
+                    _ => {
+                        if let Some(index) = overlay_list_index(
+                            row,
+                            inner.y.saturating_add(6),
+                            inner.height.saturating_sub(7),
+                            results.len(),
+                            *selected,
+                        ) {
+                            *focus = WorkspaceSearchFocus::Results;
+                            *selected = index;
+                            activation = double_click.then_some(KeyCode::Enter);
+                        }
+                    }
+                }
+            }
+            Overlay::RecoveryManager {
+                records,
+                selected,
+                focus,
+                retention_days,
+                ..
+            } => {
+                let records_height = inner.height.saturating_sub(13);
+                if let Some(index) = overlay_list_index(
+                    row,
+                    inner.y.saturating_add(2),
+                    records_height,
+                    records.len(),
+                    *selected,
+                ) {
+                    *focus = RecoveryManagerFocus::Records;
+                    *selected = index;
+                    activation = double_click.then_some(KeyCode::Enter);
+                } else if row >= inner.bottom().saturating_sub(7)
+                    && row < inner.bottom().saturating_sub(5)
+                {
+                    *focus = RecoveryManagerFocus::Target;
+                } else if row >= inner.bottom().saturating_sub(5)
+                    && row < inner.bottom().saturating_sub(3)
+                    && let Some(code) = recovery_action_at(
+                        records.get(*selected),
+                        column.saturating_sub(inner.x),
+                        *retention_days,
+                    )
+                {
+                    *focus = RecoveryManagerFocus::Records;
+                    activation = Some(code);
+                }
+            }
+            Overlay::PathInput { .. }
+            | Overlay::WorkspaceInput { .. }
+            | Overlay::Help { .. }
+            | Overlay::MarkdownHelp { .. }
+            | Overlay::SemanticReader { .. }
+            | Overlay::CoordinateInspector { .. }
+                if row >= inner.bottom().saturating_sub(1) =>
+            {
+                activation = Some(KeyCode::Enter);
+            }
+            Overlay::Message(_) => activation = Some(KeyCode::Enter),
+            Overlay::TrashConfirm { .. } if row >= inner.y.saturating_add(3) => {
+                activation = (column < inner.x.saturating_add(22)).then_some(KeyCode::Char('y'));
+            }
+            Overlay::Recovery { .. } if row >= inner.y.saturating_add(3) => {
+                activation = if column < inner.x.saturating_add(13) {
+                    Some(KeyCode::Char('r'))
+                } else if column < inner.x.saturating_add(28) {
+                    Some(KeyCode::Char('d'))
+                } else {
+                    Some(KeyCode::Esc)
+                };
+            }
+            Overlay::RecoveryDeleteConfirm { .. } | Overlay::RecoveryCleanupConfirm { .. }
+                if row >= inner.bottom().saturating_sub(2) =>
+            {
+                activation = (column < inner.x.saturating_add(24)).then_some(KeyCode::Char('d'));
+            }
+            Overlay::MixedLineEndings { .. } if row >= inner.y.saturating_add(3) => {
+                activation = if column < inner.x.saturating_add(30) {
+                    Some(KeyCode::Enter)
+                } else {
+                    Some(KeyCode::Esc)
+                };
+            }
+            Overlay::Conflict {
+                can_reload,
+                allow_continue,
+                ..
+            } if row >= inner.y.saturating_add(3) => {
+                activation = conflict_action_at(
+                    column.saturating_sub(inner.x),
+                    *can_reload,
+                    *allow_continue,
+                );
+            }
+            Overlay::Confirm(_) if row >= inner.y.saturating_add(2) => {
+                activation = match column.saturating_sub(inner.x) {
+                    0..=10 => Some(KeyCode::Char('y')),
+                    11..=27 => Some(KeyCode::Char('n')),
+                    _ => Some(KeyCode::Esc),
+                };
+            }
+            _ => {}
+        }
+        self.overlay = Some(overlay);
+        if let Some(code) = activation {
+            self.handle_overlay_key(KeyEvent::new(code, KeyModifiers::NONE));
         }
     }
 
@@ -5147,6 +5466,134 @@ fn semantic_reader_line_count(mapping: &SemanticBlockMap) -> usize {
         })
         .sum::<usize>()
         .max(1)
+}
+
+fn overlay_list_index(
+    row: u16,
+    start: u16,
+    height: u16,
+    count: usize,
+    selected: usize,
+) -> Option<usize> {
+    if count == 0 || row < start || row >= start.saturating_add(height) {
+        return None;
+    }
+    let height = usize::from(height);
+    let offset = if selected >= height {
+        selected.saturating_add(1).saturating_sub(height)
+    } else {
+        0
+    };
+    let index = offset.saturating_add(usize::from(row.saturating_sub(start)));
+    (index < count).then_some(index)
+}
+
+fn command_at_overlay_position(
+    column: u16,
+    row: u16,
+    inner: Rect,
+    commands: &[CommandSpec],
+    selected: usize,
+) -> Option<usize> {
+    let results = Rect::new(
+        inner.x,
+        inner.y.saturating_add(2),
+        inner.width,
+        inner.height.saturating_sub(4),
+    );
+    if !UiRegions::contains(Some(results), column, row) {
+        return None;
+    }
+    if results.width < 58 || results.height < 25 {
+        return overlay_list_index(row, results.y, results.height, commands.len(), selected);
+    }
+
+    let relative_row = row.saturating_sub(results.y);
+    let (groups, group_row) = match relative_row {
+        0..=6 => (["DOCUMENT", "NAVIGATE"], relative_row),
+        8..=15 => (["FILES", "MODE"], relative_row - 8),
+        17.. => (["EDIT", "VIEW"], relative_row - 17),
+        _ => return None,
+    };
+    if group_row == 0 {
+        return None;
+    }
+    let left_width = results.width.saturating_sub(2) / 2;
+    let group = if column < results.x.saturating_add(left_width) {
+        groups[0]
+    } else if column >= results.x.saturating_add(left_width).saturating_add(2) {
+        groups[1]
+    } else {
+        return None;
+    };
+    commands
+        .iter()
+        .enumerate()
+        .filter(|(_, command)| command.group == group)
+        .nth(usize::from(group_row.saturating_sub(1)))
+        .map(|(index, _)| index)
+}
+
+fn recovery_action_at(
+    record: Option<&RecoveryRecord>,
+    column: u16,
+    retention_days: i64,
+) -> Option<KeyCode> {
+    let mut actions = Vec::new();
+    if record.is_some_and(|record| record.quarantined) {
+        if record.is_some_and(|record| record.entry.is_some()) {
+            actions.push((KeyCode::Char('o'), "[o] Restore".to_owned()));
+        }
+        actions.push((KeyCode::Char('r'), "[r] Delete forever".to_owned()));
+        if record.is_some_and(|record| record.entry.is_some()) {
+            actions.push((KeyCode::Char('a'), "[a] Export copy".to_owned()));
+        }
+    } else {
+        actions.extend([
+            (KeyCode::Char('o'), "[o] Open draft".to_owned()),
+            (KeyCode::Char('r'), "[r] Retarget".to_owned()),
+            (KeyCode::Char('a'), "[a] Archive".to_owned()),
+        ]);
+    }
+    actions.push((
+        KeyCode::Char('x'),
+        format!("[x] Delete >{retention_days}d (0)"),
+    ));
+    action_at(column, &actions, 2)
+}
+
+fn conflict_action_at(column: u16, can_reload: bool, allow_continue: bool) -> Option<KeyCode> {
+    let mut actions = vec![(KeyCode::Char('s'), "s  Save local as…".to_owned())];
+    if can_reload {
+        actions.push((KeyCode::Char('r'), "r  Reload external".to_owned()));
+    }
+    if allow_continue {
+        actions.push((KeyCode::Char('n'), "n  Continue without copy".to_owned()));
+    }
+    actions.push((KeyCode::Esc, "Esc  Cancel".to_owned()));
+    action_at(column, &actions, 5)
+}
+
+fn action_at(column: u16, actions: &[(KeyCode, String)], gap: u16) -> Option<KeyCode> {
+    let mut x = 0_u16;
+    for (code, label) in actions {
+        let width = u16::try_from(UnicodeWidthStr::width(label.as_str())).unwrap_or(u16::MAX);
+        if column >= x && column < x.saturating_add(width) {
+            return Some(*code);
+        }
+        x = x.saturating_add(width).saturating_add(gap);
+    }
+    None
+}
+
+fn find_action_at(column: u16, read_only: bool) -> FindFocus {
+    match column {
+        0..=9 => FindFocus::Previous,
+        10..=16 => FindFocus::Next,
+        17..=26 if !read_only => FindFocus::Replace,
+        _ if !read_only => FindFocus::ReplaceAll,
+        _ => FindFocus::Next,
+    }
 }
 
 fn edit_text_input(input: &mut TextInput, key: KeyEvent) -> bool {
@@ -6565,6 +7012,7 @@ command_manage_recovery = "Z"
             editor: Some(Rect::new(35, 2, 42, 20)),
             preview: Some(Rect::new(78, 2, 42, 20)),
             workbench_divider: Some(Rect::new(77, 2, 1, 20)),
+            ..UiRegions::default()
         };
         let mouse = |kind, column, row| MouseEvent {
             kind,
@@ -6605,6 +7053,102 @@ command_manage_recovery = "Z"
         app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 80, 10));
         app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 80, 10));
         assert!(app.split_percent > 50);
+    }
+
+    #[test]
+    fn mouse_click_activates_a_document_tab() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.md");
+        let second = directory.path().join("second.md");
+        fs::write(&first, "first").unwrap();
+        fs::write(&second, "second").unwrap();
+        let workspace = Workspace::from_target(&first).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.open_document(&second).unwrap();
+        assert_eq!(app.active_tab, Some(1));
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let tabs = app.ui_regions.tabs.unwrap();
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: tabs.x.saturating_add(2),
+            row: tabs.y,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(app.active_tab, Some(0));
+        assert_eq!(
+            app.active_tab().unwrap().document.path.file_name(),
+            first.file_name()
+        );
+    }
+
+    #[test]
+    fn mouse_selects_and_opens_an_outline_row() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "# First\n\n## Second\n").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.execute_command(CommandAction::Outline);
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let inner = ui::overlay_inner_area(app.ui_regions.overlay.unwrap());
+        let row = inner.y.saturating_add(4);
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: inner.x.saturating_add(2),
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.handle_mouse(click);
+        let Some(Overlay::Outline { selected, .. }) = &app.overlay else {
+            panic!("outline should stay open after one click");
+        };
+        assert_eq!(*selected, 1);
+
+        app.handle_mouse(click);
+        assert!(app.overlay.is_none());
+        assert_eq!(app.active_tab().unwrap().editor.cursor(), (2, 0));
+    }
+
+    #[test]
+    fn mouse_selects_and_opens_a_palette_command() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "draft").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.overlay = Some(Overlay::Palette {
+            input: TextInput::default(),
+            selected: 0,
+        });
+
+        let mut terminal = Terminal::new(TestBackend::new(60, 24)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let inner = ui::overlay_inner_area(app.ui_regions.overlay.unwrap());
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: inner.x.saturating_add(2),
+            row: inner.y.saturating_add(3),
+            modifiers: KeyModifiers::NONE,
+        };
+        app.handle_mouse(click);
+        let Some(Overlay::Palette { selected, .. }) = &app.overlay else {
+            panic!("palette should stay open after one click");
+        };
+        assert_eq!(*selected, 1);
+
+        app.handle_mouse(click);
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::PathInput {
+                action: PathAction::SaveAs,
+                ..
+            })
+        ));
     }
 
     #[test]
