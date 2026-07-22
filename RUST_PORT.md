@@ -7,7 +7,7 @@ Linux/XDG; Windows differences are inventoried below.
 
 Rust is now the primary source implementation: it preserves nearly all of the keyboard-first
 workflow, feels materially more immediate in use, and the historical measurements below show much
-lower process-start and first-frame latency. TermDraft 0.4 makes this implementation the public
+lower process-start and first-frame latency. TermDraft 0.5 makes this implementation the public
 `termdraft` command and Homebrew package. Python remains a historical compatibility reference.
 
 ## Run either implementation

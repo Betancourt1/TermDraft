@@ -9,6 +9,8 @@ supported releases.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-22
+
 ### Added
 
 - Added selectable preview links, internal footnote and backlink navigation, and titled GFM alert
@@ -159,5 +161,6 @@ supported releases.
 - Established the local-first terminal writing loop with a file explorer, Markdown source editor,
   rendered preview, protected saves, and crash-recovery journals.
 
-[Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.5.0
 [0.4.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.4.0
