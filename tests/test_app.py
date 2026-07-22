@@ -1327,7 +1327,7 @@ async def test_external_watcher_marks_dirty_conflict_without_opening_modal(
         await pilot.press("i", "x")
         path.write_text("external", encoding="utf-8")
         app._check_external_in_background()
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: bool(app.document and app.document.conflict))
 
         assert app.document is not None
         assert app.document.text == "xbase"
@@ -1348,7 +1348,7 @@ async def test_external_watcher_marks_deletion_without_erasing_editor(tmp_path: 
     async with app.run_test(size=(100, 30)) as pilot:
         path.unlink()
         app._check_external_in_background()
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: bool(app.document and app.document.conflict))
 
         assert app.document is not None
         assert app.document.text == "base"
@@ -1410,7 +1410,12 @@ async def test_external_watcher_requires_consent_for_mixed_line_ending_reload(
 
         path.write_text("uniform", encoding="utf-8")
         app._check_external_in_background()
-        await pilot.pause(0.1)
+        await _wait_until(
+            pilot,
+            lambda: bool(
+                app.document and app.document.text == "uniform" and not app.editor.read_only
+            ),
+        )
         assert not app.editor.read_only
         await pilot.press("i", "x")
         assert app.document.text == "xuniform"
@@ -1426,7 +1431,7 @@ async def test_external_watcher_marks_invalid_utf8_reload_as_persistent_conflict
     async with app.run_test(size=(100, 30)) as pilot:
         path.write_bytes(b"\xff\xfe")
         app._check_external_in_background()
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: bool(app.document and app.document.conflict))
 
         assert app.document is not None
         assert app.document.text == "base"
