@@ -1375,12 +1375,12 @@ async def test_external_watcher_pauses_for_modal_and_clears_reverted_conflict(
 
         await pilot.press("escape")
         app._check_external_in_background()
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: bool(app.document and app.document.conflict))
         assert app.document.conflict
 
         path.write_text("base", encoding="utf-8")
         app._check_external_in_background()
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: bool(app.document and not app.document.conflict))
         assert not app.document.conflict
         assert app.document.text == "xbase"
         assert app.document.dirty
