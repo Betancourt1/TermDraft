@@ -65,11 +65,10 @@ async def test_reader_renders_only_simple_blocks_and_returns_to_exact_source(
         assert isinstance(dialog, SemanticReaderDialog)
         await _wait_until(
             pilot,
-            lambda: sum(
-                candidate.rendered
-                for candidate in dialog.query(SemanticReadingCandidate)
-            )
-            == len(dialog.rendered_segments),
+            lambda: (
+                sum(candidate.rendered for candidate in dialog.query(SemanticReadingCandidate))
+                == len(dialog.rendered_segments)
+            ),
         )
         assert [segment.kind for segment in dialog.rendered_segments] == [
             "heading",
