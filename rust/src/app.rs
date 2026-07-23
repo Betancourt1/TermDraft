@@ -128,6 +128,18 @@ impl UiRegions {
                 && row < area.y.saturating_add(area.height)
         })
     }
+
+    fn contains_resize_handle(area: Option<Rect>, column: u16, row: u16) -> bool {
+        area.is_some_and(|area| {
+            let hit_area = Rect::new(
+                area.x.saturating_sub(1),
+                area.y,
+                area.width.saturating_add(2),
+                area.height,
+            );
+            Self::contains(Some(hit_area), column, row)
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3738,7 +3750,8 @@ impl App {
                     }
                     return;
                 }
-                if UiRegions::contains(self.ui_regions.explorer_divider, column, row) {
+                if UiRegions::contains_resize_handle(self.ui_regions.explorer_divider, column, row)
+                {
                     self.mouse_drag_target = Some(MouseDragTarget::Explorer);
                     return;
                 }
@@ -4177,6 +4190,7 @@ impl App {
         let minimum = EXPLORER_MIN_WIDTH.min(maximum);
         let requested = column.saturating_sub(workspace.x);
         self.explorer_width = requested.clamp(minimum, maximum);
+        self.status_message = Some(format!("Files width · {} columns", self.explorer_width));
     }
 
     fn resize_explorer_by(&mut self, columns: i16) {
@@ -7081,10 +7095,14 @@ command_manage_recovery = "Z"
         app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 10));
         assert_eq!(app.focus, Focus::Editor);
 
-        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 34, 10));
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 33, 10));
         app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 47, 10));
         app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 47, 10));
         assert_eq!(app.explorer_width, 47);
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Files width · 47 columns")
+        );
 
         app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 77, 10));
         app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 80, 10));

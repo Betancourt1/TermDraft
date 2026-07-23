@@ -9,6 +9,11 @@ supported releases.
 
 ## [Unreleased]
 
+### Changed
+
+- Made the Files sidebar divider easier to resize with a visible handle, a wider mouse grab area,
+  and live width feedback while dragging.
+
 ### Fixed
 
 - Improved native cursor contrast in the Paper and Linen light themes while preserving the user's

@@ -123,6 +123,18 @@ fn draw_workspace(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     if let Some(divider) = regions.explorer_divider {
         frame.render_widget(Block::new().style(Style::new().bg(BORDER)), divider);
+        if !divider.is_empty() {
+            let handle = Rect::new(
+                divider.x,
+                divider.y.saturating_add(divider.height / 2),
+                1,
+                1,
+            );
+            frame.render_widget(
+                Paragraph::new("↔").style(Style::new().fg(BRIGHT).bg(BORDER)),
+                handle,
+            );
+        }
     }
     draw_workbench(frame, app, regions);
 }
@@ -2461,6 +2473,11 @@ mod tests {
         assert!(rendered.contains(FOLDER_ICON));
         assert!(rendered.contains(MARKDOWN_ICON));
         assert!(rendered.contains("note.md"));
+        let divider = app.ui_regions.explorer_divider.unwrap();
+        assert_eq!(
+            buffer[(divider.x, divider.y + divider.height / 2)].symbol(),
+            "↔"
+        );
         assert!(
             app.active_tab()
                 .unwrap()
