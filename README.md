@@ -51,7 +51,7 @@ return to COMMAND mode.
 | `s` | Find and replace in the active document |
 | `S` | Open the document outline |
 | `v` | Switch editor/preview, or show/hide preview in a wide split layout |
-| `t` | Change theme: Paper, Linen, Midnight, or Carbon |
+| `t` | Change theme: Paper, Linen, Mist, Midnight, Void, or Carbon |
 | `e` | Show or hide Files |
 | `[` / `]` | Switch tabs |
 | `:` / `?` | Open the command palette / shortcut help |
@@ -142,7 +142,7 @@ When running without `cargo install`, replace `termdraft` with
 - UTF-8 and UTF-8 BOM support with LF, CRLF, or CR preservation
 - Mouse focus, clickable tabs and preview links, Files and overlay row selection/activation,
   hybrid-editor text selection, wheel scrolling, draggable dividers, and keyboard Files-pane resizing
-- Two light themes (Paper and Linen) and two dark themes (Midnight and Carbon)
+- Three light themes (Paper, Linen, and Mist) and three dark themes (Midnight, Void, and Carbon)
 - Markdown continuation for bullets, tasks, numbered lists, and quotes
 
 <details>
@@ -195,8 +195,8 @@ overrides apply to global, editor, preview, and COMMAND actions. Collisions, res
 unknown settings are rejected. Invalid live reloads leave the active configuration untouched.
 
 `theme.tcss` is created for compatibility but is not evaluated by the Rust frontend. Press `t` in
-COMMAND mode to cycle from the default Carbon theme through Paper, Linen, and Midnight. Use
-`--config-dir PATH` for an isolated configuration.
+COMMAND mode to cycle from the default Carbon theme through Paper, Linen, Mist, Midnight, and Void.
+Use `--config-dir PATH` for an isolated configuration.
 
 For a fully isolated comparison, set `XDG_STATE_HOME=/tmp/termdraft-test-state` and pass
 `--config-dir /tmp/termdraft-test-config`.

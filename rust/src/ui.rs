@@ -2239,7 +2239,9 @@ const fn command_description(action: CommandAction) -> &'static str {
         CommandAction::Undo => "Undo the last editor change",
         CommandAction::Redo => "Redo the last undone editor change",
         CommandAction::ReloadConfig => "Reload keybindings, editor, and retention options",
-        CommandAction::ChangeTheme => "Cycle through Paper, Linen, Midnight, and Carbon",
+        CommandAction::ChangeTheme => {
+            "Cycle through Paper, Linen, Mist, Midnight, Void, and Carbon"
+        }
         CommandAction::ManageRecovery => "Restore, retarget, export, or clean recovery drafts",
         CommandAction::MarkdownHelp => "Show supported Markdown syntax and examples",
         CommandAction::InspectSemanticBlocks => "Inspect parser ranges for the active source",

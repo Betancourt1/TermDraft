@@ -9,6 +9,11 @@ supported releases.
 
 ## [Unreleased]
 
+### Added
+
+- Added the cool Mist light theme and the mint-on-true-black Void dark theme to the COMMAND theme
+  cycle.
+
 ### Changed
 
 - Made the Files sidebar divider easier to resize with a visible handle, a wider mouse grab area,

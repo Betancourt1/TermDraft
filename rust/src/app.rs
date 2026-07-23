@@ -6023,11 +6023,12 @@ mod tests {
 
         set_terminal_cursor_color(&mut output, Theme::Paper).unwrap();
         set_terminal_cursor_color(&mut output, Theme::Linen).unwrap();
+        set_terminal_cursor_color(&mut output, Theme::Mist).unwrap();
         set_terminal_cursor_color(&mut output, Theme::Midnight).unwrap();
 
         assert_eq!(
             output,
-            b"\x1b]12;#174d46\x1b\\\x1b]12;#75342e\x1b\\\x1b]112\x1b\\"
+            b"\x1b]12;#174d46\x1b\\\x1b]12;#75342e\x1b\\\x1b]12;#164f63\x1b\\\x1b]112\x1b\\"
         );
     }
 
@@ -6140,7 +6141,7 @@ mod tests {
     }
 
     #[test]
-    fn theme_command_cycles_all_four_built_in_themes() {
+    fn theme_command_cycles_all_six_built_in_themes() {
         let directory = tempfile::tempdir().unwrap();
         let workspace = Workspace::from_target(directory.path()).unwrap();
         let mut app = App::new(workspace).unwrap();

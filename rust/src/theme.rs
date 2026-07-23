@@ -3,32 +3,43 @@
 use ratatui::buffer::Buffer;
 use ratatui::style::Color;
 
-/// The four built-in visual themes available from COMMAND mode.
+/// The six built-in visual themes available from COMMAND mode.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Theme {
     Paper,
     Linen,
+    Mist,
     Midnight,
+    Void,
     #[default]
     Carbon,
 }
 
 impl Theme {
-    pub const ALL: [Self; 4] = [Self::Paper, Self::Linen, Self::Midnight, Self::Carbon];
+    pub const ALL: [Self; 6] = [
+        Self::Paper,
+        Self::Linen,
+        Self::Mist,
+        Self::Midnight,
+        Self::Void,
+        Self::Carbon,
+    ];
 
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
             Self::Paper => "Paper",
             Self::Linen => "Linen",
+            Self::Mist => "Mist",
             Self::Midnight => "Midnight",
+            Self::Void => "Void",
             Self::Carbon => "Carbon",
         }
     }
 
     #[must_use]
     pub const fn is_light(self) -> bool {
-        matches!(self, Self::Paper | Self::Linen)
+        matches!(self, Self::Paper | Self::Linen | Self::Mist)
     }
 
     #[must_use]
@@ -36,7 +47,8 @@ impl Theme {
         match self {
             Self::Paper => Some((23, 77, 70)),
             Self::Linen => Some((117, 52, 46)),
-            Self::Midnight | Self::Carbon => None,
+            Self::Mist => Some((22, 79, 99)),
+            Self::Midnight | Self::Void | Self::Carbon => None,
         }
     }
 
@@ -44,8 +56,10 @@ impl Theme {
     pub const fn next(self) -> Self {
         match self {
             Self::Paper => Self::Linen,
-            Self::Linen => Self::Midnight,
-            Self::Midnight => Self::Carbon,
+            Self::Linen => Self::Mist,
+            Self::Mist => Self::Midnight,
+            Self::Midnight => Self::Void,
+            Self::Void => Self::Carbon,
             Self::Carbon => Self::Paper,
         }
     }
@@ -62,6 +76,10 @@ impl Theme {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keeping the six semantic palettes together makes visual comparison direct"
+    )]
     const fn palette(self) -> Palette {
         match self {
             Self::Paper => Palette {
@@ -106,6 +124,27 @@ impl Theme {
                 accent: rgb(117, 52, 46),
                 heading_one: rgb(103, 45, 40),
             },
+            Self::Mist => Palette {
+                background: rgb(244, 247, 248),
+                popup: rgb(251, 252, 253),
+                cursor_line: rgb(237, 242, 244),
+                surface: rgb(232, 238, 241),
+                panel: rgb(222, 231, 235),
+                selection: rgb(200, 219, 228),
+                border: rgb(175, 193, 202),
+                line_number: rgb(131, 150, 160),
+                popup_border: rgb(120, 149, 163),
+                faint: rgb(115, 130, 139),
+                muted: rgb(88, 105, 113),
+                folder: rgb(80, 121, 137),
+                file: rgb(33, 111, 137),
+                heading_four: rgb(57, 95, 109),
+                text: rgb(40, 54, 60),
+                heading_three: rgb(35, 107, 130),
+                heading_two: rgb(21, 110, 141),
+                accent: rgb(22, 79, 99),
+                heading_one: rgb(10, 83, 107),
+            },
             Self::Midnight => Palette {
                 background: rgb(11, 16, 32),
                 popup: rgb(8, 13, 24),
@@ -126,6 +165,27 @@ impl Theme {
                 heading_two: rgb(177, 210, 250),
                 accent: rgb(169, 204, 255),
                 heading_one: rgb(190, 219, 255),
+            },
+            Self::Void => Palette {
+                background: rgb(0, 0, 0),
+                popup: rgb(4, 5, 8),
+                cursor_line: rgb(7, 10, 12),
+                surface: rgb(10, 13, 16),
+                panel: rgb(17, 22, 26),
+                selection: rgb(23, 46, 49),
+                border: rgb(39, 52, 58),
+                line_number: rgb(63, 78, 84),
+                popup_border: rgb(52, 80, 83),
+                faint: rgb(78, 95, 101),
+                muted: rgb(118, 136, 142),
+                folder: rgb(117, 162, 156),
+                file: rgb(97, 197, 185),
+                heading_four: rgb(170, 201, 197),
+                text: rgb(220, 232, 229),
+                heading_three: rgb(137, 218, 208),
+                heading_two: rgb(114, 230, 216),
+                accent: rgb(91, 244, 224),
+                heading_one: rgb(170, 255, 241),
             },
             Self::Carbon => Palette {
                 background: Color::Black,
@@ -224,14 +284,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn provides_two_light_and_two_dark_themes() {
+    fn provides_three_light_and_three_dark_themes() {
         assert_eq!(
             Theme::ALL.iter().filter(|theme| theme.is_light()).count(),
-            2
+            3
         );
         assert_eq!(
             Theme::ALL.iter().filter(|theme| !theme.is_light()).count(),
-            2
+            3
         );
     }
 
@@ -239,7 +299,9 @@ mod tests {
     fn light_themes_provide_dark_terminal_cursor_colors() {
         assert_eq!(Theme::Paper.terminal_cursor_color(), Some((23, 77, 70)));
         assert_eq!(Theme::Linen.terminal_cursor_color(), Some((117, 52, 46)));
+        assert_eq!(Theme::Mist.terminal_cursor_color(), Some((22, 79, 99)));
         assert_eq!(Theme::Midnight.terminal_cursor_color(), None);
+        assert_eq!(Theme::Void.terminal_cursor_color(), None);
         assert_eq!(Theme::Carbon.terminal_cursor_color(), None);
     }
 
@@ -270,5 +332,34 @@ mod tests {
         assert_eq!(buffer[(0, 0)].bg, rgb(247, 243, 234));
         assert_eq!(buffer[(1, 0)].fg, rgb(23, 77, 70));
         assert_eq!(buffer[(1, 0)].bg, rgb(207, 222, 216));
+    }
+
+    #[test]
+    fn new_themes_apply_mist_and_literal_black_anchors() {
+        let mut mist = Buffer::empty(Rect::new(0, 0, 2, 1));
+        mist[(0, 0)].set_fg(Color::Rgb(218, 218, 218));
+        mist[(0, 0)].set_bg(Color::Black);
+        mist[(1, 0)].set_fg(Color::Black);
+        mist[(1, 0)].set_bg(Color::Gray);
+
+        Theme::Mist.apply(&mut mist);
+
+        assert_eq!(mist[(0, 0)].fg, rgb(40, 54, 60));
+        assert_eq!(mist[(0, 0)].bg, rgb(244, 247, 248));
+        assert_eq!(mist[(1, 0)].fg, rgb(244, 247, 248));
+        assert_eq!(mist[(1, 0)].bg, rgb(22, 79, 99));
+
+        let mut void = Buffer::empty(Rect::new(0, 0, 2, 1));
+        void[(0, 0)].set_fg(Color::Rgb(218, 218, 218));
+        void[(0, 0)].set_bg(Color::Black);
+        void[(1, 0)].set_fg(Color::Black);
+        void[(1, 0)].set_bg(Color::Gray);
+
+        Theme::Void.apply(&mut void);
+
+        assert_eq!(void[(0, 0)].fg, rgb(220, 232, 229));
+        assert_eq!(void[(0, 0)].bg, rgb(0, 0, 0));
+        assert_eq!(void[(1, 0)].fg, rgb(0, 0, 0));
+        assert_eq!(void[(1, 0)].bg, rgb(91, 244, 224));
     }
 }

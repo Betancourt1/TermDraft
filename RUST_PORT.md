@@ -122,7 +122,7 @@ These are current gaps, not items that were merely absent in the early port:
    compatible zero scroll fields, loads restored tabs immediately, and does not reject every
    duplicate/inconsistent relationship that Python rejects.
 5. **`theme.tcss`.** Rust creates the compatibility template but never parses or watches Textual
-   CSS. It provides four built-in runtime themes instead; `--safe-mode` has no additional effect.
+   CSS. It provides six built-in runtime themes instead; `--safe-mode` has no additional effect.
 6. **Full background-I/O and cooperative signal shutdown.** Rust lacks Python's critical-operation
    worker/ticket pipeline and its SIGTERM/SIGHUP recovery-and-session drain.
 7. **The deepest Python persistence guarantees.** Rust does not bind publication to an open parent

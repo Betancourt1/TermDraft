@@ -42,7 +42,7 @@ most of that work through Textual workers.
 | `main.rs` | CLI arguments, effective command reference, and `--inspect` |
 | `app.rs` | modes, tabs, focus, overlays, events, polling, search worker, transitions, sessions, recovery UI |
 | `ui.rs` | responsive Ratatui layout, workbench regions, popup rendering, inline status |
-| `theme.rs` | four built-in palettes and final-frame semantic color mapping |
+| `theme.rs` | six built-in palettes and final-frame semantic color mapping |
 | `bindings.rs` | 53-action contract, parsing, scopes, collision/reserved-key validation |
 | `config.rs` | strict compatible TOML, generated templates, paths, editor and recovery settings |
 | `editor.rs` | `tui-textarea-2` setup, cursor styling, and inline presentation |
@@ -240,8 +240,8 @@ as one replacement; a failed reload leaves the previous configuration untouched.
 remains startup-only.
 
 `theme.tcss` is created as a no-clobber compatibility template but is never parsed or watched.
-Rust instead provides Paper and Linen light themes plus Midnight and Carbon dark themes. `t` cycles
-them for the current run; `--safe-mode` remains behaviorally redundant.
+Rust instead provides Paper, Linen, and Mist light themes plus Midnight, Void, and Carbon dark
+themes. `t` cycles them for the current run; `--safe-mode` remains behaviorally redundant.
 
 The command palette preserves Python's 32 actions and adds the native Change theme action, rendered
 as a searchable grouped two-column grid with descriptions and a compact fallback for narrow

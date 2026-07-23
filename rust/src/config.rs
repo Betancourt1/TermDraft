@@ -93,7 +93,7 @@ retention_days = 30
 pub const THEME_TEMPLATE: &str = r"/* TermDraft user theme overrides.
 
    The Rust frontend does not evaluate Textual CSS. Press t in COMMAND mode to
-   cycle through its four built-in themes.
+   cycle through its six built-in themes.
 */
 ";
 
