@@ -6,6 +6,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap};
 use time::{Duration as TimeDuration, OffsetDateTime};
+use tui_textarea::CursorRenderMode;
 
 use crate::app::{
     App, CommandAction, CommandSpec, ConfirmAction, ConflictKind, EXPLORER_MAX_WIDTH,
@@ -285,6 +286,12 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
     let Some(tab) = app.active_tab_mut() else {
         return;
     };
+    let cursor_render_mode = if show_cursor && mode == Mode::Command {
+        CursorRenderMode::Cell
+    } else {
+        CursorRenderMode::Hidden
+    };
+    tab.editor.set_cursor_render_mode(cursor_render_mode);
     if mode == Mode::Command {
         tab.editor
             .set_cursor_line_style(Style::new().bg(Color::Rgb(10, 10, 10)));
@@ -293,6 +300,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
     let cursor_position = if inline {
         tab.refresh_inline_editor();
         style_cursor(&mut tab.inline_editor, mode);
+        tab.inline_editor.set_cursor_render_mode(cursor_render_mode);
         if mode == Mode::Command {
             tab.inline_editor
                 .set_cursor_line_style(Style::new().bg(Color::Rgb(10, 10, 10)));
@@ -303,7 +311,10 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
     } else {
         tab.editor.rendered_cursor_position()
     };
-    if show_cursor && let Some(position) = cursor_position {
+    if show_cursor
+        && mode == Mode::Write
+        && let Some(position) = cursor_position
+    {
         frame.set_cursor_position(position);
     }
     tab.editor.clear_custom_highlight();
@@ -2485,6 +2496,46 @@ mod tests {
                 .rendered_cursor_position()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn command_cursor_styles_its_character_and_write_keeps_the_native_cursor() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "more").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.theme = Theme::Linen;
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let command_position = app
+            .active_tab()
+            .unwrap()
+            .editor
+            .rendered_cursor_position()
+            .unwrap();
+        let command_cell = &terminal.backend().buffer()[(command_position.x, command_position.y)];
+        assert_eq!(command_cell.symbol(), "m");
+        assert_eq!(command_cell.fg, Color::Rgb(251, 247, 237));
+        assert_eq!(command_cell.bg, Color::Rgb(117, 52, 46));
+        assert!(!terminal.backend().cursor_visible());
+
+        app.mode = Mode::Write;
+        style_cursor(&mut app.active_tab_mut().unwrap().editor, Mode::Write);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let write_position = app
+            .active_tab()
+            .unwrap()
+            .editor
+            .rendered_cursor_position()
+            .unwrap();
+        let write_cell = &terminal.backend().buffer()[(write_position.x, write_position.y)];
+        assert_eq!(write_cell.fg, Color::Rgb(62, 52, 38));
+        assert_eq!(write_cell.bg, Color::Rgb(251, 247, 237));
+        assert!(terminal.backend().cursor_visible());
     }
 
     #[test]

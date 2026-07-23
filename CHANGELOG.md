@@ -16,8 +16,8 @@ supported releases.
 
 ### Fixed
 
-- Improved native cursor contrast in the Paper and Linen light themes while preserving the user's
-  terminal cursor color in dark themes and after exit.
+- Improved cursor contrast in the Paper and Linen light themes by styling both the COMMAND block
+  and its selected character, while preserving the native WRITE cursor and terminal state.
 
 ## [0.5.0] - 2026-07-22
 
