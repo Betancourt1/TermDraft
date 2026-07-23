@@ -27,8 +27,22 @@ def _state(workspace: Path) -> SessionState:
         workspace_root=workspace,
         active_path=second,
         documents=(
-            DocumentViewState(first, line=3, column=8, scroll_x=1.5, scroll_y=12.25),
-            DocumentViewState(second, line=9, column=2, scroll_y=40.0),
+            DocumentViewState(
+                first,
+                line=3,
+                column=8,
+                scroll_x=1.5,
+                scroll_y=12.25,
+                preview_scroll_x=2.0,
+                preview_scroll_y=18.0,
+            ),
+            DocumentViewState(
+                second,
+                line=9,
+                column=2,
+                scroll_y=40.0,
+                preview_scroll_y=52.0,
+            ),
         ),
         open_paths=(first, second),
     )
@@ -64,7 +78,7 @@ def test_serialized_session_contains_paths_and_positions_but_no_markdown_source(
     payload = json.loads(store.path_for(workspace).read_text(encoding="utf-8"))
 
     assert payload == {
-        "version": 2,
+        "version": 3,
         "workspace_root": str(workspace),
         "active_path": "todo.markdown",
         "open_paths": ["notes/café.md", "todo.markdown"],
@@ -75,6 +89,8 @@ def test_serialized_session_contains_paths_and_positions_but_no_markdown_source(
                 "column": 8,
                 "scroll_x": 1.5,
                 "scroll_y": 12.25,
+                "preview_scroll_x": 2.0,
+                "preview_scroll_y": 18.0,
             },
             {
                 "path": "todo.markdown",
@@ -82,6 +98,8 @@ def test_serialized_session_contains_paths_and_positions_but_no_markdown_source(
                 "column": 2,
                 "scroll_x": 0.0,
                 "scroll_y": 40.0,
+                "preview_scroll_x": 0.0,
+                "preview_scroll_y": 52.0,
             },
         ],
     }
@@ -98,6 +116,9 @@ def test_version_one_session_migrates_only_its_active_document(tmp_path: Path) -
     payload = json.loads(state_path.read_text(encoding="utf-8"))
     payload["version"] = 1
     del payload["open_paths"]
+    for document in payload["documents"]:
+        del document["preview_scroll_x"]
+        del document["preview_scroll_y"]
     state_path.write_text(json.dumps(payload), encoding="utf-8")
 
     state = store.load(workspace).state
@@ -190,6 +211,8 @@ def test_session_document_limit_is_enforced_on_save_and_load(tmp_path: Path) -> 
             "column": 0,
             "scroll_x": 0.0,
             "scroll_y": 0.0,
+            "preview_scroll_x": 0.0,
+            "preview_scroll_y": 0.0,
         }
     )
     store.path_for(workspace).write_text(json.dumps(payload), encoding="utf-8")

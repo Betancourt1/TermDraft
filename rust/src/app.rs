@@ -1,6 +1,6 @@
 //! Ratatui event/update coordinator.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, stdout};
@@ -43,9 +43,9 @@ use crate::path_filter::parse_path_filter;
 use crate::persistence::{LoadedFile, SaveError, load_file, normalize_line_endings, save_atomic};
 use time::{Duration as TimeDuration, OffsetDateTime};
 
-use crate::recovery::{RecoveryEntry, RecoveryJournal, RecoveryRecord};
 #[cfg(test)]
 use crate::recovery::RecoveryRecordStatus;
+use crate::recovery::{RecoveryEntry, RecoveryJournal, RecoveryRecord};
 use crate::search::{
     DEFAULT_FILE_RESULT_LIMIT, DocumentSearchMatch, MatchDirection, TextMatch, TextSearchMode,
     TextSearchOptions, TextSearchOverride, TextSearchRequest, cycle_document_match_index,
@@ -719,6 +719,11 @@ pub struct EditorTab {
     pub document: Document,
     pub editor: TextArea<'static>,
     pub inline_editor: TextArea<'static>,
+    pub(crate) editor_scroll_x: u16,
+    pub(crate) editor_scroll_y: u16,
+    pub(crate) preview_scroll_x: u16,
+    pub(crate) preview_scroll_y: u16,
+    pub(crate) pending_scroll_restore: bool,
     inline_source_lines: Vec<String>,
     inline_cursor: (usize, usize),
     pending_mixed_open: bool,
@@ -742,6 +747,11 @@ impl EditorTab {
             inline_cursor: editor.cursor(),
             editor,
             inline_editor,
+            editor_scroll_x: 0,
+            editor_scroll_y: 0,
+            preview_scroll_x: 0,
+            preview_scroll_y: 0,
+            pending_scroll_restore: false,
             pending_mixed_open: false,
             undo_groups: Vec::new(),
             redo_groups: Vec::new(),
@@ -778,6 +788,11 @@ impl EditorTab {
             inline_cursor: editor.cursor(),
             editor,
             inline_editor,
+            editor_scroll_x: 0,
+            editor_scroll_y: 0,
+            preview_scroll_x: 0,
+            preview_scroll_y: 0,
+            pending_scroll_restore: false,
             pending_mixed_open: false,
             undo_groups: Vec::new(),
             redo_groups: Vec::new(),
@@ -997,6 +1012,9 @@ pub struct App {
     published_recovery: HashMap<PathBuf, (String, String)>,
     recent_paths: Vec<PathBuf>,
     session_views: HashMap<PathBuf, DocumentViewState>,
+    pending_session_tabs: VecDeque<PathBuf>,
+    restored_open_order: Vec<PathBuf>,
+    inactive_probe_cursor: usize,
     workspace_search_revision: Arc<AtomicU64>,
     workspace_search_tx: Sender<WorkspaceSearchCompletion>,
     workspace_search_rx: Receiver<WorkspaceSearchCompletion>,
@@ -1086,6 +1104,9 @@ impl App {
             published_recovery: HashMap::new(),
             recent_paths: Vec::new(),
             session_views: HashMap::new(),
+            pending_session_tabs: VecDeque::new(),
+            restored_open_order: Vec::new(),
+            inactive_probe_cursor: 0,
             workspace_search_revision: Arc::new(AtomicU64::new(0)),
             workspace_search_tx,
             workspace_search_rx,
@@ -1129,38 +1150,89 @@ impl App {
             .iter()
             .map(|view| (view.path.clone(), view.clone()))
             .collect::<HashMap<_, _>>();
+        self.recent_paths = stored_recent;
+        self.session_views = stored_views;
+        self.restored_open_order.clone_from(&state.open_paths);
         if restore_open_tabs {
-            for path in &state.open_paths {
+            let initial = state
+                .active_path
+                .as_ref()
+                .filter(|path| state.open_paths.contains(path))
+                .or_else(|| state.open_paths.first())
+                .cloned();
+            if let Some(path) = initial.as_ref() {
                 let _ = self.open_document_with_prompts(path, false);
             }
-            let previous_active = self.active_tab;
-            if let Some(active) = &state.active_path
-                && let Some(index) = self
-                    .tabs
-                    .iter()
-                    .position(|tab| tab.document.path == *active)
-            {
-                self.active_tab = Some(index);
-            }
-            if !self.ensure_active_mixed_open_prompt(previous_active)
+            self.pending_session_tabs = state
+                .open_paths
+                .iter()
+                .filter(|path| Some(*path) != initial.as_ref())
+                .cloned()
+                .collect();
+            if !self.ensure_active_mixed_open_prompt(None)
                 && let Some(path) = self.active_tab().map(|tab| tab.document.path.clone())
             {
                 self.offer_recovery(&path);
             }
         }
-        for tab in &mut self.tabs {
-            if let Some(view) = state.view_for(&tab.document.path) {
-                tab.editor.move_cursor(CursorMove::Jump(
-                    u16::try_from(view.line).unwrap_or(u16::MAX),
-                    u16::try_from(view.column).unwrap_or(u16::MAX),
-                ));
+        for index in 0..self.tabs.len() {
+            let path = self.tabs[index].document.path.clone();
+            if let Some(view) = state.view_for(&path) {
+                Self::restore_tab_view(&mut self.tabs[index], view);
             }
         }
-        self.recent_paths = stored_recent;
-        self.session_views = stored_views;
+        self.restore_active_preview_scroll();
         if let Some(active) = self.active_tab().map(|tab| tab.document.path.clone()) {
             self.mark_recent(&active);
         }
+    }
+
+    fn restore_tab_view(tab: &mut EditorTab, view: &DocumentViewState) {
+        tab.editor.move_cursor(CursorMove::Jump(
+            u16::try_from(view.line).unwrap_or(u16::MAX),
+            u16::try_from(view.column).unwrap_or(u16::MAX),
+        ));
+        tab.editor_scroll_x = scroll_coordinate(view.scroll_x);
+        tab.editor_scroll_y = scroll_coordinate(view.scroll_y);
+        tab.preview_scroll_x = scroll_coordinate(view.preview_scroll_x);
+        tab.preview_scroll_y = scroll_coordinate(view.preview_scroll_y);
+        tab.pending_scroll_restore = true;
+    }
+
+    fn materialize_next_session_tab(&mut self) -> bool {
+        if self.overlay.is_some() {
+            return false;
+        }
+        let Some(path) = self.pending_session_tabs.pop_front() else {
+            return false;
+        };
+        if self.tabs.iter().any(|tab| tab.document.path == path) {
+            return true;
+        }
+        let active_path = self.active_tab().map(|tab| tab.document.path.clone());
+        let result = self.open_document_with_prompts(&path, false);
+        self.tabs.sort_by_key(|tab| {
+            self.restored_open_order
+                .iter()
+                .position(|candidate| candidate == &tab.document.path)
+                .unwrap_or(usize::MAX)
+        });
+        self.active_tab = active_path
+            .as_ref()
+            .and_then(|active| {
+                self.tabs
+                    .iter()
+                    .position(|tab| tab.document.path == *active)
+            })
+            .or_else(|| (!self.tabs.is_empty()).then_some(0));
+        self.restore_active_preview_scroll();
+        if let Err(error) = result {
+            self.status_message = Some(format!(
+                "Skipped restored tab {} · {error}",
+                self.workspace.relative(&path).display()
+            ));
+        }
+        true
     }
 
     fn offer_recovery(&mut self, path: &Path) {
@@ -1670,16 +1742,50 @@ impl App {
 
     fn current_session_state(&self) -> SessionState {
         let mut views = self.session_views.clone();
-        for tab in &self.tabs {
+        for (index, tab) in self.tabs.iter().enumerate() {
             let (line, column) = tab.editor.cursor();
+            let active = self.active_tab == Some(index);
             views.insert(
                 tab.document.path.clone(),
                 DocumentViewState {
                     path: tab.document.path.clone(),
                     line,
                     column,
+                    scroll_x: f64::from(tab.editor_scroll_x),
+                    scroll_y: f64::from(tab.editor_scroll_y),
+                    preview_scroll_x: f64::from(if active {
+                        self.preview_horizontal_scroll
+                    } else {
+                        tab.preview_scroll_x
+                    }),
+                    preview_scroll_y: f64::from(if active {
+                        self.preview_scroll
+                    } else {
+                        tab.preview_scroll_y
+                    }),
                 },
             );
+        }
+        let loaded = self
+            .tabs
+            .iter()
+            .map(|tab| tab.document.path.clone())
+            .collect::<HashSet<_>>();
+        let pending = self
+            .pending_session_tabs
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        let mut open_paths = self
+            .restored_open_order
+            .iter()
+            .filter(|path| loaded.contains(*path) || pending.contains(*path))
+            .cloned()
+            .collect::<Vec<_>>();
+        for tab in &self.tabs {
+            if !open_paths.contains(&tab.document.path) {
+                open_paths.push(tab.document.path.clone());
+            }
         }
         SessionState {
             workspace_root: self.workspace.root.clone(),
@@ -1689,11 +1795,7 @@ impl App {
                 .iter()
                 .filter_map(|path| views.get(path).cloned())
                 .collect(),
-            open_paths: self
-                .tabs
-                .iter()
-                .map(|tab| tab.document.path.clone())
-                .collect(),
+            open_paths,
         }
     }
 
@@ -1728,16 +1830,33 @@ impl App {
     }
 
     fn cache_active_view(&mut self) {
-        let Some(tab) = self.active_tab() else {
+        let Some(index) = self.active_tab else {
             return;
         };
+        self.tabs[index].preview_scroll_x = self.preview_horizontal_scroll;
+        self.tabs[index].preview_scroll_y = self.preview_scroll;
+        let tab = &self.tabs[index];
         let (line, column) = tab.editor.cursor();
         let view = DocumentViewState {
             path: tab.document.path.clone(),
             line,
             column,
+            scroll_x: f64::from(tab.editor_scroll_x),
+            scroll_y: f64::from(tab.editor_scroll_y),
+            preview_scroll_x: f64::from(tab.preview_scroll_x),
+            preview_scroll_y: f64::from(tab.preview_scroll_y),
         };
         self.session_views.insert(view.path.clone(), view);
+    }
+
+    fn restore_active_preview_scroll(&mut self) {
+        let Some(index) = self.active_tab else {
+            self.preview_scroll = 0;
+            self.preview_horizontal_scroll = 0;
+            return;
+        };
+        self.preview_scroll = self.tabs[index].preview_scroll_y;
+        self.preview_horizontal_scroll = self.tabs[index].preview_scroll_x;
     }
 
     fn mark_recent(&mut self, path: &Path) {
@@ -1788,6 +1907,7 @@ impl App {
             self.preview_horizontal_scroll = 0;
             self.preview_selected_link = None;
             self.narrow_pane = Focus::Editor;
+            self.restore_active_preview_scroll();
             if show_prompts {
                 self.mark_recent(&path);
                 self.ensure_active_mixed_open_prompt(previous_active);
@@ -1800,10 +1920,7 @@ impl App {
         let mut tab = EditorTab::from_path(&path, &self.config.editor)?;
         style_cursor(&mut tab.editor, self.mode);
         if let Some(view) = self.session_views.get(&path) {
-            tab.editor.move_cursor(CursorMove::Jump(
-                u16::try_from(view.line).unwrap_or(u16::MAX),
-                u16::try_from(view.column).unwrap_or(u16::MAX),
-            ));
+            Self::restore_tab_view(&mut tab, view);
         }
         tab.pending_mixed_open = tab.document.mixed_line_ending_target().is_some();
         self.tabs.push(tab);
@@ -1813,6 +1930,7 @@ impl App {
         self.preview_horizontal_scroll = 0;
         self.preview_selected_link = None;
         self.narrow_pane = Focus::Editor;
+        self.restore_active_preview_scroll();
         if show_prompts && !self.ensure_active_mixed_open_prompt(previous_active) {
             self.mark_recent(&path);
             self.offer_recovery(&path);
@@ -1932,6 +2050,10 @@ impl App {
         context: MixedLineEndingContext,
     ) {
         let cursor = self.tabs[index].editor.cursor();
+        let editor_scroll_x = self.tabs[index].editor_scroll_x;
+        let editor_scroll_y = self.tabs[index].editor_scroll_y;
+        let preview_scroll_x = self.tabs[index].preview_scroll_x;
+        let preview_scroll_y = self.tabs[index].preview_scroll_y;
         let mut tab = EditorTab::from_loaded(loaded, &self.config.editor);
         let mixed_target = tab.document.mixed_line_ending_target();
         style_cursor(&mut tab.editor, self.mode);
@@ -1939,6 +2061,11 @@ impl App {
             u16::try_from(cursor.0).unwrap_or(u16::MAX),
             u16::try_from(cursor.1).unwrap_or(u16::MAX),
         ));
+        tab.editor_scroll_x = editor_scroll_x;
+        tab.editor_scroll_y = editor_scroll_y;
+        tab.preview_scroll_x = preview_scroll_x;
+        tab.preview_scroll_y = preview_scroll_y;
+        tab.pending_scroll_restore = true;
         self.tabs[index] = tab;
         if let Some(target) = mixed_target {
             self.overlay = Some(Overlay::MixedLineEndings {
@@ -2351,6 +2478,7 @@ impl App {
         self.preview_horizontal_scroll = 0;
         self.preview_selected_link = None;
         self.narrow_pane = Focus::Editor;
+        self.restore_active_preview_scroll();
         self.ensure_active_mixed_open_prompt(previous);
         self.enforce_active_read_only();
     }
@@ -5366,6 +5494,7 @@ impl App {
         }
         self.sync_active_document();
         let mut changed = self.poll_active_document();
+        changed |= self.poll_next_inactive_document();
         let selected_path = self
             .selected_explorer_entry()
             .map(|entry| entry.path.clone());
@@ -5387,8 +5516,28 @@ impl App {
         let Some(index) = self.active_tab else {
             return false;
         };
+        self.poll_document(index, true)
+    }
+
+    fn poll_next_inactive_document(&mut self) -> bool {
+        let count = self.tabs.len();
+        if count < 2 {
+            return false;
+        }
+        for _ in 0..count {
+            let index = self.inactive_probe_cursor % count;
+            self.inactive_probe_cursor = (index + 1) % count;
+            if Some(index) != self.active_tab {
+                return self.poll_document(index, false);
+            }
+        }
+        false
+    }
+
+    fn poll_document(&mut self, index: usize, active: bool) -> bool {
         let path = self.tabs[index].document.path.clone();
         let baseline = self.tabs[index].document.snapshot.clone();
+        let relative = self.workspace.relative(&path);
         match load_file(&path) {
             Ok(loaded) if loaded.snapshot == baseline => {
                 if self.tabs[index].document.conflict
@@ -5412,8 +5561,14 @@ impl App {
                 {
                     if !self.tabs[index].document.conflict {
                         self.tabs[index].document.conflict = true;
-                        self.status_message =
-                            Some("CONFLICT · file changed outside TermDraft".to_owned());
+                        self.status_message = Some(if active {
+                            "CONFLICT · file changed outside TermDraft".to_owned()
+                        } else {
+                            format!(
+                                "CONFLICT · {} changed outside TermDraft",
+                                relative.display()
+                            )
+                        });
                         return true;
                     }
                     return false;
@@ -5430,12 +5585,27 @@ impl App {
                 }
 
                 let mixed_target = loaded.mixed_line_ending_target();
-                self.install_loaded(index, loaded, MixedLineEndingContext::Reload);
+                if active {
+                    self.install_loaded(index, loaded, MixedLineEndingContext::Reload);
+                } else {
+                    self.install_inactive_loaded(index, loaded);
+                }
                 self.status_message = Some(mixed_target.map_or_else(
-                    || "Reloaded external changes".to_owned(),
+                    || {
+                        if active {
+                            "Reloaded external changes".to_owned()
+                        } else {
+                            format!("Reloaded external changes in {}", relative.display())
+                        }
+                    },
                     |target| {
                         format!(
-                            "External file has mixed line endings · target {}",
+                            "{} has mixed line endings · target {}",
+                            if active {
+                                "External file".to_owned()
+                            } else {
+                                relative.display().to_string()
+                            },
                             line_ending_name(target)
                         )
                     },
@@ -5447,11 +5617,36 @@ impl App {
                     false
                 } else {
                     self.tabs[index].document.conflict = true;
-                    self.status_message = Some(format!("CONFLICT · file unavailable · {error}"));
+                    self.status_message = Some(if active {
+                        format!("CONFLICT · file unavailable · {error}")
+                    } else {
+                        format!("CONFLICT · {} unavailable · {error}", relative.display())
+                    });
                     true
                 }
             }
         }
+    }
+
+    fn install_inactive_loaded(&mut self, index: usize, loaded: LoadedFile) {
+        let cursor = self.tabs[index].editor.cursor();
+        let editor_scroll_x = self.tabs[index].editor_scroll_x;
+        let editor_scroll_y = self.tabs[index].editor_scroll_y;
+        let preview_scroll_x = self.tabs[index].preview_scroll_x;
+        let preview_scroll_y = self.tabs[index].preview_scroll_y;
+        let mut tab = EditorTab::from_loaded(loaded, &self.config.editor);
+        tab.pending_mixed_open = tab.document.mixed_line_ending_target().is_some();
+        style_cursor(&mut tab.editor, self.mode);
+        tab.editor.move_cursor(CursorMove::Jump(
+            u16::try_from(cursor.0).unwrap_or(u16::MAX),
+            u16::try_from(cursor.1).unwrap_or(u16::MAX),
+        ));
+        tab.editor_scroll_x = editor_scroll_x;
+        tab.editor_scroll_y = editor_scroll_y;
+        tab.preview_scroll_x = preview_scroll_x;
+        tab.preview_scroll_y = preview_scroll_y;
+        tab.pending_scroll_restore = true;
+        self.tabs[index] = tab;
     }
 }
 
@@ -5516,6 +5711,11 @@ fn conflict_copy_path(workspace: &Workspace, source: &Path) -> String {
         )
         .to_string_lossy()
         .into_owned()
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn scroll_coordinate(value: f64) -> u16 {
+    value.clamp(0.0, f64::from(u16::MAX)).round() as u16
 }
 
 fn update_scroll(scroll: &mut u16, code: KeyCode, line_count: usize) {
@@ -5976,6 +6176,7 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
                     needs_draw = true;
                 }
                 needs_draw |= app.poll_workspace_search_results();
+                needs_draw |= app.materialize_next_session_tab();
                 if rendered_mode != app.mode {
                     let shape = if app.mode == Mode::Write {
                         SetCursorStyle::BlinkingBar
@@ -6080,6 +6281,18 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use super::*;
+
+    fn session_view(path: PathBuf, line: usize, column: usize) -> DocumentViewState {
+        DocumentViewState {
+            path,
+            line,
+            column,
+            scroll_x: 0.0,
+            scroll_y: 0.0,
+            preview_scroll_x: 0.0,
+            preview_scroll_y: 0.0,
+        }
+    }
 
     #[test]
     fn terminal_cursor_color_follows_light_themes_and_resets_for_dark_themes() {
@@ -7182,6 +7395,8 @@ command_manage_recovery = "Z"
         let second = directory.path().join("second.md");
         fs::write(&first, "first").unwrap();
         fs::write(&second, "second").unwrap();
+        let first = first.canonicalize().unwrap();
+        let second = second.canonicalize().unwrap();
         let workspace = Workspace::from_target(&first).unwrap();
         let mut app = App::new(workspace).unwrap();
         app.open_document(&second).unwrap();
@@ -7834,6 +8049,47 @@ command_manage_recovery = "Z"
     }
 
     #[test]
+    fn external_poll_rotates_through_inactive_tabs_without_activating_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.md");
+        let second = directory.path().join("second.md");
+        fs::write(&first, "first").unwrap();
+        fs::write(&second, "second").unwrap();
+        let workspace = Workspace::from_target(&first).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        let first = app.workspace.root.join("first.md");
+        let second = app.workspace.root.join("second.md");
+        app.open_document(&second).unwrap();
+
+        fs::write(&first, "external first").unwrap();
+        assert!(app.poll_external_state());
+        assert_eq!(app.active_tab().unwrap().document.path, second);
+        let first_tab = app
+            .tabs
+            .iter()
+            .find(|tab| tab.document.path == first)
+            .unwrap();
+        assert_eq!(first_tab.document.text, "external first");
+        assert!(!first_tab.document.conflict);
+
+        app.activate_tab(0);
+        app.active_tab_mut().unwrap().editor.insert_str("local ");
+        app.sync_active_document();
+        app.activate_tab(1);
+        fs::write(&first, "another external").unwrap();
+        assert!(app.poll_external_state());
+
+        let first_tab = app
+            .tabs
+            .iter()
+            .find(|tab| tab.document.path == first)
+            .unwrap();
+        assert_eq!(first_tab.document.text, "local external first");
+        assert!(first_tab.document.conflict);
+        assert_eq!(app.active_tab().unwrap().document.path, second);
+    }
+
+    #[test]
     fn external_poll_refreshes_the_workspace_tree() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("one.md");
@@ -7865,15 +8121,12 @@ command_manage_recovery = "Z"
                 workspace_root: root.clone(),
                 active_path: Some(second.clone()),
                 documents: vec![
+                    session_view(first.clone(), 1, 2),
                     DocumentViewState {
-                        path: first.clone(),
-                        line: 1,
-                        column: 2,
-                    },
-                    DocumentViewState {
-                        path: second.clone(),
-                        line: 1,
-                        column: 3,
+                        scroll_y: 1.0,
+                        preview_scroll_x: 2.0,
+                        preview_scroll_y: 3.0,
+                        ..session_view(second.clone(), 1, 3)
                     },
                 ],
                 open_paths: vec![first.clone(), second.clone()],
@@ -7881,12 +8134,20 @@ command_manage_recovery = "Z"
             .unwrap();
         let workspace = Workspace::from_target(&root).unwrap();
 
-        let app =
+        let mut app =
             App::with_state_services(workspace, Config::default(), Some(store), None).unwrap();
 
-        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.tabs.len(), 1);
         assert_eq!(app.active_tab().unwrap().document.path, second);
         assert_eq!(app.active_tab().unwrap().editor.cursor(), (1, 3));
+        assert_eq!(app.active_tab().unwrap().editor_scroll_y, 1);
+        assert_eq!(app.preview_horizontal_scroll, 2);
+        assert_eq!(app.preview_scroll, 3);
+
+        assert!(app.materialize_next_session_tab());
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.tabs[0].document.path, first);
+        assert_eq!(app.active_tab().unwrap().document.path, second);
     }
 
     #[test]
@@ -7903,16 +8164,8 @@ command_manage_recovery = "Z"
                 workspace_root: root.clone(),
                 active_path: Some(normal.clone()),
                 documents: vec![
-                    DocumentViewState {
-                        path: mixed.clone(),
-                        line: 0,
-                        column: 0,
-                    },
-                    DocumentViewState {
-                        path: normal.clone(),
-                        line: 0,
-                        column: 0,
-                    },
+                    session_view(mixed.clone(), 0, 0),
+                    session_view(normal.clone(), 0, 0),
                 ],
                 open_paths: vec![mixed.clone(), normal.clone()],
             })
@@ -7953,16 +8206,8 @@ command_manage_recovery = "Z"
                 workspace_root: root.clone(),
                 active_path: Some(first.clone()),
                 documents: vec![
-                    DocumentViewState {
-                        path: first.clone(),
-                        line: 0,
-                        column: 0,
-                    },
-                    DocumentViewState {
-                        path: second.clone(),
-                        line: 0,
-                        column: 0,
-                    },
+                    session_view(first.clone(), 0, 0),
+                    session_view(second.clone(), 0, 0),
                 ],
                 open_paths: vec![first.clone(), second.clone()],
             })
@@ -7979,6 +8224,7 @@ command_manage_recovery = "Z"
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(app.tabs[0].document.is_editable());
 
+        assert!(app.materialize_next_session_tab());
         app.switch_tab(1);
         assert_eq!(app.active_tab().unwrap().document.path, second);
         assert!(matches!(
@@ -8041,21 +8287,9 @@ command_manage_recovery = "Z"
                 workspace_root: root.clone(),
                 active_path: Some(current.clone()),
                 documents: vec![
-                    DocumentViewState {
-                        path: missing,
-                        line: 0,
-                        column: 0,
-                    },
-                    DocumentViewState {
-                        path: closed.clone(),
-                        line: 0,
-                        column: 0,
-                    },
-                    DocumentViewState {
-                        path: current.clone(),
-                        line: 0,
-                        column: 0,
-                    },
+                    session_view(missing, 0, 0),
+                    session_view(closed.clone(), 0, 0),
+                    session_view(current.clone(), 0, 0),
                 ],
                 open_paths: vec![current],
             })

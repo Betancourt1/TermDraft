@@ -61,6 +61,63 @@ pub fn source_from_textarea(editor: &TextArea<'_>) -> String {
     editor.lines().join("\n")
 }
 
+#[must_use]
+pub fn editor_scroll_offset(editor: &TextArea<'_>, area: Rect) -> (u16, u16) {
+    let Some(rendered_cursor) = editor
+        .rendered_cursor_position()
+        .or_else(|| render_cursor(&editor.clone(), area))
+    else {
+        return (0, 0);
+    };
+    let line_number_width = editor.line_number_style().map_or(0, |_| {
+        u16::try_from(editor.lines().len().max(1).ilog10() + 3).unwrap_or(u16::MAX)
+    });
+    let content_width = area.width.saturating_sub(line_number_width).max(1);
+    let (cursor_row, cursor_column) = editor.cursor();
+    let line_heights = editor
+        .lines()
+        .iter()
+        .map(|line| rendered_line_height(editor, line, content_width))
+        .collect::<Vec<_>>();
+    let Some(cursor_in_line) = rendered_line_cursor(
+        editor,
+        &editor.lines()[cursor_row],
+        content_width,
+        cursor_column,
+    ) else {
+        return (0, 0);
+    };
+    let visual_row =
+        line_heights[..cursor_row].iter().sum::<usize>() + usize::from(cursor_in_line.y);
+    let screen_row = usize::from(rendered_cursor.y.saturating_sub(area.y));
+    let scroll_y = u16::try_from(visual_row.saturating_sub(screen_row)).unwrap_or(u16::MAX);
+    let scroll_x = if editor.wrap_mode() == WrapMode::None {
+        let visual_column = cursor_in_line.x.saturating_add(line_number_width);
+        let screen_column = rendered_cursor.x.saturating_sub(area.x);
+        visual_column.saturating_sub(screen_column)
+    } else {
+        0
+    };
+    (scroll_x, scroll_y)
+}
+
+pub fn restore_editor_scroll(editor: &mut TextArea<'_>, area: Rect, target_x: u16, target_y: u16) {
+    let (current_x, current_y) = editor_scroll_offset(editor, area);
+    let rows = scroll_delta(target_y, current_y);
+    let columns = scroll_delta(target_x, current_x);
+    if rows != 0 || columns != 0 {
+        editor.scroll((rows, columns));
+    }
+}
+
+fn scroll_delta(target: u16, current: u16) -> i16 {
+    if target >= current {
+        i16::try_from(target - current).unwrap_or(i16::MAX)
+    } else {
+        -i16::try_from(current - target).unwrap_or(i16::MAX)
+    }
+}
+
 /// Resolve a terminal cell to the nearest cursor position in the rendered editor.
 #[must_use]
 pub fn cursor_at_screen_position(
@@ -869,6 +926,37 @@ mod tests {
     fn textarea_round_trip_preserves_trailing_newline() {
         let editor = textarea_from_source("one\ntwo\n");
         assert_eq!(source_from_textarea(&editor), "one\ntwo\n");
+    }
+
+    #[test]
+    fn editor_scroll_offset_can_be_restored_after_relaunch() {
+        let source = (0..80)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let area = Rect::new(0, 0, 30, 8);
+        let mut original = textarea_from_source(&source);
+        original.move_cursor(CursorMove::Jump(50, 0));
+        let mut buffer = Buffer::empty(area);
+        original.render(area, &mut buffer);
+        original.scroll((3, 0));
+        original.render(area, &mut buffer);
+        let saved_cursor = original.cursor();
+        let saved_scroll = editor_scroll_offset(&original, area);
+
+        let mut restored = textarea_from_source(&source);
+        restored.move_cursor(CursorMove::Jump(
+            u16::try_from(saved_cursor.0).unwrap(),
+            u16::try_from(saved_cursor.1).unwrap(),
+        ));
+        restored.render(area, &mut buffer);
+        assert_ne!(editor_scroll_offset(&restored, area), saved_scroll);
+
+        restore_editor_scroll(&mut restored, area, saved_scroll.0, saved_scroll.1);
+        restored.render(area, &mut buffer);
+
+        assert_eq!(restored.cursor(), saved_cursor);
+        assert_eq!(editor_scroll_offset(&restored, area), saved_scroll);
     }
 
     #[test]

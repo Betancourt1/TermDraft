@@ -16,7 +16,7 @@ use crate::app::{
 };
 use crate::coordinate_diagnostic::CoordinateDiagnostic;
 use crate::document::LineEnding;
-use crate::editor::style_cursor;
+use crate::editor::{editor_scroll_offset, restore_editor_scroll, style_cursor};
 #[cfg(test)]
 use crate::markdown::render_markdown;
 use crate::markdown::render_markdown_document;
@@ -296,7 +296,14 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
         tab.editor
             .set_cursor_line_style(Style::new().bg(Color::Rgb(10, 10, 10)));
     }
+    let scroll_restore = tab
+        .pending_scroll_restore
+        .then_some((tab.editor_scroll_x, tab.editor_scroll_y));
     frame.render_widget(&tab.editor, area);
+    if let Some((scroll_x, scroll_y)) = scroll_restore {
+        restore_editor_scroll(&mut tab.editor, area, scroll_x, scroll_y);
+        frame.render_widget(&tab.editor, area);
+    }
     let cursor_position = if inline {
         tab.refresh_inline_editor();
         style_cursor(&mut tab.inline_editor, mode);
@@ -307,10 +314,17 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
         }
         frame.render_widget(Clear, area);
         frame.render_widget(&tab.inline_editor, area);
+        if let Some((scroll_x, scroll_y)) = scroll_restore {
+            restore_editor_scroll(&mut tab.inline_editor, area, scroll_x, scroll_y);
+            frame.render_widget(&tab.inline_editor, area);
+        }
+        (tab.editor_scroll_x, tab.editor_scroll_y) = editor_scroll_offset(&tab.inline_editor, area);
         tab.inline_editor.rendered_cursor_position()
     } else {
+        (tab.editor_scroll_x, tab.editor_scroll_y) = editor_scroll_offset(&tab.editor, area);
         tab.editor.rendered_cursor_position()
     };
+    tab.pending_scroll_restore = false;
     if show_cursor
         && mode == Mode::Write
         && let Some(position) = cursor_position
