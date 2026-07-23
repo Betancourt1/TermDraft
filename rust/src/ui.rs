@@ -1044,7 +1044,7 @@ fn draw_recovery_manager(
             record.entry.is_some() && !restore_protected
         } else {
             record.entry.is_some()
-                && record.status == RecoveryRecordStatus::Valid
+                && record.status != RecoveryRecordStatus::Corrupt
                 && !active_protected
         }
     });
@@ -1217,7 +1217,7 @@ fn recovery_record_detail(
         RecoveryRecordStatus::Missing | RecoveryRecordStatus::Orphan
     ) {
         return format!(
-            "Source is {}. Rust cannot safely open this recovery without a FileSnapshot yet; Retarget or Archive it.",
+            "Source is {}. Open draft installs it as a protected conflict that must be saved to a new path.",
             if record.status == RecoveryRecordStatus::Missing {
                 "missing"
             } else {
@@ -3021,7 +3021,7 @@ mod tests {
         let screen = rendered(&terminal);
         assert!(screen.contains("Manage recovery drafts"));
         assert!(screen.contains("MISSING"));
-        assert!(screen.contains("FileSnapshot"));
+        assert!(screen.contains("protected conflict"));
         assert!(screen.contains("Retarget"));
         assert!(screen.contains("Archive"));
         assert!(screen.contains("Delete >30d (1)"));

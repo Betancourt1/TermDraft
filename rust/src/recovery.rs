@@ -52,6 +52,26 @@ impl RecoveryEntry {
     pub fn fingerprint(&self) -> &str {
         &self.fingerprint
     }
+
+    #[must_use]
+    pub fn baseline_snapshot(&self) -> FileSnapshot {
+        let mut sha256 = [0; 32];
+        if let Some(digest) = self.base_snapshot.digest.as_deref() {
+            for (index, pair) in digest.as_bytes().chunks_exact(2).enumerate() {
+                let high = hex_value(pair[0]).unwrap_or_default();
+                let low = hex_value(pair[1]).unwrap_or_default();
+                sha256[index] = (high << 4) | low;
+            }
+        }
+        FileSnapshot {
+            sha256,
+            size: self.base_snapshot.size.unwrap_or_default(),
+            modified_ns: self.base_snapshot.mtime_ns.unwrap_or_default(),
+            mode: self.base_snapshot.mode.unwrap_or(0o600),
+            device: self.base_snapshot.device.unwrap_or_default(),
+            inode: self.base_snapshot.inode.unwrap_or_default(),
+        }
+    }
 }
 
 /// The safety state of an inventoried recovery journal.
@@ -1194,6 +1214,14 @@ fn hex_digest(bytes: &[u8; 32]) -> String {
         write!(digest, "{byte:02x}").expect("writing to a String cannot fail");
     }
     digest
+}
+
+const fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    }
 }
 
 fn data_fingerprint(bytes: &[u8]) -> String {

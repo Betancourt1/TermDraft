@@ -43,7 +43,9 @@ use crate::path_filter::parse_path_filter;
 use crate::persistence::{LoadedFile, SaveError, load_file, normalize_line_endings, save_atomic};
 use time::{Duration as TimeDuration, OffsetDateTime};
 
-use crate::recovery::{RecoveryEntry, RecoveryJournal, RecoveryRecord, RecoveryRecordStatus};
+use crate::recovery::{RecoveryEntry, RecoveryJournal, RecoveryRecord};
+#[cfg(test)]
+use crate::recovery::RecoveryRecordStatus;
 use crate::search::{
     DEFAULT_FILE_RESULT_LIMIT, DocumentSearchMatch, MatchDirection, TextMatch, TextSearchMode,
     TextSearchOptions, TextSearchOverride, TextSearchRequest, cycle_document_match_index,
@@ -746,6 +748,42 @@ impl EditorTab {
         }
     }
 
+    fn from_unavailable_recovery(entry: &RecoveryEntry, config: &EditorConfig) -> Self {
+        let line_ending = LineEnding::detect(&entry.text);
+        let normalized = normalize_line_endings(&entry.text);
+        let mixed_target = LineEnding::mixed_target(&entry.text);
+        let mixed_source = mixed_target
+            .map(|target| MixedSource::new(entry.text.clone(), normalized.clone(), target));
+        let source = if mixed_source.is_some() {
+            entry.text.clone()
+        } else {
+            normalized.clone()
+        };
+        let mut editor = textarea_from_source(&normalized);
+        apply_editor_config(&mut editor, config);
+        let inline_editor = inline_preview_editor(&editor);
+        Self {
+            document: Document {
+                path: entry.document_path.clone(),
+                text: source.clone(),
+                saved_text: source,
+                encoding: entry.encoding,
+                line_ending,
+                mixed_source,
+                snapshot: entry.baseline_snapshot(),
+                conflict: true,
+                recovery_conflict: true,
+            },
+            inline_source_lines: editor.lines().to_vec(),
+            inline_cursor: editor.cursor(),
+            editor,
+            inline_editor,
+            pending_mixed_open: false,
+            undo_groups: Vec::new(),
+            redo_groups: Vec::new(),
+        }
+    }
+
     pub fn sync_document(&mut self) {
         self.document
             .update_from_editor(source_from_textarea(&self.editor));
@@ -1377,12 +1415,7 @@ impl App {
         };
         match journal.record_for(&entry.document_path) {
             Ok(Some(current)) if current.fingerprint == record.fingerprint => {
-                if current.status != RecoveryRecordStatus::Valid {
-                    self.show_recovery_manager(
-                        selected,
-                        missing_recovery_open_limitation(current.status),
-                    );
-                } else if let Some(entry) = current.entry {
+                if let Some(entry) = current.entry {
                     self.open_recovery_entry(selected, entry, "Opened recovery draft".to_owned());
                 }
             }
@@ -1397,33 +1430,76 @@ impl App {
     }
 
     fn open_recovery_entry(&mut self, selected: usize, entry: RecoveryEntry, message: String) {
-        if !matches!(disk_state(&entry.document_path), DiskState::Current(_)) {
-            self.show_recovery_manager(
-                selected,
-                missing_recovery_open_limitation(RecoveryRecordStatus::Missing),
-            );
-            return;
-        }
-        match self.open_document(&entry.document_path) {
-            Ok(()) => {
-                if matches!(
-                    self.overlay,
-                    Some(Overlay::MixedLineEndings {
-                        context: MixedLineEndingContext::Open,
-                        ..
-                    })
-                ) {
-                    return;
+        match disk_state(&entry.document_path) {
+            DiskState::Current(_) => match self.open_document(&entry.document_path) {
+                Ok(()) => {
+                    if matches!(
+                        self.overlay,
+                        Some(Overlay::MixedLineEndings {
+                            context: MixedLineEndingContext::Open,
+                            ..
+                        })
+                    ) {
+                        return;
+                    }
+                    self.status_message = Some(message);
+                    self.overlay = Some(Overlay::Recovery {
+                        entry: Box::new(entry),
+                    });
                 }
-                self.status_message = Some(message);
-                self.overlay = Some(Overlay::Recovery {
-                    entry: Box::new(entry),
-                });
+                Err(error) => self.show_recovery_manager(
+                    selected,
+                    format!("Recovery draft cannot be opened · {error}"),
+                ),
+            },
+            DiskState::Missing => {
+                self.install_unavailable_recovery(&entry, ConflictKind::Missing);
             }
-            Err(error) => self.show_recovery_manager(
-                selected,
-                format!("Recovery draft cannot be opened · {error}"),
-            ),
+            DiskState::Unavailable(_) => {
+                self.install_unavailable_recovery(&entry, ConflictKind::Unavailable);
+            }
+        }
+    }
+
+    fn install_unavailable_recovery(&mut self, entry: &RecoveryEntry, kind: ConflictKind) {
+        let previous_active = self.active_tab;
+        self.cache_active_view();
+        let mut tab = EditorTab::from_unavailable_recovery(entry, &self.config.editor);
+        style_cursor(&mut tab.editor, self.mode);
+        let mixed_target = tab.document.mixed_line_ending_target();
+        let index = self
+            .tabs
+            .iter()
+            .position(|candidate| candidate.document.path == entry.document_path)
+            .unwrap_or(self.tabs.len());
+        if index == self.tabs.len() {
+            self.tabs.push(tab);
+        } else {
+            self.tabs[index] = tab;
+        }
+        self.active_tab = Some(index);
+        self.focus = Focus::Editor;
+        self.preview_scroll = 0;
+        self.preview_horizontal_scroll = 0;
+        self.preview_selected_link = None;
+        self.narrow_pane = Focus::Editor;
+        self.mark_recent(&entry.document_path);
+        self.published_recovery.insert(
+            entry.document_path.clone(),
+            (entry.fingerprint().to_owned(), entry.text.clone()),
+        );
+        if let Some(target) = mixed_target {
+            self.overlay = Some(Overlay::MixedLineEndings {
+                tab_index: index,
+                previous_active,
+                context: MixedLineEndingContext::Recovery,
+                target,
+            });
+            self.status_message =
+                Some("Recovered draft · original source unavailable · Save As required".to_owned());
+            self.enforce_active_read_only();
+        } else {
+            self.show_conflict(index, kind);
         }
     }
 
@@ -5379,18 +5455,6 @@ impl App {
     }
 }
 
-fn missing_recovery_open_limitation(status: RecoveryRecordStatus) -> String {
-    let source = match status {
-        RecoveryRecordStatus::Missing => "missing",
-        RecoveryRecordStatus::Orphan => "not a safe regular file",
-        RecoveryRecordStatus::Corrupt => "corrupt",
-        RecoveryRecordStatus::Valid => "unavailable",
-    };
-    format!(
-        "Source is {source}; Rust cannot safely open this recovery without a FileSnapshot yet. Retarget or Archive it."
-    )
-}
-
 fn expired_recovery_records(
     records: &[RecoveryRecord],
     cutoff: OffsetDateTime,
@@ -8533,6 +8597,77 @@ command_manage_recovery = "Z"
         assert!(journal.list_quarantined(Some(&root)).unwrap().is_empty());
         assert!(journal.path_for(&renamed).exists());
         assert!(matches!(app.overlay, Some(Overlay::Recovery { .. })));
+    }
+
+    #[test]
+    fn recovery_manager_opens_unavailable_drafts_only_through_save_as() {
+        for orphaned in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().canonicalize().unwrap();
+            let original = root.join("unavailable.md");
+            fs::write(&original, "saved").unwrap();
+            let loaded = load_file(&original).unwrap();
+            let journal = RecoveryJournal::new(root.join("recovery"));
+            journal
+                .publish(
+                    &original,
+                    &root,
+                    "unsaved draft",
+                    loaded.encoding,
+                    &loaded.snapshot,
+                )
+                .unwrap();
+            fs::remove_file(&original).unwrap();
+            if orphaned {
+                fs::create_dir(&original).unwrap();
+            }
+            let workspace = Workspace::from_target(&root).unwrap();
+            let mut app =
+                App::with_state_services(workspace, Config::default(), None, Some(journal.clone()))
+                    .unwrap();
+
+            app.open_recovery_manager();
+            app.handle_overlay_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+
+            let tab = app.active_tab().unwrap();
+            assert_eq!(tab.document.path, original);
+            assert_eq!(tab.document.text, "unsaved draft");
+            assert!(tab.document.is_dirty());
+            assert!(tab.document.conflict);
+            assert!(tab.document.recovery_conflict);
+            assert!(matches!(
+                app.overlay,
+                Some(Overlay::Conflict {
+                    kind: ConflictKind::Missing | ConflictKind::Unavailable,
+                    can_reload: false,
+                    ..
+                })
+            ));
+
+            app.handle_overlay_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+            let Some(Overlay::PathInput { input, .. }) = &mut app.overlay else {
+                panic!("unavailable recovery did not require Save As");
+            };
+            input.value = "rescued.md".to_owned();
+            input.cursor = input.value.chars().count();
+            app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+            assert_eq!(
+                fs::read_to_string(root.join("rescued.md")).unwrap(),
+                "unsaved draft"
+            );
+            assert!(!journal.path_for(&original).exists());
+            assert_eq!(
+                app.active_tab().unwrap().document.path,
+                root.join("rescued.md")
+            );
+            assert!(!app.active_tab().unwrap().document.is_dirty());
+            if orphaned {
+                assert!(original.is_dir());
+            } else {
+                assert!(!original.exists());
+            }
+        }
     }
 
     #[test]
