@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -23,6 +23,8 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
 use ratatui::widgets::ListState;
+#[cfg(unix)]
+use signal_hook::consts::{SIGHUP, SIGTERM};
 use tui_textarea::{CursorMove, TextArea};
 use unicode_width::UnicodeWidthStr;
 
@@ -1837,6 +1839,11 @@ impl App {
             Ok(()) => self.last_session_state = Some(state),
             Err(error) => self.status_message = Some(format!("Session not saved · {error}")),
         }
+    }
+
+    fn flush_state(&mut self) {
+        self.persist_recovery();
+        self.persist_session_if_changed();
     }
 
     #[must_use]
@@ -6223,6 +6230,7 @@ pub fn run(workspace: Workspace) -> anyhow::Result<()> {
 /// Returns an error when initial loading, terminal drawing, or event input fails.
 pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<()> {
     let mut app = App::with_config(workspace, config)?;
+    let shutdown_requested = install_shutdown_handlers()?;
     ratatui::run(|terminal| -> anyhow::Result<()> {
         let mut terminal_extras = TerminalExtrasGuard::enable(app.theme)?;
         let result = (|| {
@@ -6232,27 +6240,49 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
             let mut next_disk_poll = Instant::now() + Duration::from_secs(2);
             let mut next_recovery_flush = Instant::now() + Duration::from_millis(500);
             while !app.should_quit {
+                if observe_shutdown_request(&mut app, &shutdown_requested) {
+                    continue;
+                }
                 if needs_draw {
                     terminal.draw(|frame| ui::draw(frame, &mut app))?;
                     needs_draw = false;
                 }
-                if event::poll(Duration::from_millis(250))? {
-                    match event::read()? {
-                        Event::Key(key)
-                            if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
-                        {
-                            app.handle_key(key);
-                        }
-                        Event::Paste(text) => {
-                            if !app.paste_into_overlay(&text) {
-                                app.paste_into_document(&text);
+                let received_event = match event::poll(Duration::from_millis(250)) {
+                    Ok(true) => match event::read() {
+                        Ok(event) => {
+                            match event {
+                                Event::Key(key)
+                                    if matches!(
+                                        key.kind,
+                                        KeyEventKind::Press | KeyEventKind::Repeat
+                                    ) =>
+                                {
+                                    app.handle_key(key);
+                                }
+                                Event::Paste(text) => {
+                                    if !app.paste_into_overlay(&text) {
+                                        app.paste_into_document(&text);
+                                    }
+                                }
+                                Event::Mouse(mouse) => app.handle_mouse(mouse),
+                                _ => {}
                             }
+                            true
                         }
-                        Event::Mouse(mouse) => app.handle_mouse(mouse),
-                        _ => {}
+                        Err(_error) if shutdown_requested.load(Ordering::Relaxed) => {
+                            app.should_quit = true;
+                            false
+                        }
+                        Err(error) => return Err(error.into()),
+                    },
+                    Ok(false) => false,
+                    Err(_error) if shutdown_requested.load(Ordering::Relaxed) => {
+                        app.should_quit = true;
+                        false
                     }
-                    needs_draw = true;
-                }
+                    Err(error) => return Err(error.into()),
+                };
+                needs_draw |= received_event && !app.should_quit;
                 needs_draw |= app.poll_workspace_search_results();
                 needs_draw |= app.poll_workspace_scan_results();
                 needs_draw |= app.materialize_next_session_tab();
@@ -6279,8 +6309,7 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
                     next_recovery_flush = Instant::now() + Duration::from_millis(500);
                 }
             }
-            app.persist_recovery();
-            app.persist_session_if_changed();
+            app.flush_state();
             Ok(())
         })();
         terminal_extras
@@ -6288,6 +6317,26 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
             .context("restore mouse and cursor state")?;
         result
     })
+}
+
+fn observe_shutdown_request(app: &mut App, requested: &AtomicBool) -> bool {
+    if !requested.load(Ordering::Relaxed) {
+        return false;
+    }
+    app.should_quit = true;
+    true
+}
+
+fn install_shutdown_handlers() -> anyhow::Result<Arc<AtomicBool>> {
+    let requested = Arc::new(AtomicBool::new(false));
+    #[cfg(unix)]
+    {
+        signal_hook::flag::register(SIGTERM, Arc::clone(&requested))
+            .context("install SIGTERM shutdown handler")?;
+        signal_hook::flag::register(SIGHUP, Arc::clone(&requested))
+            .context("install SIGHUP shutdown handler")?;
+    }
+    Ok(requested)
 }
 
 struct TerminalExtrasGuard {
@@ -8552,6 +8601,35 @@ command_manage_recovery = "Z"
         app.persist_recovery();
         assert!(!journal.path_for(&path).exists());
         assert_eq!(fs::read_to_string(path).unwrap(), "saved");
+    }
+
+    #[test]
+    fn cooperative_shutdown_flushes_dirty_recovery_and_session_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("note.md");
+        fs::write(&path, "saved").unwrap();
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        let store = SessionStore::new(root.join("sessions"));
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::with_state_services(
+            workspace,
+            Config::default(),
+            Some(store.clone()),
+            Some(journal.clone()),
+        )
+        .unwrap();
+        app.active_tab_mut().unwrap().editor.insert_str("draft ");
+        let requested = AtomicBool::new(true);
+
+        assert!(observe_shutdown_request(&mut app, &requested));
+        assert!(app.should_quit);
+        app.flush_state();
+
+        assert_eq!(journal.load(&path).unwrap().unwrap().text, "draft saved");
+        let session = store.load(&root).state.unwrap();
+        assert_eq!(session.active_path, Some(path.clone()));
+        assert_eq!(session.open_paths, vec![path]);
     }
 
     #[test]
