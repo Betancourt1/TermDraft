@@ -58,7 +58,7 @@ use crate::session::{DocumentViewState, MAX_SESSION_DOCUMENTS, SessionState, Ses
 use crate::theme::Theme;
 use crate::ui;
 use crate::workspace::{
-    Workspace, WorkspaceEntry, has_editable_suffix, paths_are_spelling_aliases,
+    Workspace, WorkspaceEntry, WorkspaceScan, has_editable_suffix, paths_are_spelling_aliases,
 };
 use crate::workspace_entries::{
     copy_entry, create_file, create_folder, move_entry, move_to_trash, rename_entry,
@@ -350,6 +350,19 @@ struct WorkspaceSearchCompletion {
     revision: u64,
     query: String,
     result: crate::search::TextSearchResult,
+}
+
+#[derive(Debug)]
+struct WorkspaceScanCompletion {
+    revision: u64,
+    report: WorkspaceScan,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum WorkspaceIndexState {
+    #[default]
+    Idle,
+    Indexing,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -1015,6 +1028,11 @@ pub struct App {
     pending_session_tabs: VecDeque<PathBuf>,
     restored_open_order: Vec<PathBuf>,
     inactive_probe_cursor: usize,
+    workspace_scan_revision: Arc<AtomicU64>,
+    workspace_scan_tx: Sender<WorkspaceScanCompletion>,
+    workspace_scan_rx: Receiver<WorkspaceScanCompletion>,
+    pub(crate) workspace_index_state: WorkspaceIndexState,
+    pub workspace_scan_warnings: Vec<String>,
     workspace_search_revision: Arc<AtomicU64>,
     workspace_search_tx: Sender<WorkspaceSearchCompletion>,
     workspace_search_rx: Receiver<WorkspaceSearchCompletion>,
@@ -1049,7 +1067,8 @@ impl App {
         session_store: Option<SessionStore>,
         recovery_journal: Option<RecoveryJournal>,
     ) -> anyhow::Result<Self> {
-        let entries = workspace.scan();
+        let shallow_scan = workspace.scan_top_level();
+        let entries = shallow_scan.entries;
         let selected = workspace.initial_file.as_ref().and_then(|initial| {
             entries
                 .iter()
@@ -1066,6 +1085,7 @@ impl App {
             StartupView::Inline => ViewMode::Inline,
             StartupView::Split => ViewMode::Split,
         };
+        let (workspace_scan_tx, workspace_scan_rx) = mpsc::channel();
         let (workspace_search_tx, workspace_search_rx) = mpsc::channel();
         let mut app = Self {
             workspace,
@@ -1107,6 +1127,11 @@ impl App {
             pending_session_tabs: VecDeque::new(),
             restored_open_order: Vec::new(),
             inactive_probe_cursor: 0,
+            workspace_scan_revision: Arc::new(AtomicU64::new(0)),
+            workspace_scan_tx,
+            workspace_scan_rx,
+            workspace_index_state: WorkspaceIndexState::Idle,
+            workspace_scan_warnings: shallow_scan.warnings,
             workspace_search_revision: Arc::new(AtomicU64::new(0)),
             workspace_search_tx,
             workspace_search_rx,
@@ -1126,6 +1151,7 @@ impl App {
         if startup_mode == StartupMode::Write {
             app.set_mode(Mode::Write);
         }
+        app.request_workspace_scan();
         Ok(app)
     }
 
@@ -3661,7 +3687,11 @@ impl App {
     }
 
     fn refresh_entries(&mut self, selected_path: Option<&Path>) {
-        self.entries = self.workspace.scan();
+        self.workspace_scan_revision.fetch_add(1, Ordering::Relaxed);
+        self.workspace_index_state = WorkspaceIndexState::Idle;
+        let report = self.workspace.scan_report();
+        self.entries = report.entries;
+        self.workspace_scan_warnings = report.warnings;
         self.retain_existing_expanded_directories();
         if let Some(path) = selected_path {
             self.expand_ancestors(path);
@@ -3670,6 +3700,65 @@ impl App {
             .and_then(|path| self.visible_position(path))
             .or_else(|| (!self.visible_entry_indices().is_empty()).then_some(0));
         self.explorer_state.select(selected);
+    }
+
+    fn request_workspace_scan(&mut self) {
+        if self.workspace_index_state == WorkspaceIndexState::Indexing {
+            return;
+        }
+        let revision = self.workspace_scan_revision.fetch_add(1, Ordering::Relaxed) + 1;
+        let workspace = self.workspace.clone();
+        let sender = self.workspace_scan_tx.clone();
+        self.workspace_index_state = WorkspaceIndexState::Indexing;
+        let _worker = thread::spawn(move || {
+            let report = workspace.scan_report();
+            let _ = sender.send(WorkspaceScanCompletion { revision, report });
+        });
+    }
+
+    fn poll_workspace_scan_results(&mut self) -> bool {
+        let completions = self.workspace_scan_rx.try_iter().collect::<Vec<_>>();
+        let mut changed = false;
+        for completion in completions {
+            if completion.revision != self.workspace_scan_revision.load(Ordering::Relaxed) {
+                continue;
+            }
+            self.workspace_index_state = WorkspaceIndexState::Idle;
+            let selected_path = self
+                .selected_explorer_entry()
+                .map(|entry| entry.path.clone());
+            if self.entries != completion.report.entries {
+                self.entries = completion.report.entries;
+                self.retain_existing_expanded_directories();
+                let selection = selected_path
+                    .as_ref()
+                    .and_then(|path| self.visible_position(path))
+                    .or_else(|| (!self.visible_entry_indices().is_empty()).then_some(0));
+                self.explorer_state.select(selection);
+                changed = true;
+            }
+            if self.workspace_scan_warnings != completion.report.warnings {
+                self.workspace_scan_warnings = completion.report.warnings;
+                changed = true;
+            }
+            if let Some(first) = self.workspace_scan_warnings.first() {
+                self.status_message = Some(format!(
+                    "Files indexed with {} warning{} · {first}",
+                    self.workspace_scan_warnings.len(),
+                    if self.workspace_scan_warnings.len() == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                ));
+            }
+        }
+        changed
+    }
+
+    #[must_use]
+    pub const fn workspace_is_indexing(&self) -> bool {
+        matches!(self.workspace_index_state, WorkspaceIndexState::Indexing)
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -5381,12 +5470,6 @@ impl App {
             return;
         }
         self.sync_active_document();
-        let files = self
-            .entries
-            .iter()
-            .filter(|entry| !entry.is_dir)
-            .map(|entry| entry.path.clone())
-            .collect::<Vec<_>>();
         let overrides = self
             .tabs
             .iter()
@@ -5397,7 +5480,7 @@ impl App {
             })
             .collect::<Vec<_>>();
         let query = query.to_owned();
-        let root = self.workspace.root.clone();
+        let workspace = self.workspace.clone();
         let options = TextSearchOptions {
             mode,
             file_filter: (!file_filter.trim().is_empty()).then(|| file_filter.trim().to_owned()),
@@ -5411,12 +5494,20 @@ impl App {
         let sender = self.workspace_search_tx.clone();
         let _worker = thread::spawn(move || {
             let cancelled = || current_revision.load(Ordering::Relaxed) != revision;
+            let scan = workspace.scan_report();
+            let files = scan
+                .entries
+                .into_iter()
+                .filter(|entry| !entry.is_dir)
+                .map(|entry| entry.path)
+                .collect::<Vec<_>>();
             let mut request = TextSearchRequest::new(&files, &query);
-            request.root = Some(&root);
+            request.root = Some(&workspace.root);
             request.overrides = &overrides;
             request.options = options;
             request.should_cancel = Some(&cancelled);
-            let result = search_workspace_text(&request);
+            let mut result = search_workspace_text(&request);
+            result.warnings.splice(0..0, scan.warnings);
             if !cancelled() {
                 let _ = sender.send(WorkspaceSearchCompletion {
                     revision,
@@ -5495,20 +5586,7 @@ impl App {
         self.sync_active_document();
         let mut changed = self.poll_active_document();
         changed |= self.poll_next_inactive_document();
-        let selected_path = self
-            .selected_explorer_entry()
-            .map(|entry| entry.path.clone());
-        let entries = self.workspace.scan();
-        if entries != self.entries {
-            self.entries = entries;
-            self.retain_existing_expanded_directories();
-            let selection = selected_path
-                .as_ref()
-                .and_then(|path| self.visible_position(path))
-                .or_else(|| (!self.visible_entry_indices().is_empty()).then_some(0));
-            self.explorer_state.select(selection);
-            changed = true;
-        }
+        self.request_workspace_scan();
         changed
     }
 
@@ -6176,6 +6254,7 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
                     needs_draw = true;
                 }
                 needs_draw |= app.poll_workspace_search_results();
+                needs_draw |= app.poll_workspace_scan_results();
                 needs_draw |= app.materialize_next_session_tab();
                 if rendered_mode != app.mode {
                     let shape = if app.mode == Mode::Write {
@@ -6333,6 +6412,17 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         panic!("workspace search did not finish");
+    }
+
+    fn finish_workspace_scan(app: &mut App) {
+        for _ in 0..200 {
+            let _ = app.poll_workspace_scan_results();
+            if !app.workspace_is_indexing() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("workspace scan did not finish");
     }
 
     #[test]
@@ -6694,6 +6784,7 @@ command_manage_recovery = "Z"
         let selected = fs::canonicalize(selected).unwrap();
         let workspace = Workspace::from_target(directory.path()).unwrap();
         let mut app = App::with_state_services(workspace, Config::default(), None, None).unwrap();
+        finish_workspace_scan(&mut app);
 
         app.execute_command(CommandAction::FileFinder);
         let Some(Overlay::FileFinder {
@@ -6830,6 +6921,18 @@ command_manage_recovery = "Z"
         finish_workspace_search(&mut app);
         app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.active_tab().unwrap().document.text, "new disk needle");
+
+        let fresh = app.workspace.root.join("fresh.md");
+        fs::write(&fresh, "brand new search target").unwrap();
+        assert!(!app.entries.iter().any(|entry| entry.path == fresh));
+        app.execute_command(CommandAction::WorkspaceSearch);
+        assert!(app.paste_into_overlay("brand new search target"));
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        finish_workspace_search(&mut app);
+        let Some(Overlay::WorkspaceSearch { results, .. }) = &app.overlay else {
+            panic!("workspace search closed after fresh-file submission");
+        };
+        assert!(results.iter().any(|result| result.path == fresh));
     }
 
     #[test]
@@ -7745,6 +7848,7 @@ command_manage_recovery = "Z"
         let directory = tempfile::tempdir().unwrap();
         let workspace = Workspace::from_target(directory.path()).unwrap();
         let mut app = App::new(workspace).unwrap();
+        finish_workspace_scan(&mut app);
         app.focus = Focus::Explorer;
         app.update_viewport_width(120);
 
@@ -7769,6 +7873,7 @@ command_manage_recovery = "Z"
         fs::write(directory.path().join("readme.md"), "readme").unwrap();
         let workspace = Workspace::from_target(directory.path()).unwrap();
         let mut app = App::new(workspace).unwrap();
+        finish_workspace_scan(&mut app);
         app.focus = Focus::Explorer;
         let visible_paths = |app: &App| {
             app.visible_entry_indices()
@@ -8096,14 +8201,45 @@ command_manage_recovery = "Z"
         fs::write(&path, "one").unwrap();
         let workspace = Workspace::from_target(&path).unwrap();
         let mut app = App::new(workspace).unwrap();
+        finish_workspace_scan(&mut app);
 
         fs::write(directory.path().join("two.md"), "two").unwrap();
 
-        assert!(app.poll_external_state());
+        let _ = app.poll_external_state();
+        finish_workspace_scan(&mut app);
         assert!(
             app.entries
                 .iter()
                 .any(|entry| entry.relative == Path::new("two.md"))
+        );
+    }
+
+    #[test]
+    fn workspace_index_starts_shallow_and_finishes_in_the_background() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        fs::create_dir(root.join("notes")).unwrap();
+        fs::write(root.join("notes/nested.md"), "nested").unwrap();
+        let workspace = Workspace::from_target(&root).unwrap();
+
+        let mut app = App::new(workspace).unwrap();
+
+        assert!(app.workspace_is_indexing());
+        assert!(
+            app.entries
+                .iter()
+                .any(|entry| entry.relative == Path::new("notes"))
+        );
+        assert!(
+            !app.entries
+                .iter()
+                .any(|entry| entry.relative == Path::new("notes/nested.md"))
+        );
+        finish_workspace_scan(&mut app);
+        assert!(
+            app.entries
+                .iter()
+                .any(|entry| entry.relative == Path::new("notes/nested.md"))
         );
     }
 

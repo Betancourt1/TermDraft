@@ -36,6 +36,12 @@ pub struct WorkspaceEntry {
     pub is_dir: bool,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct WorkspaceScan {
+    pub entries: Vec<WorkspaceEntry>,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Workspace {
     pub root: PathBuf,
@@ -144,8 +150,69 @@ impl Workspace {
 
     #[must_use]
     pub fn scan(&self) -> Vec<WorkspaceEntry> {
+        self.scan_report().entries
+    }
+
+    #[must_use]
+    pub fn scan_top_level(&self) -> WorkspaceScan {
         let ignored: HashSet<&str> = IGNORED_DIRECTORIES.iter().copied().collect();
-        let mut entries = WalkBuilder::new(&self.root)
+        let mut report = WorkspaceScan::default();
+        let children = match std::fs::read_dir(&self.root) {
+            Ok(children) => children,
+            Err(error) => {
+                report
+                    .warnings
+                    .push(format!("Cannot scan {}: {error}", self.root.display()));
+                return report;
+            }
+        };
+        for child in children {
+            let child = match child {
+                Ok(child) => child,
+                Err(error) => {
+                    report.warnings.push(format!(
+                        "Cannot read an entry in {}: {error}",
+                        self.root.display()
+                    ));
+                    continue;
+                }
+            };
+            let path = child.path();
+            let file_type = match child.file_type() {
+                Ok(file_type) => file_type,
+                Err(error) => {
+                    report
+                        .warnings
+                        .push(format!("Cannot inspect {}: {error}", path.display()));
+                    continue;
+                }
+            };
+            if file_type.is_symlink()
+                || (file_type.is_dir()
+                    && child
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|name| ignored.contains(name)))
+                || (!file_type.is_dir() && !has_editable_suffix(&path))
+            {
+                continue;
+            }
+            report.entries.push(WorkspaceEntry {
+                relative: PathBuf::from(child.file_name()),
+                path,
+                depth: 0,
+                is_dir: file_type.is_dir(),
+            });
+        }
+        sort_entries(&mut report.entries);
+        report
+    }
+
+    #[must_use]
+    pub fn scan_report(&self) -> WorkspaceScan {
+        let ignored: HashSet<&str> = IGNORED_DIRECTORIES.iter().copied().collect();
+        let mut report = WorkspaceScan::default();
+        for result in WalkBuilder::new(&self.root)
             .hidden(false)
             .git_ignore(false)
             .git_global(false)
@@ -159,42 +226,62 @@ impl Workspace {
                         .is_none_or(|name| !ignored.contains(name))
             })
             .build()
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                entry.depth() > 0 && !entry.file_type().is_some_and(|kind| kind.is_symlink())
-            })
-            .filter_map(|entry| {
-                let file_type = entry.file_type()?;
-                if !file_type.is_dir() && !has_editable_suffix(entry.path()) {
-                    return None;
+        {
+            let entry = match result {
+                Ok(entry) => entry,
+                Err(error) => {
+                    report.warnings.push(error.to_string());
+                    continue;
                 }
-                let relative = entry.path().strip_prefix(&self.root).ok()?.to_path_buf();
-                Some(WorkspaceEntry {
-                    path: entry.into_path(),
-                    depth: relative.components().count().saturating_sub(1),
-                    relative,
-                    is_dir: file_type.is_dir(),
-                })
-            })
-            .collect::<Vec<_>>();
-        entries.sort_by(|left, right| {
-            left.relative
-                .components()
-                .map(|part| part.as_os_str().to_string_lossy().to_lowercase())
-                .cmp(
-                    right
-                        .relative
-                        .components()
-                        .map(|part| part.as_os_str().to_string_lossy().to_lowercase()),
-                )
-        });
-        entries
+            };
+            if entry.depth() == 0 || entry.file_type().is_some_and(|kind| kind.is_symlink()) {
+                continue;
+            }
+            let Some(file_type) = entry.file_type() else {
+                report
+                    .warnings
+                    .push(format!("Cannot inspect {}", entry.path().display()));
+                continue;
+            };
+            if !file_type.is_dir() && !has_editable_suffix(entry.path()) {
+                continue;
+            }
+            let Ok(relative) = entry.path().strip_prefix(&self.root) else {
+                report.warnings.push(format!(
+                    "Ignored path outside workspace: {}",
+                    entry.path().display()
+                ));
+                continue;
+            };
+            report.entries.push(WorkspaceEntry {
+                path: entry.path().to_path_buf(),
+                depth: relative.components().count().saturating_sub(1),
+                relative: relative.to_path_buf(),
+                is_dir: file_type.is_dir(),
+            });
+        }
+        sort_entries(&mut report.entries);
+        report
     }
 
     #[must_use]
     pub fn relative(&self, path: &Path) -> PathBuf {
         path.strip_prefix(&self.root).unwrap_or(path).to_path_buf()
     }
+}
+
+fn sort_entries(entries: &mut [WorkspaceEntry]) {
+    entries.sort_by(|left, right| {
+        left.relative
+            .components()
+            .map(|part| part.as_os_str().to_string_lossy().to_lowercase())
+            .cmp(
+                right
+                    .relative
+                    .components()
+                    .map(|part| part.as_os_str().to_string_lossy().to_lowercase()),
+            )
+    });
 }
 
 fn validate_suffix(path: &Path) -> Result<(), WorkspaceError> {
@@ -250,6 +337,52 @@ mod tests {
         assert!(paths.contains(&PathBuf::from("notes/nested/b.txt")));
         assert!(!paths.contains(&PathBuf::from("notes/image.png")));
         assert!(!paths.iter().any(|path| path.starts_with(".git")));
+    }
+
+    #[test]
+    fn top_level_scan_defers_nested_files_and_reports_unavailable_roots() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("notes")).unwrap();
+        std::fs::write(root.join("notes/nested.md"), "nested").unwrap();
+        std::fs::write(root.join("top.md"), "top").unwrap();
+        let workspace = Workspace::from_target(&root).unwrap();
+
+        let shallow = workspace.scan_top_level();
+        assert!(shallow.warnings.is_empty());
+        assert!(
+            shallow
+                .entries
+                .iter()
+                .any(|entry| entry.relative == Path::new("notes"))
+        );
+        assert!(
+            shallow
+                .entries
+                .iter()
+                .any(|entry| entry.relative == Path::new("top.md"))
+        );
+        assert!(
+            !shallow
+                .entries
+                .iter()
+                .any(|entry| entry.relative == Path::new("notes/nested.md"))
+        );
+        assert!(
+            workspace
+                .scan_report()
+                .entries
+                .iter()
+                .any(|entry| entry.relative == Path::new("notes/nested.md"))
+        );
+
+        std::fs::remove_file(root.join("notes/nested.md")).unwrap();
+        std::fs::remove_dir(root.join("notes")).unwrap();
+        std::fs::remove_file(root.join("top.md")).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+        let unavailable = workspace.scan_top_level();
+        assert!(unavailable.entries.is_empty());
+        assert_eq!(unavailable.warnings.len(), 1);
     }
 
     #[test]

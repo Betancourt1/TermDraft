@@ -203,8 +203,15 @@ fn draw_explorer(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         Style::new().fg(TEXT).bold()
     };
+    let title = if app.workspace_is_indexing() {
+        " Files … ".to_owned()
+    } else if app.workspace_scan_warnings.is_empty() {
+        " Files ".to_owned()
+    } else {
+        format!(" Files ⚠ {} ", app.workspace_scan_warnings.len())
+    };
     let block = Block::new()
-        .title(Line::from(" Files ").style(title_style))
+        .title(Line::from(title).style(title_style))
         .borders(Borders::TOP)
         .border_style(Style::new().fg(BORDER))
         .style(Style::new().bg(SURFACE));
@@ -2512,6 +2519,22 @@ mod tests {
                 .rendered_cursor_position()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn files_title_keeps_indexing_and_scan_warnings_visible() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(rendered(&terminal).contains("Files …"));
+
+        app.workspace_index_state = crate::app::WorkspaceIndexState::Idle;
+        app.workspace_scan_warnings = vec!["Cannot read notes/private".to_owned()];
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(rendered(&terminal).contains("Files ⚠ 1"));
     }
 
     #[test]
