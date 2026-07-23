@@ -9,6 +9,11 @@ supported releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- Improved native cursor contrast in the Paper and Linen light themes while preserving the user's
+  terminal cursor color in dark themes and after exit.
+
 ## [0.5.0] - 2026-07-22
 
 ### Added

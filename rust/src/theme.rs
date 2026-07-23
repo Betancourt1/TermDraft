@@ -32,6 +32,15 @@ impl Theme {
     }
 
     #[must_use]
+    pub(crate) const fn terminal_cursor_color(self) -> Option<(u8, u8, u8)> {
+        match self {
+            Self::Paper => Some((23, 77, 70)),
+            Self::Linen => Some((117, 52, 46)),
+            Self::Midnight | Self::Carbon => None,
+        }
+    }
+
+    #[must_use]
     pub const fn next(self) -> Self {
         match self {
             Self::Paper => Self::Linen,
@@ -224,6 +233,14 @@ mod tests {
             Theme::ALL.iter().filter(|theme| !theme.is_light()).count(),
             2
         );
+    }
+
+    #[test]
+    fn light_themes_provide_dark_terminal_cursor_colors() {
+        assert_eq!(Theme::Paper.terminal_cursor_color(), Some((23, 77, 70)));
+        assert_eq!(Theme::Linen.terminal_cursor_color(), Some((117, 52, 46)));
+        assert_eq!(Theme::Midnight.terminal_cursor_color(), None);
+        assert_eq!(Theme::Carbon.terminal_cursor_color(), None);
     }
 
     #[test]

@@ -5868,9 +5868,10 @@ pub fn run(workspace: Workspace) -> anyhow::Result<()> {
 pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<()> {
     let mut app = App::with_config(workspace, config)?;
     ratatui::run(|terminal| -> anyhow::Result<()> {
-        let mut terminal_extras = TerminalExtrasGuard::enable()?;
+        let mut terminal_extras = TerminalExtrasGuard::enable(app.theme)?;
         let result = (|| {
             let mut rendered_mode = app.mode;
+            let mut rendered_theme = app.theme;
             let mut needs_draw = true;
             let mut next_disk_poll = Instant::now() + Duration::from_secs(2);
             let mut next_recovery_flush = Instant::now() + Duration::from_millis(500);
@@ -5906,6 +5907,10 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
                     execute!(stdout(), shape)?;
                     rendered_mode = app.mode;
                 }
+                if rendered_theme != app.theme {
+                    set_terminal_cursor_color(&mut stdout(), app.theme)?;
+                    rendered_theme = app.theme;
+                }
                 if Instant::now() >= next_disk_poll {
                     needs_draw |= app.poll_external_state();
                     app.persist_session_if_changed();
@@ -5932,14 +5937,16 @@ struct TerminalExtrasGuard {
 }
 
 impl TerminalExtrasGuard {
-    fn enable() -> io::Result<Self> {
+    fn enable(theme: Theme) -> io::Result<Self> {
         execute!(
             stdout(),
             EnableMouseCapture,
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         )?;
         let guard = Self { active: true };
-        if let Err(error) = execute!(stdout(), SetCursorStyle::SteadyBlock) {
+        if let Err(error) = set_terminal_cursor_color(&mut stdout(), theme)
+            .and_then(|()| execute!(stdout(), SetCursorStyle::SteadyBlock))
+        {
             drop(guard);
             return Err(error);
         }
@@ -5954,6 +5961,7 @@ impl TerminalExtrasGuard {
                 PopKeyboardEnhancementFlags,
                 SetCursorStyle::DefaultUserShape
             )?;
+            reset_terminal_cursor_color(&mut stdout())?;
             self.active = false;
         }
         Ok(())
@@ -5969,8 +5977,23 @@ impl Drop for TerminalExtrasGuard {
                 PopKeyboardEnhancementFlags,
                 SetCursorStyle::DefaultUserShape
             );
+            let _ = reset_terminal_cursor_color(&mut stdout());
         }
     }
+}
+
+fn set_terminal_cursor_color(output: &mut impl io::Write, theme: Theme) -> io::Result<()> {
+    if let Some((red, green, blue)) = theme.terminal_cursor_color() {
+        write!(output, "\x1b]12;#{red:02x}{green:02x}{blue:02x}\x1b\\")?;
+        output.flush()
+    } else {
+        reset_terminal_cursor_color(output)
+    }
+}
+
+fn reset_terminal_cursor_color(output: &mut impl io::Write) -> io::Result<()> {
+    output.write_all(b"\x1b]112\x1b\\")?;
+    output.flush()
 }
 
 #[cfg(test)]
@@ -5979,6 +6002,20 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use super::*;
+
+    #[test]
+    fn terminal_cursor_color_follows_light_themes_and_resets_for_dark_themes() {
+        let mut output = Vec::new();
+
+        set_terminal_cursor_color(&mut output, Theme::Paper).unwrap();
+        set_terminal_cursor_color(&mut output, Theme::Linen).unwrap();
+        set_terminal_cursor_color(&mut output, Theme::Midnight).unwrap();
+
+        assert_eq!(
+            output,
+            b"\x1b]12;#174d46\x1b\\\x1b]12;#75342e\x1b\\\x1b]112\x1b\\"
+        );
+    }
 
     fn execute_palette_action(app: &mut App, action: CommandAction) {
         let selected = command_candidates("")
