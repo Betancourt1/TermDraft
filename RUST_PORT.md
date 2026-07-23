@@ -46,7 +46,7 @@ This inventory was recounted from the Python source and the current Rust impleme
   **21 overlay types are currently user-reachable**;
 - shared dialog types serve several workflows, so the operation-by-operation popup matrix below is
   the authoritative interface comparison;
-- the Rust suite passes **195 library tests plus 4 binary tests**; the Python suite passes
+- the Rust suite passes **206 library tests plus 4 binary tests**; the Python suite passes
   **681 tests with 2 platform skips**.
 
 Neither frontend has a native menu bar. In both, the searchable command palette is the application
@@ -63,7 +63,7 @@ menu; the focused Files key layer is a second contextual menu.
 | Command palette | Python's 32 actions plus the native Change theme action, preserving six groups and effective shortcuts |
 | Configurable commands | The 52 compatible binding IDs plus `command_change_theme`; generated template entries, strict parsing, collision checks, effective overrides, and `R` reload |
 | File finding | Fuzzy relative-path search, shared include/exclude filters, normalized matching, bounded ranking |
-| Workspace text search | Literal, fuzzy, whole-word, and regex modes; case toggle; path filter; dirty/open overrides; warnings; deterministic 100-result bound; cancellable revisioned background search |
+| Workspace text search | Fresh workspace discovery; literal, fuzzy, whole-word, and regex modes; case toggle; path filter; dirty/open overrides; warnings; deterministic 100-result bound; cancellable revisioned background search |
 | Active-document search | Case-aware find, previous/next, single replace, Replace All, read-only search, and one-step undo for Replace All |
 | Preview interaction | Rendered alerts; selectable links; internal footnote and backlink navigation; pointer activation; external destinations remain inert |
 | Document outline | Unicode-aware filtering plus explicit source jump and preview reveal |
@@ -77,9 +77,12 @@ menu; the focused Files key layer is a second contextual menu.
 | Markdown continuation | Common bullets, ordered markers, tasks, quotes, empty-marker termination, and ordinary Enter fallback |
 | Recovery storage | Python-compatible v2 journals, exact fingerprints, advisory Unix cross-process mutation locks, inventory, retarget, quarantine, restore, export, permanent deletion, and configured retention cleanup |
 | Recovery Manager for readable sources | `M`/palette access, active/quarantined/corrupt inventory, protected dirty drafts, target input, guarded actions, destructive confirmations, and per-record cleanup errors |
+| Missing/orphan recovery opening | Manager Open installs the preserved source as a protected conflict; only Save As can publish it, and the unavailable original path cannot be recreated |
+| Session continuity | Content-free v3 state, active-document-first incremental tab restoration, cursor positions, editor and preview scroll offsets, bounded MRU, and cross-field validation |
+| Inactive-tab monitoring | Rotating external-state probes detect changed, deleted, and unavailable inactive documents without activating them |
 | Diagnostic references | Markdown syntax, semantic source-block inspector, experimental block reader, and cursor-coordinate inspector |
 | Pointer input | Clickable tabs and preview links; Files and overlay selection/activation; field/control focus; wheel scrolling; editor selection; draggable dividers; guarded action prompts |
-| Normal terminal lifecycle | Alternate screen, raw mode, mouse reporting, and cursor shape restore after normal exit, error unwinding, or Rust panic |
+| Cooperative terminal lifecycle | Alternate screen, raw mode, mouse reporting, and cursor state restore after normal exit, error unwinding, Rust panic, `SIGTERM`, or `SIGHUP`; cooperative signals first drain recovery and session state |
 
 ## Intentionally or differently implemented
 
@@ -90,17 +93,17 @@ menu; the focused Files key layer is a second contextual menu.
 | Palette layout | Responsive grouped two-column cheatsheet that stacks when narrow; descriptions below | Searchable grouped two-column grid with descriptions and a compact narrow fallback | Actions, order, shortcuts, and explanatory copy match |
 | Shortcut help | Generated TermDraft-action reference | Scrollable 28-row action summary | Rust `--commands` is the fuller TermDraft-action reference; `?` is intentionally more compact |
 | Preview engine | `markdown-it-py`/Textual with tables, tasks, alerts, footnotes, definitions, link selection, and internal footnote navigation | Active-line source plus rendered inactive lines by default; semantic `pulldown-cmark` split preview with the same common families, selectable links, alerts, and internal footnote/backlink navigation | Source remains authoritative in both; Rust deliberately leaves external destinations inert rather than launching another process |
-| Explorer model | Lazy, collapsible Textual `DirectoryTree` plus asynchronous indexing | Always-expanded sorted snapshot from `ignore::WalkBuilder` | Rust is simpler and predictable; large trees can occupy more space and delay first frame |
+| Explorer model | Lazy, collapsible Textual `DirectoryTree` plus asynchronous indexing | Shallow first-frame snapshot followed by an always-expanded recursive background index from `ignore::WalkBuilder` | Rust starts promptly and keeps scan warnings visible, but a large expanded tree can occupy more space |
 | Search regex engine | Python `regex`, full case folding, and a per-line timeout | Rust `regex`, a linear-time syntax subset, and the same 500-character input limit | Common regexes work; look-around/backreferences accepted by Python are not Rust syntax |
-| Workspace-search discovery | Fresh cancellable workspace scan for each submission, including scan warnings | Searches the indexed snapshot captured before the popup opened; source reads are cancellable and warn individually | New filesystem entries can be absent in Rust until the popup closes and the next poll refreshes Files |
+| Workspace-search discovery | Fresh cancellable workspace scan for each submission, including scan warnings | Fresh cancellable workspace scan for each submission, including scan and source-read warnings | Newly created files are discoverable immediately in both |
 | Markdown continuation details | Preserves marker spacing, validates nested indentation with CommonMark, and intercepts only unmodified Enter | Normalizes supported marker spacing and conservatively rejects tab/four-space-leading lines; only unmodified Enter is intercepted | Common continuations match; unusual spacing and nested indentation can differ |
-| I/O scheduling | Most scans, reads, probes, saves, mutations, sessions, recovery, and semantic work run in Textual workers | Workspace text search has a background thread; most other I/O runs in the event loop | Rust has less coordination code, but a slow filesystem operation can pause drawing |
+| I/O scheduling | Most scans, reads, probes, saves, mutations, sessions, recovery, and semantic work run in Textual workers | Recursive workspace indexing and text search use cancellable revisioned threads; most other I/O runs in the event loop | Rust avoids blocking startup on a recursive scan, but another slow filesystem operation can still pause drawing |
 | Preview updates | Revisioned/debounced render pipeline | Re-parses the complete split preview synchronously on each draw | Rust stays simple, but large documents can add per-frame work |
-| Session restoration | Deferred inactive tabs plus cursor and scroll restoration | Eager tab loading, cursor restoration, and zeroed scroll fields in the compatible v2 file | Tab/order/MRU parity; viewport restoration differs |
-| Session validation | Rejects duplicate paths and inconsistent active/open/view relationships | Validates each relative path and bounds but accepts some cross-field inconsistencies | Malformed hand-edited Rust state can be tolerated where Python rejects it |
-| External monitoring | Active tab plus rotating inactive-tab probes and focus checks | Active document plus a two-second workspace rescan | An inactive Rust tab is checked after activation, not proactively |
+| Session restoration | Deferred inactive tabs plus cursor and scroll restoration | Active document first, then one restored tab per event-loop turn, with cursor and editor/preview scroll restoration | Content-free open order, MRU, and viewport continuity match |
+| Session validation | Rejects duplicate paths and inconsistent active/open/view relationships | Same duplicate and active/open/view relationship checks, plus finite non-negative scroll validation | Malformed cross-field state is rejected in both |
+| External monitoring | Active tab plus rotating inactive-tab probes and focus checks | Active tab plus one rotating inactive-tab probe and a background workspace rescan every two seconds | Both detect inactive-file changes without changing the active tab; focus timing differs |
 | Save hardening | Parent-descriptor-bound publication, stable-read retry, post-publication digest verification, detailed directory-sync uncertainty | Same-directory atomic save with two destination snapshot checks and directory sync, but path-based publication | Both reject observed conflicts; Python remains stronger against parent-directory replacement races |
-| Recovery startup | Decisions occur before a document is installed; directory launches also offer missing/orphan drafts | Existing readable documents open before Restore/Use disk/Later; missing/orphan records stay visible in Manager | Normal crash recovery works; startup and unavailable-source flows differ |
+| Recovery startup | Decisions occur before a document is installed; directory launches also offer missing/orphan drafts | Existing readable documents open before Restore/Use disk/Later; missing/orphan records open safely from Manager | Normal and unavailable-source recovery work; automatic startup timing still differs |
 | Feedback | Persistent status plus Textual notifications/toasts | Persistent status messages | Rust is quieter and keeps transient feedback in one line |
 | Mouse | Textual tabs, tree, editor, preview links, inputs, rows, and buttons participate | Tabs, preview links, Files, editor selection, overlay rows/controls/actions, wheel scrolling, and divider dragging participate | Rust uses explicit double-click activation for overlay rows and limits destructive clicks to visible action labels |
 | Inline presentation | Transforms headings, quotes, lists/tasks, rules, fences, images/links, and GFM table borders | Keeps the active line exact and transforms the same common block and inline syntax elsewhere | Editing bytes remain exact while both interfaces provide a rendered writing surface |
@@ -111,24 +114,19 @@ menu; the focused Files key layer is a second contextual menu.
 
 These are current gaps, not items that were merely absent in the early port:
 
-1. **Collapsible/lazy Files and proactive inactive-tab monitoring.** Rust uses an always-expanded
-   synchronous snapshot, silently drops individual walk errors, and checks only the active document.
-2. **Missing/orphan recovery opening.** Manager inventories and can retarget/archive unavailable
-   records, but Rust cannot install their source safely without a trustworthy `FileSnapshot`.
-   Python can restore them into an unavailable-path conflict and then Save As.
-3. **Python-equivalent startup recovery cancellation.** Rust `Esc` means Later after the readable
+1. **Collapsible Files.** Rust shows a shallow snapshot immediately and builds its recursive index
+   in the background, but the completed tree remains always expanded rather than lazily collapsible.
+2. **Python-equivalent startup recovery cancellation.** Rust `Esc` means Later after the readable
    disk document is already open; Python can Cancel opening before installing it.
-4. **Session scroll offsets, lazy tab materialization, and full cross-field validation.** Rust stores
-   compatible zero scroll fields, loads restored tabs immediately, and does not reject every
-   duplicate/inconsistent relationship that Python rejects.
-5. **`theme.tcss`.** Rust creates the compatibility template but never parses or watches Textual
+3. **`theme.tcss`.** Rust creates the compatibility template but never parses or watches Textual
    CSS. It provides six built-in runtime themes instead; `--safe-mode` has no additional effect.
-6. **Full background-I/O and cooperative signal shutdown.** Rust lacks Python's critical-operation
-   worker/ticket pipeline and its SIGTERM/SIGHUP recovery-and-session drain.
-7. **The deepest Python persistence guarantees.** Rust does not bind publication to an open parent
+4. **Full background I/O.** Recursive workspace scans and text search are threaded, but file
+   reads/saves, mutations, session/recovery publication, and diagnostics still run in the event
+   loop.
+5. **The deepest Python persistence guarantees.** Rust does not bind publication to an open parent
     descriptor, retry a moving read, or verify the final published digest with Python's uncertainty
     reporting.
-8. **Windows state-path and lock compatibility.** Rust does not yet use Python's LocalAppData state
+6. **Windows state-path and lock compatibility.** Rust does not yet use Python's LocalAppData state
     root or its Windows recovery locking implementation.
 
 ## Main interface comparison
@@ -137,7 +135,7 @@ These are current gaps, not items that were merely absent in the early port:
 | --- | --- | --- | --- |
 | Title | App/workspace title | Same title | Parity |
 | Tabs | Clickable Textual tabs with modified/conflict state | Clickable tabs with `●` modified and `!` conflict indicators | Parity |
-| Files | Collapsible tree, icons, click and keyboard | Always-expanded snapshot, matching Nerd Font icons, click/double-click, keyboard, and keyboard/mouse resizing | Different tree model |
+| Files | Collapsible tree, icons, click and keyboard | Shallow first frame, background recursive index, visible scan warnings, matching Nerd Font icons, click/double-click, keyboard, and keyboard/mouse resizing | Responsive indexing; different expanded tree model |
 | Workbench | Inline editor or resizable split source/preview | Active-line source plus rendered inactive lines, or resizable split source/semantic preview | Presentation and layout parity for common Markdown |
 | `v` in Inline/narrow | Switch editor and preview | Switch editor and preview | Parity |
 | `v` in wide Split | Show/hide preview | Show/hide preview | Parity |
@@ -177,7 +175,7 @@ and fuzzy-filters its complete 33-action set.
 | Shortcut help | Full TermDraft-action binding reference | Scrollable 28-row action summary | Rust is intentionally shorter; every row remains reachable at 80x24 and `--commands` is fuller |
 | Markdown syntax help | `HelpDialog` with supported syntax and examples | Dedicated scrollable Markdown Help overlay | Parity, with Rust limitations stated truthfully |
 | Find file | Query, include/exclude filter, ranked results | Same fields, filter contract, ranking, and open action | Parity |
-| Workspace search | Query, literal/fuzzy/word/regex, case, filter, fresh-scan warnings/results | Same controls and cancellable source search over the pre-popup index snapshot | Control/result parity; discovery and scan-warning timing differ |
+| Workspace search | Query, literal/fuzzy/word/regex, case, filter, fresh-scan warnings/results | Same controls, fresh scan, warnings, and cancellable source search | Parity |
 | Recent documents | MRU list and open | MRU list and open | Parity |
 | Find and replace | Query, replacement, case, previous/next, replace/all | Same, including F3/Shift+F3 and one-step Replace All undo | Parity |
 | Document outline | Filter, source jump, preview reveal | Same filter and destination controls | Parity |
@@ -193,8 +191,8 @@ and fuzzy-filters its complete 33-action set.
 | External conflict | Save local as; Reload when possible; Continue without copy when safe; Cancel | `s`, conditional `r`, conditional `n`, Esc | Parity |
 | Mixed line endings | Edit and normalize; Cancel opening/Keep read-only | Enter/`e`; Esc with the same contextual meanings | Parity; untouched accepted bytes remain exact |
 | Startup crash recovery | Restore; Use disk; Cancel opening | `r` Restore; `d` Use disk; Esc Later | Partial: Rust has already opened the readable disk tab |
-| Recovery Manager | Records, details, target, Open/Retarget/Archive/Restore/Export/Delete/retention | Same operations via keyboard or pointer focus/actions | Readable-source parity |
-| Missing/orphan recovery | Automatic offer and Manager Open into unavailable-path conflict | Visible in Manager; Retarget or Archive only | Missing in Rust |
+| Recovery Manager | Records, details, target, Open/Retarget/Archive/Restore/Export/Delete/retention | Same operations via keyboard or pointer focus/actions | Parity |
+| Missing/orphan recovery | Automatic offer and Manager Open into unavailable-path conflict | Manager Open installs the draft in a protected conflict that requires Save As | Direct-open parity; automatic startup offer still differs |
 | Permanent recovery deletion | Separate cancel-default confirmation | Separate confirmation; only `d` deletes, Enter/Esc cancel | Parity |
 | Retention cleanup | Exact listed inventory, configured age, cancel-default confirmation | Exact listed inventory, configured age, only `d` deletes, per-record errors | Parity |
 | Semantic inspector | Read-only segments and source jump | Read-only segments and source jump | Parity |
@@ -397,7 +395,7 @@ feature.
 
 ## Verification
 
-Current code state: the primary Rust implementation on `main`.
+Current code state: the primary Rust implementation targeted for 0.6.0.
 
 ```bash
 cargo fmt --all -- --check
@@ -409,7 +407,7 @@ cargo test --locked --release
 
 Results at this checkpoint:
 
-- 195 Rust library tests and 4 Rust binary tests pass;
+- 206 Rust library tests and 4 Rust binary tests pass;
 - strict Clippy and rustfmt pass;
 - the Python suite passes 681 tests with 2 expected platform skips;
 - source-format and documentation diff checks pass.

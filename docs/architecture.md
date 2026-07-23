@@ -13,15 +13,18 @@ overwrites fail closed.
 CLI target
    │
    ▼
-Workspace validation ──► synchronous recursive index ──► Files / file finder
+Workspace validation ──► shallow index ────────────────► first Files frame
+   │
+   └────────────────────► background recursive index ──► Files / file finder
    │
    ▼
 App state ─────────────────────────────────────────────► Ratatui render
    │                                                        ▲
    ├── keyboard / paste / mouse event ──────────────────────┤
-   ├── background workspace-text search ────────────────────┤
-   ├── 2 s active-file and workspace poll ──────────────────┤
+   ├── background fresh-scan workspace-text search ─────────┤
+   ├── 2 s active/inactive-file and workspace poll ─────────┤
    ├── 500 ms recovery flush ────────────────────────────────┤
+   ├── SIGTERM / SIGHUP state drain ─────────────────────────┤
    └── content-free session publication ────────────────────┘
 ```
 
@@ -29,11 +32,11 @@ App state ───────────────────────�
 non-interactive command or starts the full-screen application. `rust/src/app.rs` owns the event loop,
 tabs, transitions, overlays, search completion channel, session state, and recovery coordination.
 
-There is no async runtime or general worker pool. Workspace text search runs on a cancellable
-revisioned thread; initial indexing, file reads/saves, mutations, session I/O, recovery operations,
-and diagnostics otherwise run synchronously. This keeps ordering explicit, but a large initial scan
-or slow filesystem operation can delay a frame. Python prioritizes the first document and performs
-most of that work through Textual workers.
+There is no async runtime or general worker pool. Recursive workspace indexing and text search run
+on cancellable revisioned threads; file reads/saves, mutations, session I/O, recovery operations,
+and diagnostics otherwise run synchronously. Startup only scans the workspace root before the first
+frame. This keeps ordering explicit and avoids blocking launch on a recursive walk, although another
+slow filesystem operation can still delay a frame. Python performs most I/O through Textual workers.
 
 ## Module map
 
@@ -53,7 +56,7 @@ most of that work through Textual workers.
 | `path_filter.rs` | shared include/exclude path-filter contract |
 | `search.rs` | file ranking, four-mode text search, document replace, and heading outline |
 | `continuation.rs` | Markdown list, task, ordered-list, and quote continuation |
-| `session.rs` | private content-free Python-compatible v2 tab/cursor/MRU state |
+| `session.rs` | private content-free Python-compatible v3 tab/cursor/scroll/MRU state |
 | `recovery.rs` | private Python-compatible v2 journals, locks, inventory, quarantine, retention, mutations |
 | `markdown_help.rs` | Rust-supported syntax and limitation reference |
 | `semantic_blocks.rs` | lossless read-only block ranges and reader presentation policy |
@@ -69,10 +72,11 @@ its parent the workspace and opens that file immediately. Editable suffixes are 
 and `.txt`, case-insensitively.
 
 The scanner uses `ignore::WalkBuilder`, does not follow symlinks, disables repository `.gitignore`
-rules, and excludes `.git`, `.venv`, `node_modules`, and `__pycache__`. It returns one sorted,
-always-expanded snapshot containing directories and supported files. A two-second rescan updates
-Files while trying to preserve the selected path. Individual walk errors are skipped rather than
-shown as Python-style scan warnings.
+rules, and excludes `.git`, `.venv`, `node_modules`, and `__pycache__`. Startup returns a shallow
+sorted root snapshot, then a revisioned background scan installs the full always-expanded directory
+and supported-file index while preserving selection. `Files …` stays visible while indexing;
+`Files ⚠ N` and a status detail preserve individual walk warnings. The two-second poll requests a
+new background scan rather than walking the tree in the event loop.
 
 The Files surface supports explicit file/folder creation, copy, cut, paste, rename, move, and
 operating-system Trash. Mutations reject workspace escapes, selected or nested symlinks, ignored
@@ -146,13 +150,13 @@ Search surfaces share validated paths and source coordinates but remain separate
 - outline uses parsed CommonMark headings, including Setext headings, and jumps to the selected
   source line.
 
-Workspace search is the one background operation. It searches the existing Files snapshot captured
-when the request is submitted rather than performing Python's fresh workspace scan. Every submission
-increments an atomic revision; the worker checks cancellation between source units, and only the
-current overlay/query accepts the completion. Clean open overrides prefer disk, dirty/conflicted
-overrides prefer current source, and individual read/decode failures become warnings. Rust's `regex`
-crate provides linear-time matching and deliberately omits look-around/backreferences; both
-frontends cap patterns at 500 characters.
+Each workspace-search submission performs a fresh recursive scan inside its background worker, so
+new filesystem entries do not depend on the current Files snapshot. Every submission increments an
+atomic revision; the worker checks cancellation between discovery and source units, and only the
+current overlay/query accepts the completion. Discovery plus individual read/decode failures become
+visible warnings. Clean open overrides prefer disk, while dirty/conflicted overrides prefer current
+source. Rust's `regex` crate provides linear-time matching and deliberately omits
+look-around/backreferences; both frontends cap patterns at 500 characters.
 
 Replace All builds one final source edit so undo restores the whole operation in one step. The
 outline filters parsed headings with Unicode-aware matching and can reveal a selection in source or
@@ -178,31 +182,36 @@ with Python's directory-sync uncertainty reporting. Python therefore remains str
 concurrent parent-directory replacement race, although both reject every external change they
 observe before publication.
 
-Every two seconds Rust checks the active document and rescans the workspace:
+Every two seconds Rust checks the active document, checks one rotating inactive tab, and requests a
+background workspace scan:
 
 - a clean changed active document reloads, including a mixed-ending consent step when required;
 - a dirty changed document becomes a persistent conflict without replacing local source;
 - deletion or unreadability becomes a conflict instead of recreating or guessing a rename;
 - reverting local source to its baseline clears an ordinary conflict when disk matches again.
 
+Inactive probes never activate the document. Clean external edits refresh that tab in place; dirty
+changes, deletion, and unreadability install the same persistent conflict state used for the active
+document.
+
 Conflict overlays expose only valid decisions: Save local as is always available; Reload external
 appears only for readable changed source; Continue without copy appears only for a clean
 missing/unavailable close/quit transition; Escape cancels. Quit traverses dirty documents one at a
 time, keeps the original MRU order, and checks every tab's disk state before completing.
 
-Rust does not rotate inactive tabs through background probes. A previously inactive file is checked
-after activation on the next poll.
-
 ## Sessions and recovery
 
-Sessions and recovery use version-2 JSON shapes compatible with Python.
+Sessions use the content-free version-3 JSON shape shared with Python; recovery remains on the
+compatible version-2 journal shape.
 
 Sessions contain workspace-relative open paths, active path, cursor positions, and bounded MRU
-views; they never contain source, baselines, or undo history. Rust eagerly loads restored tabs and
-restores cursors. It reads/writes compatible scroll fields as zero, so viewport restoration remains
-a Python-only behavior. Rust validates individual relative paths and size/count bounds, but lacks
-Python's duplicate-path and active/open/view cross-field checks. Corrupt session state is ignored
-with a visible warning and can be replaced by the next valid publication.
+views; they never contain source, baselines, or undo history. Rust opens the active restored document
+first, then materializes at most one remaining tab per event-loop turn. Cursor position plus editor
+and preview horizontal/vertical scroll offsets are restored when each view is laid out. Duplicate
+paths, inconsistent active/open/view relationships, invalid relative paths, non-finite scrolls, and
+size/count violations are rejected. Version-1 and version-2 files remain readable with missing
+fields defaulted safely. Corrupt session state is ignored with a visible warning and can be replaced
+by the next valid publication.
 
 Dirty documents are journaled on a nominal 500 ms event-loop interval. Journals contain exact
 source, encoding, workspace/path, saved baseline, and timestamp. Private atomic publication and
@@ -220,11 +229,12 @@ protects dirty open journals and case/Unicode spelling aliases, and supports:
 - configured age-based cleanup of the exact confirmed valid quarantine inventory;
 - per-record cleanup failures rather than a false all-success result.
 
-Missing/orphan records remain visible and can be retargeted or archived, but Rust cannot open their
-source into an unavailable-path conflict because it cannot construct a trustworthy `FileSnapshot`.
-Python offers those records automatically during a directory launch and can restore them for Save
-As. Rust also installs a readable disk tab before showing crash recovery, so Escape means Later
-rather than Python's pre-install Cancel opening.
+Missing/orphan records can also be opened from Manager. Rust installs their preserved source with
+the journal's original baseline in a protected missing/unavailable conflict: ordinary Save cannot
+recreate the original path, while Save As publishes to a validated no-clobber workspace path and
+retires the recovery journal. Python additionally offers those records automatically during a
+directory launch. Rust still installs a readable disk tab before showing ordinary crash recovery,
+so Escape means Later rather than Python's pre-install Cancel opening.
 
 ## Configuration and command discovery
 
@@ -255,9 +265,10 @@ The runtime enters raw mode and the alternate screen, enables mouse capture, and
 shape with the interaction mode. Ratatui and `TerminalExtrasGuard` restore alternate screen, raw
 mode, mouse reporting, and cursor shape on normal return, partial startup failure, and Rust panic.
 
-Unlike Python's CLI, Rust does not install cooperative SIGTERM/SIGHUP handlers that drain dirty
-recovery and session queues before exiting. Forced process termination can therefore leave terminal
-state and the newest sub-500 ms edit outside the normal cleanup path.
+On Unix, `SIGTERM` and `SIGHUP` set a cooperative shutdown flag. The event loop then publishes the
+latest dirty recovery source and content-free session before Ratatui and `TerminalExtrasGuard`
+restore mouse reporting, alternate-screen state, cursor shape/color, and cursor visibility. `SIGKILL`
+and machine-level termination remain outside any process's cooperative cleanup boundary.
 
 ## Verification boundary
 
@@ -273,6 +284,6 @@ cargo test --locked --all-targets
 cargo test --locked --release
 ```
 
-At this checkpoint, 195 Rust library tests and 4 Rust binary tests pass. The Python reference suite
+At this checkpoint, 206 Rust library tests and 4 Rust binary tests pass. The Python reference suite
 passes 681 tests with 2 expected platform skips. The exhaustive interface and gap inventory, plus
 the explicitly historical benchmark, live in [RUST_PORT.md](../RUST_PORT.md).
