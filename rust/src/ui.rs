@@ -16,7 +16,7 @@ use crate::app::{
 };
 use crate::coordinate_diagnostic::CoordinateDiagnostic;
 use crate::document::LineEnding;
-use crate::editor::style_cursor;
+use crate::editor::{editor_scroll_offset, restore_editor_scroll, style_cursor};
 #[cfg(test)]
 use crate::markdown::render_markdown;
 use crate::markdown::render_markdown_document;
@@ -203,8 +203,15 @@ fn draw_explorer(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         Style::new().fg(TEXT).bold()
     };
+    let title = if app.workspace_is_indexing() {
+        " Files … ".to_owned()
+    } else if app.workspace_scan_warnings.is_empty() {
+        " Files ".to_owned()
+    } else {
+        format!(" Files ⚠ {} ", app.workspace_scan_warnings.len())
+    };
     let block = Block::new()
-        .title(Line::from(" Files ").style(title_style))
+        .title(Line::from(title).style(title_style))
         .borders(Borders::TOP)
         .border_style(Style::new().fg(BORDER))
         .style(Style::new().bg(SURFACE));
@@ -296,7 +303,14 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
         tab.editor
             .set_cursor_line_style(Style::new().bg(Color::Rgb(10, 10, 10)));
     }
+    let scroll_restore = tab
+        .pending_scroll_restore
+        .then_some((tab.editor_scroll_x, tab.editor_scroll_y));
     frame.render_widget(&tab.editor, area);
+    if let Some((scroll_x, scroll_y)) = scroll_restore {
+        restore_editor_scroll(&mut tab.editor, area, scroll_x, scroll_y);
+        frame.render_widget(&tab.editor, area);
+    }
     let cursor_position = if inline {
         tab.refresh_inline_editor();
         style_cursor(&mut tab.inline_editor, mode);
@@ -307,10 +321,17 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
         }
         frame.render_widget(Clear, area);
         frame.render_widget(&tab.inline_editor, area);
+        if let Some((scroll_x, scroll_y)) = scroll_restore {
+            restore_editor_scroll(&mut tab.inline_editor, area, scroll_x, scroll_y);
+            frame.render_widget(&tab.inline_editor, area);
+        }
+        (tab.editor_scroll_x, tab.editor_scroll_y) = editor_scroll_offset(&tab.inline_editor, area);
         tab.inline_editor.rendered_cursor_position()
     } else {
+        (tab.editor_scroll_x, tab.editor_scroll_y) = editor_scroll_offset(&tab.editor, area);
         tab.editor.rendered_cursor_position()
     };
+    tab.pending_scroll_restore = false;
     if show_cursor
         && mode == Mode::Write
         && let Some(position) = cursor_position
@@ -1044,7 +1065,7 @@ fn draw_recovery_manager(
             record.entry.is_some() && !restore_protected
         } else {
             record.entry.is_some()
-                && record.status == RecoveryRecordStatus::Valid
+                && record.status != RecoveryRecordStatus::Corrupt
                 && !active_protected
         }
     });
@@ -1217,7 +1238,7 @@ fn recovery_record_detail(
         RecoveryRecordStatus::Missing | RecoveryRecordStatus::Orphan
     ) {
         return format!(
-            "Source is {}. Rust cannot safely open this recovery without a FileSnapshot yet; Retarget or Archive it.",
+            "Source is {}. Open draft installs it as a protected conflict that must be saved to a new path.",
             if record.status == RecoveryRecordStatus::Missing {
                 "missing"
             } else {
@@ -2501,6 +2522,22 @@ mod tests {
     }
 
     #[test]
+    fn files_title_keeps_indexing_and_scan_warnings_visible() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(rendered(&terminal).contains("Files …"));
+
+        app.workspace_index_state = crate::app::WorkspaceIndexState::Idle;
+        app.workspace_scan_warnings = vec!["Cannot read notes/private".to_owned()];
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(rendered(&terminal).contains("Files ⚠ 1"));
+    }
+
+    #[test]
     fn command_cursor_styles_its_character_and_write_keeps_the_native_cursor() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("note.md");
@@ -3021,7 +3058,7 @@ mod tests {
         let screen = rendered(&terminal);
         assert!(screen.contains("Manage recovery drafts"));
         assert!(screen.contains("MISSING"));
-        assert!(screen.contains("FileSnapshot"));
+        assert!(screen.contains("protected conflict"));
         assert!(screen.contains("Retarget"));
         assert!(screen.contains("Archive"));
         assert!(screen.contains("Delete >30d (1)"));

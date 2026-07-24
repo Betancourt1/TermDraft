@@ -1,6 +1,6 @@
 //! Ratatui event/update coordinator.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, stdout};
@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -23,6 +23,8 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
 use ratatui::widgets::ListState;
+#[cfg(unix)]
+use signal_hook::consts::{SIGHUP, SIGTERM};
 use tui_textarea::{CursorMove, TextArea};
 use unicode_width::UnicodeWidthStr;
 
@@ -43,7 +45,9 @@ use crate::path_filter::parse_path_filter;
 use crate::persistence::{LoadedFile, SaveError, load_file, normalize_line_endings, save_atomic};
 use time::{Duration as TimeDuration, OffsetDateTime};
 
-use crate::recovery::{RecoveryEntry, RecoveryJournal, RecoveryRecord, RecoveryRecordStatus};
+#[cfg(test)]
+use crate::recovery::RecoveryRecordStatus;
+use crate::recovery::{RecoveryEntry, RecoveryJournal, RecoveryRecord};
 use crate::search::{
     DEFAULT_FILE_RESULT_LIMIT, DocumentSearchMatch, MatchDirection, TextMatch, TextSearchMode,
     TextSearchOptions, TextSearchOverride, TextSearchRequest, cycle_document_match_index,
@@ -56,7 +60,7 @@ use crate::session::{DocumentViewState, MAX_SESSION_DOCUMENTS, SessionState, Ses
 use crate::theme::Theme;
 use crate::ui;
 use crate::workspace::{
-    Workspace, WorkspaceEntry, has_editable_suffix, paths_are_spelling_aliases,
+    Workspace, WorkspaceEntry, WorkspaceScan, has_editable_suffix, paths_are_spelling_aliases,
 };
 use crate::workspace_entries::{
     copy_entry, create_file, create_folder, move_entry, move_to_trash, rename_entry,
@@ -348,6 +352,19 @@ struct WorkspaceSearchCompletion {
     revision: u64,
     query: String,
     result: crate::search::TextSearchResult,
+}
+
+#[derive(Debug)]
+struct WorkspaceScanCompletion {
+    revision: u64,
+    report: WorkspaceScan,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum WorkspaceIndexState {
+    #[default]
+    Idle,
+    Indexing,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -717,6 +734,11 @@ pub struct EditorTab {
     pub document: Document,
     pub editor: TextArea<'static>,
     pub inline_editor: TextArea<'static>,
+    pub(crate) editor_scroll_x: u16,
+    pub(crate) editor_scroll_y: u16,
+    pub(crate) preview_scroll_x: u16,
+    pub(crate) preview_scroll_y: u16,
+    pub(crate) pending_scroll_restore: bool,
     inline_source_lines: Vec<String>,
     inline_cursor: (usize, usize),
     pending_mixed_open: bool,
@@ -740,6 +762,52 @@ impl EditorTab {
             inline_cursor: editor.cursor(),
             editor,
             inline_editor,
+            editor_scroll_x: 0,
+            editor_scroll_y: 0,
+            preview_scroll_x: 0,
+            preview_scroll_y: 0,
+            pending_scroll_restore: false,
+            pending_mixed_open: false,
+            undo_groups: Vec::new(),
+            redo_groups: Vec::new(),
+        }
+    }
+
+    fn from_unavailable_recovery(entry: &RecoveryEntry, config: &EditorConfig) -> Self {
+        let line_ending = LineEnding::detect(&entry.text);
+        let normalized = normalize_line_endings(&entry.text);
+        let mixed_target = LineEnding::mixed_target(&entry.text);
+        let mixed_source = mixed_target
+            .map(|target| MixedSource::new(entry.text.clone(), normalized.clone(), target));
+        let source = if mixed_source.is_some() {
+            entry.text.clone()
+        } else {
+            normalized.clone()
+        };
+        let mut editor = textarea_from_source(&normalized);
+        apply_editor_config(&mut editor, config);
+        let inline_editor = inline_preview_editor(&editor);
+        Self {
+            document: Document {
+                path: entry.document_path.clone(),
+                text: source.clone(),
+                saved_text: source,
+                encoding: entry.encoding,
+                line_ending,
+                mixed_source,
+                snapshot: entry.baseline_snapshot(),
+                conflict: true,
+                recovery_conflict: true,
+            },
+            inline_source_lines: editor.lines().to_vec(),
+            inline_cursor: editor.cursor(),
+            editor,
+            inline_editor,
+            editor_scroll_x: 0,
+            editor_scroll_y: 0,
+            preview_scroll_x: 0,
+            preview_scroll_y: 0,
+            pending_scroll_restore: false,
             pending_mixed_open: false,
             undo_groups: Vec::new(),
             redo_groups: Vec::new(),
@@ -959,6 +1027,14 @@ pub struct App {
     published_recovery: HashMap<PathBuf, (String, String)>,
     recent_paths: Vec<PathBuf>,
     session_views: HashMap<PathBuf, DocumentViewState>,
+    pending_session_tabs: VecDeque<PathBuf>,
+    restored_open_order: Vec<PathBuf>,
+    inactive_probe_cursor: usize,
+    workspace_scan_revision: Arc<AtomicU64>,
+    workspace_scan_tx: Sender<WorkspaceScanCompletion>,
+    workspace_scan_rx: Receiver<WorkspaceScanCompletion>,
+    pub(crate) workspace_index_state: WorkspaceIndexState,
+    pub workspace_scan_warnings: Vec<String>,
     workspace_search_revision: Arc<AtomicU64>,
     workspace_search_tx: Sender<WorkspaceSearchCompletion>,
     workspace_search_rx: Receiver<WorkspaceSearchCompletion>,
@@ -993,7 +1069,8 @@ impl App {
         session_store: Option<SessionStore>,
         recovery_journal: Option<RecoveryJournal>,
     ) -> anyhow::Result<Self> {
-        let entries = workspace.scan();
+        let shallow_scan = workspace.scan_top_level();
+        let entries = shallow_scan.entries;
         let selected = workspace.initial_file.as_ref().and_then(|initial| {
             entries
                 .iter()
@@ -1010,6 +1087,7 @@ impl App {
             StartupView::Inline => ViewMode::Inline,
             StartupView::Split => ViewMode::Split,
         };
+        let (workspace_scan_tx, workspace_scan_rx) = mpsc::channel();
         let (workspace_search_tx, workspace_search_rx) = mpsc::channel();
         let mut app = Self {
             workspace,
@@ -1048,6 +1126,14 @@ impl App {
             published_recovery: HashMap::new(),
             recent_paths: Vec::new(),
             session_views: HashMap::new(),
+            pending_session_tabs: VecDeque::new(),
+            restored_open_order: Vec::new(),
+            inactive_probe_cursor: 0,
+            workspace_scan_revision: Arc::new(AtomicU64::new(0)),
+            workspace_scan_tx,
+            workspace_scan_rx,
+            workspace_index_state: WorkspaceIndexState::Idle,
+            workspace_scan_warnings: shallow_scan.warnings,
             workspace_search_revision: Arc::new(AtomicU64::new(0)),
             workspace_search_tx,
             workspace_search_rx,
@@ -1067,6 +1153,7 @@ impl App {
         if startup_mode == StartupMode::Write {
             app.set_mode(Mode::Write);
         }
+        app.request_workspace_scan();
         Ok(app)
     }
 
@@ -1091,38 +1178,89 @@ impl App {
             .iter()
             .map(|view| (view.path.clone(), view.clone()))
             .collect::<HashMap<_, _>>();
+        self.recent_paths = stored_recent;
+        self.session_views = stored_views;
+        self.restored_open_order.clone_from(&state.open_paths);
         if restore_open_tabs {
-            for path in &state.open_paths {
+            let initial = state
+                .active_path
+                .as_ref()
+                .filter(|path| state.open_paths.contains(path))
+                .or_else(|| state.open_paths.first())
+                .cloned();
+            if let Some(path) = initial.as_ref() {
                 let _ = self.open_document_with_prompts(path, false);
             }
-            let previous_active = self.active_tab;
-            if let Some(active) = &state.active_path
-                && let Some(index) = self
-                    .tabs
-                    .iter()
-                    .position(|tab| tab.document.path == *active)
-            {
-                self.active_tab = Some(index);
-            }
-            if !self.ensure_active_mixed_open_prompt(previous_active)
+            self.pending_session_tabs = state
+                .open_paths
+                .iter()
+                .filter(|path| Some(*path) != initial.as_ref())
+                .cloned()
+                .collect();
+            if !self.ensure_active_mixed_open_prompt(None)
                 && let Some(path) = self.active_tab().map(|tab| tab.document.path.clone())
             {
                 self.offer_recovery(&path);
             }
         }
-        for tab in &mut self.tabs {
-            if let Some(view) = state.view_for(&tab.document.path) {
-                tab.editor.move_cursor(CursorMove::Jump(
-                    u16::try_from(view.line).unwrap_or(u16::MAX),
-                    u16::try_from(view.column).unwrap_or(u16::MAX),
-                ));
+        for index in 0..self.tabs.len() {
+            let path = self.tabs[index].document.path.clone();
+            if let Some(view) = state.view_for(&path) {
+                Self::restore_tab_view(&mut self.tabs[index], view);
             }
         }
-        self.recent_paths = stored_recent;
-        self.session_views = stored_views;
+        self.restore_active_preview_scroll();
         if let Some(active) = self.active_tab().map(|tab| tab.document.path.clone()) {
             self.mark_recent(&active);
         }
+    }
+
+    fn restore_tab_view(tab: &mut EditorTab, view: &DocumentViewState) {
+        tab.editor.move_cursor(CursorMove::Jump(
+            u16::try_from(view.line).unwrap_or(u16::MAX),
+            u16::try_from(view.column).unwrap_or(u16::MAX),
+        ));
+        tab.editor_scroll_x = scroll_coordinate(view.scroll_x);
+        tab.editor_scroll_y = scroll_coordinate(view.scroll_y);
+        tab.preview_scroll_x = scroll_coordinate(view.preview_scroll_x);
+        tab.preview_scroll_y = scroll_coordinate(view.preview_scroll_y);
+        tab.pending_scroll_restore = true;
+    }
+
+    fn materialize_next_session_tab(&mut self) -> bool {
+        if self.overlay.is_some() {
+            return false;
+        }
+        let Some(path) = self.pending_session_tabs.pop_front() else {
+            return false;
+        };
+        if self.tabs.iter().any(|tab| tab.document.path == path) {
+            return true;
+        }
+        let active_path = self.active_tab().map(|tab| tab.document.path.clone());
+        let result = self.open_document_with_prompts(&path, false);
+        self.tabs.sort_by_key(|tab| {
+            self.restored_open_order
+                .iter()
+                .position(|candidate| candidate == &tab.document.path)
+                .unwrap_or(usize::MAX)
+        });
+        self.active_tab = active_path
+            .as_ref()
+            .and_then(|active| {
+                self.tabs
+                    .iter()
+                    .position(|tab| tab.document.path == *active)
+            })
+            .or_else(|| (!self.tabs.is_empty()).then_some(0));
+        self.restore_active_preview_scroll();
+        if let Err(error) = result {
+            self.status_message = Some(format!(
+                "Skipped restored tab {} · {error}",
+                self.workspace.relative(&path).display()
+            ));
+        }
+        true
     }
 
     fn offer_recovery(&mut self, path: &Path) {
@@ -1377,12 +1515,7 @@ impl App {
         };
         match journal.record_for(&entry.document_path) {
             Ok(Some(current)) if current.fingerprint == record.fingerprint => {
-                if current.status != RecoveryRecordStatus::Valid {
-                    self.show_recovery_manager(
-                        selected,
-                        missing_recovery_open_limitation(current.status),
-                    );
-                } else if let Some(entry) = current.entry {
+                if let Some(entry) = current.entry {
                     self.open_recovery_entry(selected, entry, "Opened recovery draft".to_owned());
                 }
             }
@@ -1397,33 +1530,76 @@ impl App {
     }
 
     fn open_recovery_entry(&mut self, selected: usize, entry: RecoveryEntry, message: String) {
-        if !matches!(disk_state(&entry.document_path), DiskState::Current(_)) {
-            self.show_recovery_manager(
-                selected,
-                missing_recovery_open_limitation(RecoveryRecordStatus::Missing),
-            );
-            return;
-        }
-        match self.open_document(&entry.document_path) {
-            Ok(()) => {
-                if matches!(
-                    self.overlay,
-                    Some(Overlay::MixedLineEndings {
-                        context: MixedLineEndingContext::Open,
-                        ..
-                    })
-                ) {
-                    return;
+        match disk_state(&entry.document_path) {
+            DiskState::Current(_) => match self.open_document(&entry.document_path) {
+                Ok(()) => {
+                    if matches!(
+                        self.overlay,
+                        Some(Overlay::MixedLineEndings {
+                            context: MixedLineEndingContext::Open,
+                            ..
+                        })
+                    ) {
+                        return;
+                    }
+                    self.status_message = Some(message);
+                    self.overlay = Some(Overlay::Recovery {
+                        entry: Box::new(entry),
+                    });
                 }
-                self.status_message = Some(message);
-                self.overlay = Some(Overlay::Recovery {
-                    entry: Box::new(entry),
-                });
+                Err(error) => self.show_recovery_manager(
+                    selected,
+                    format!("Recovery draft cannot be opened · {error}"),
+                ),
+            },
+            DiskState::Missing => {
+                self.install_unavailable_recovery(&entry, ConflictKind::Missing);
             }
-            Err(error) => self.show_recovery_manager(
-                selected,
-                format!("Recovery draft cannot be opened · {error}"),
-            ),
+            DiskState::Unavailable(_) => {
+                self.install_unavailable_recovery(&entry, ConflictKind::Unavailable);
+            }
+        }
+    }
+
+    fn install_unavailable_recovery(&mut self, entry: &RecoveryEntry, kind: ConflictKind) {
+        let previous_active = self.active_tab;
+        self.cache_active_view();
+        let mut tab = EditorTab::from_unavailable_recovery(entry, &self.config.editor);
+        style_cursor(&mut tab.editor, self.mode);
+        let mixed_target = tab.document.mixed_line_ending_target();
+        let index = self
+            .tabs
+            .iter()
+            .position(|candidate| candidate.document.path == entry.document_path)
+            .unwrap_or(self.tabs.len());
+        if index == self.tabs.len() {
+            self.tabs.push(tab);
+        } else {
+            self.tabs[index] = tab;
+        }
+        self.active_tab = Some(index);
+        self.focus = Focus::Editor;
+        self.preview_scroll = 0;
+        self.preview_horizontal_scroll = 0;
+        self.preview_selected_link = None;
+        self.narrow_pane = Focus::Editor;
+        self.mark_recent(&entry.document_path);
+        self.published_recovery.insert(
+            entry.document_path.clone(),
+            (entry.fingerprint().to_owned(), entry.text.clone()),
+        );
+        if let Some(target) = mixed_target {
+            self.overlay = Some(Overlay::MixedLineEndings {
+                tab_index: index,
+                previous_active,
+                context: MixedLineEndingContext::Recovery,
+                target,
+            });
+            self.status_message =
+                Some("Recovered draft · original source unavailable · Save As required".to_owned());
+            self.enforce_active_read_only();
+        } else {
+            self.show_conflict(index, kind);
         }
     }
 
@@ -1594,16 +1770,50 @@ impl App {
 
     fn current_session_state(&self) -> SessionState {
         let mut views = self.session_views.clone();
-        for tab in &self.tabs {
+        for (index, tab) in self.tabs.iter().enumerate() {
             let (line, column) = tab.editor.cursor();
+            let active = self.active_tab == Some(index);
             views.insert(
                 tab.document.path.clone(),
                 DocumentViewState {
                     path: tab.document.path.clone(),
                     line,
                     column,
+                    scroll_x: f64::from(tab.editor_scroll_x),
+                    scroll_y: f64::from(tab.editor_scroll_y),
+                    preview_scroll_x: f64::from(if active {
+                        self.preview_horizontal_scroll
+                    } else {
+                        tab.preview_scroll_x
+                    }),
+                    preview_scroll_y: f64::from(if active {
+                        self.preview_scroll
+                    } else {
+                        tab.preview_scroll_y
+                    }),
                 },
             );
+        }
+        let loaded = self
+            .tabs
+            .iter()
+            .map(|tab| tab.document.path.clone())
+            .collect::<HashSet<_>>();
+        let pending = self
+            .pending_session_tabs
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        let mut open_paths = self
+            .restored_open_order
+            .iter()
+            .filter(|path| loaded.contains(*path) || pending.contains(*path))
+            .cloned()
+            .collect::<Vec<_>>();
+        for tab in &self.tabs {
+            if !open_paths.contains(&tab.document.path) {
+                open_paths.push(tab.document.path.clone());
+            }
         }
         SessionState {
             workspace_root: self.workspace.root.clone(),
@@ -1613,11 +1823,7 @@ impl App {
                 .iter()
                 .filter_map(|path| views.get(path).cloned())
                 .collect(),
-            open_paths: self
-                .tabs
-                .iter()
-                .map(|tab| tab.document.path.clone())
-                .collect(),
+            open_paths,
         }
     }
 
@@ -1633,6 +1839,11 @@ impl App {
             Ok(()) => self.last_session_state = Some(state),
             Err(error) => self.status_message = Some(format!("Session not saved · {error}")),
         }
+    }
+
+    fn flush_state(&mut self) {
+        self.persist_recovery();
+        self.persist_session_if_changed();
     }
 
     #[must_use]
@@ -1652,16 +1863,33 @@ impl App {
     }
 
     fn cache_active_view(&mut self) {
-        let Some(tab) = self.active_tab() else {
+        let Some(index) = self.active_tab else {
             return;
         };
+        self.tabs[index].preview_scroll_x = self.preview_horizontal_scroll;
+        self.tabs[index].preview_scroll_y = self.preview_scroll;
+        let tab = &self.tabs[index];
         let (line, column) = tab.editor.cursor();
         let view = DocumentViewState {
             path: tab.document.path.clone(),
             line,
             column,
+            scroll_x: f64::from(tab.editor_scroll_x),
+            scroll_y: f64::from(tab.editor_scroll_y),
+            preview_scroll_x: f64::from(tab.preview_scroll_x),
+            preview_scroll_y: f64::from(tab.preview_scroll_y),
         };
         self.session_views.insert(view.path.clone(), view);
+    }
+
+    fn restore_active_preview_scroll(&mut self) {
+        let Some(index) = self.active_tab else {
+            self.preview_scroll = 0;
+            self.preview_horizontal_scroll = 0;
+            return;
+        };
+        self.preview_scroll = self.tabs[index].preview_scroll_y;
+        self.preview_horizontal_scroll = self.tabs[index].preview_scroll_x;
     }
 
     fn mark_recent(&mut self, path: &Path) {
@@ -1712,6 +1940,7 @@ impl App {
             self.preview_horizontal_scroll = 0;
             self.preview_selected_link = None;
             self.narrow_pane = Focus::Editor;
+            self.restore_active_preview_scroll();
             if show_prompts {
                 self.mark_recent(&path);
                 self.ensure_active_mixed_open_prompt(previous_active);
@@ -1724,10 +1953,7 @@ impl App {
         let mut tab = EditorTab::from_path(&path, &self.config.editor)?;
         style_cursor(&mut tab.editor, self.mode);
         if let Some(view) = self.session_views.get(&path) {
-            tab.editor.move_cursor(CursorMove::Jump(
-                u16::try_from(view.line).unwrap_or(u16::MAX),
-                u16::try_from(view.column).unwrap_or(u16::MAX),
-            ));
+            Self::restore_tab_view(&mut tab, view);
         }
         tab.pending_mixed_open = tab.document.mixed_line_ending_target().is_some();
         self.tabs.push(tab);
@@ -1737,6 +1963,7 @@ impl App {
         self.preview_horizontal_scroll = 0;
         self.preview_selected_link = None;
         self.narrow_pane = Focus::Editor;
+        self.restore_active_preview_scroll();
         if show_prompts && !self.ensure_active_mixed_open_prompt(previous_active) {
             self.mark_recent(&path);
             self.offer_recovery(&path);
@@ -1856,6 +2083,10 @@ impl App {
         context: MixedLineEndingContext,
     ) {
         let cursor = self.tabs[index].editor.cursor();
+        let editor_scroll_x = self.tabs[index].editor_scroll_x;
+        let editor_scroll_y = self.tabs[index].editor_scroll_y;
+        let preview_scroll_x = self.tabs[index].preview_scroll_x;
+        let preview_scroll_y = self.tabs[index].preview_scroll_y;
         let mut tab = EditorTab::from_loaded(loaded, &self.config.editor);
         let mixed_target = tab.document.mixed_line_ending_target();
         style_cursor(&mut tab.editor, self.mode);
@@ -1863,6 +2094,11 @@ impl App {
             u16::try_from(cursor.0).unwrap_or(u16::MAX),
             u16::try_from(cursor.1).unwrap_or(u16::MAX),
         ));
+        tab.editor_scroll_x = editor_scroll_x;
+        tab.editor_scroll_y = editor_scroll_y;
+        tab.preview_scroll_x = preview_scroll_x;
+        tab.preview_scroll_y = preview_scroll_y;
+        tab.pending_scroll_restore = true;
         self.tabs[index] = tab;
         if let Some(target) = mixed_target {
             self.overlay = Some(Overlay::MixedLineEndings {
@@ -2275,6 +2511,7 @@ impl App {
         self.preview_horizontal_scroll = 0;
         self.preview_selected_link = None;
         self.narrow_pane = Focus::Editor;
+        self.restore_active_preview_scroll();
         self.ensure_active_mixed_open_prompt(previous);
         self.enforce_active_read_only();
     }
@@ -3457,7 +3694,11 @@ impl App {
     }
 
     fn refresh_entries(&mut self, selected_path: Option<&Path>) {
-        self.entries = self.workspace.scan();
+        self.workspace_scan_revision.fetch_add(1, Ordering::Relaxed);
+        self.workspace_index_state = WorkspaceIndexState::Idle;
+        let report = self.workspace.scan_report();
+        self.entries = report.entries;
+        self.workspace_scan_warnings = report.warnings;
         self.retain_existing_expanded_directories();
         if let Some(path) = selected_path {
             self.expand_ancestors(path);
@@ -3466,6 +3707,65 @@ impl App {
             .and_then(|path| self.visible_position(path))
             .or_else(|| (!self.visible_entry_indices().is_empty()).then_some(0));
         self.explorer_state.select(selected);
+    }
+
+    fn request_workspace_scan(&mut self) {
+        if self.workspace_index_state == WorkspaceIndexState::Indexing {
+            return;
+        }
+        let revision = self.workspace_scan_revision.fetch_add(1, Ordering::Relaxed) + 1;
+        let workspace = self.workspace.clone();
+        let sender = self.workspace_scan_tx.clone();
+        self.workspace_index_state = WorkspaceIndexState::Indexing;
+        let _worker = thread::spawn(move || {
+            let report = workspace.scan_report();
+            let _ = sender.send(WorkspaceScanCompletion { revision, report });
+        });
+    }
+
+    fn poll_workspace_scan_results(&mut self) -> bool {
+        let completions = self.workspace_scan_rx.try_iter().collect::<Vec<_>>();
+        let mut changed = false;
+        for completion in completions {
+            if completion.revision != self.workspace_scan_revision.load(Ordering::Relaxed) {
+                continue;
+            }
+            self.workspace_index_state = WorkspaceIndexState::Idle;
+            let selected_path = self
+                .selected_explorer_entry()
+                .map(|entry| entry.path.clone());
+            if self.entries != completion.report.entries {
+                self.entries = completion.report.entries;
+                self.retain_existing_expanded_directories();
+                let selection = selected_path
+                    .as_ref()
+                    .and_then(|path| self.visible_position(path))
+                    .or_else(|| (!self.visible_entry_indices().is_empty()).then_some(0));
+                self.explorer_state.select(selection);
+                changed = true;
+            }
+            if self.workspace_scan_warnings != completion.report.warnings {
+                self.workspace_scan_warnings = completion.report.warnings;
+                changed = true;
+            }
+            if let Some(first) = self.workspace_scan_warnings.first() {
+                self.status_message = Some(format!(
+                    "Files indexed with {} warning{} · {first}",
+                    self.workspace_scan_warnings.len(),
+                    if self.workspace_scan_warnings.len() == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                ));
+            }
+        }
+        changed
+    }
+
+    #[must_use]
+    pub const fn workspace_is_indexing(&self) -> bool {
+        matches!(self.workspace_index_state, WorkspaceIndexState::Indexing)
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -5177,12 +5477,6 @@ impl App {
             return;
         }
         self.sync_active_document();
-        let files = self
-            .entries
-            .iter()
-            .filter(|entry| !entry.is_dir)
-            .map(|entry| entry.path.clone())
-            .collect::<Vec<_>>();
         let overrides = self
             .tabs
             .iter()
@@ -5193,7 +5487,7 @@ impl App {
             })
             .collect::<Vec<_>>();
         let query = query.to_owned();
-        let root = self.workspace.root.clone();
+        let workspace = self.workspace.clone();
         let options = TextSearchOptions {
             mode,
             file_filter: (!file_filter.trim().is_empty()).then(|| file_filter.trim().to_owned()),
@@ -5207,12 +5501,20 @@ impl App {
         let sender = self.workspace_search_tx.clone();
         let _worker = thread::spawn(move || {
             let cancelled = || current_revision.load(Ordering::Relaxed) != revision;
+            let scan = workspace.scan_report();
+            let files = scan
+                .entries
+                .into_iter()
+                .filter(|entry| !entry.is_dir)
+                .map(|entry| entry.path)
+                .collect::<Vec<_>>();
             let mut request = TextSearchRequest::new(&files, &query);
-            request.root = Some(&root);
+            request.root = Some(&workspace.root);
             request.overrides = &overrides;
             request.options = options;
             request.should_cancel = Some(&cancelled);
-            let result = search_workspace_text(&request);
+            let mut result = search_workspace_text(&request);
+            result.warnings.splice(0..0, scan.warnings);
             if !cancelled() {
                 let _ = sender.send(WorkspaceSearchCompletion {
                     revision,
@@ -5290,20 +5592,8 @@ impl App {
         }
         self.sync_active_document();
         let mut changed = self.poll_active_document();
-        let selected_path = self
-            .selected_explorer_entry()
-            .map(|entry| entry.path.clone());
-        let entries = self.workspace.scan();
-        if entries != self.entries {
-            self.entries = entries;
-            self.retain_existing_expanded_directories();
-            let selection = selected_path
-                .as_ref()
-                .and_then(|path| self.visible_position(path))
-                .or_else(|| (!self.visible_entry_indices().is_empty()).then_some(0));
-            self.explorer_state.select(selection);
-            changed = true;
-        }
+        changed |= self.poll_next_inactive_document();
+        self.request_workspace_scan();
         changed
     }
 
@@ -5311,8 +5601,28 @@ impl App {
         let Some(index) = self.active_tab else {
             return false;
         };
+        self.poll_document(index, true)
+    }
+
+    fn poll_next_inactive_document(&mut self) -> bool {
+        let count = self.tabs.len();
+        if count < 2 {
+            return false;
+        }
+        for _ in 0..count {
+            let index = self.inactive_probe_cursor % count;
+            self.inactive_probe_cursor = (index + 1) % count;
+            if Some(index) != self.active_tab {
+                return self.poll_document(index, false);
+            }
+        }
+        false
+    }
+
+    fn poll_document(&mut self, index: usize, active: bool) -> bool {
         let path = self.tabs[index].document.path.clone();
         let baseline = self.tabs[index].document.snapshot.clone();
+        let relative = self.workspace.relative(&path);
         match load_file(&path) {
             Ok(loaded) if loaded.snapshot == baseline => {
                 if self.tabs[index].document.conflict
@@ -5336,8 +5646,14 @@ impl App {
                 {
                     if !self.tabs[index].document.conflict {
                         self.tabs[index].document.conflict = true;
-                        self.status_message =
-                            Some("CONFLICT · file changed outside TermDraft".to_owned());
+                        self.status_message = Some(if active {
+                            "CONFLICT · file changed outside TermDraft".to_owned()
+                        } else {
+                            format!(
+                                "CONFLICT · {} changed outside TermDraft",
+                                relative.display()
+                            )
+                        });
                         return true;
                     }
                     return false;
@@ -5354,12 +5670,27 @@ impl App {
                 }
 
                 let mixed_target = loaded.mixed_line_ending_target();
-                self.install_loaded(index, loaded, MixedLineEndingContext::Reload);
+                if active {
+                    self.install_loaded(index, loaded, MixedLineEndingContext::Reload);
+                } else {
+                    self.install_inactive_loaded(index, loaded);
+                }
                 self.status_message = Some(mixed_target.map_or_else(
-                    || "Reloaded external changes".to_owned(),
+                    || {
+                        if active {
+                            "Reloaded external changes".to_owned()
+                        } else {
+                            format!("Reloaded external changes in {}", relative.display())
+                        }
+                    },
                     |target| {
                         format!(
-                            "External file has mixed line endings · target {}",
+                            "{} has mixed line endings · target {}",
+                            if active {
+                                "External file".to_owned()
+                            } else {
+                                relative.display().to_string()
+                            },
                             line_ending_name(target)
                         )
                     },
@@ -5371,24 +5702,37 @@ impl App {
                     false
                 } else {
                     self.tabs[index].document.conflict = true;
-                    self.status_message = Some(format!("CONFLICT · file unavailable · {error}"));
+                    self.status_message = Some(if active {
+                        format!("CONFLICT · file unavailable · {error}")
+                    } else {
+                        format!("CONFLICT · {} unavailable · {error}", relative.display())
+                    });
                     true
                 }
             }
         }
     }
-}
 
-fn missing_recovery_open_limitation(status: RecoveryRecordStatus) -> String {
-    let source = match status {
-        RecoveryRecordStatus::Missing => "missing",
-        RecoveryRecordStatus::Orphan => "not a safe regular file",
-        RecoveryRecordStatus::Corrupt => "corrupt",
-        RecoveryRecordStatus::Valid => "unavailable",
-    };
-    format!(
-        "Source is {source}; Rust cannot safely open this recovery without a FileSnapshot yet. Retarget or Archive it."
-    )
+    fn install_inactive_loaded(&mut self, index: usize, loaded: LoadedFile) {
+        let cursor = self.tabs[index].editor.cursor();
+        let editor_scroll_x = self.tabs[index].editor_scroll_x;
+        let editor_scroll_y = self.tabs[index].editor_scroll_y;
+        let preview_scroll_x = self.tabs[index].preview_scroll_x;
+        let preview_scroll_y = self.tabs[index].preview_scroll_y;
+        let mut tab = EditorTab::from_loaded(loaded, &self.config.editor);
+        tab.pending_mixed_open = tab.document.mixed_line_ending_target().is_some();
+        style_cursor(&mut tab.editor, self.mode);
+        tab.editor.move_cursor(CursorMove::Jump(
+            u16::try_from(cursor.0).unwrap_or(u16::MAX),
+            u16::try_from(cursor.1).unwrap_or(u16::MAX),
+        ));
+        tab.editor_scroll_x = editor_scroll_x;
+        tab.editor_scroll_y = editor_scroll_y;
+        tab.preview_scroll_x = preview_scroll_x;
+        tab.preview_scroll_y = preview_scroll_y;
+        tab.pending_scroll_restore = true;
+        self.tabs[index] = tab;
+    }
 }
 
 fn expired_recovery_records(
@@ -5452,6 +5796,11 @@ fn conflict_copy_path(workspace: &Workspace, source: &Path) -> String {
         )
         .to_string_lossy()
         .into_owned()
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn scroll_coordinate(value: f64) -> u16 {
+    value.clamp(0.0, f64::from(u16::MAX)).round() as u16
 }
 
 fn update_scroll(scroll: &mut u16, code: KeyCode, line_count: usize) {
@@ -5881,6 +6230,7 @@ pub fn run(workspace: Workspace) -> anyhow::Result<()> {
 /// Returns an error when initial loading, terminal drawing, or event input fails.
 pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<()> {
     let mut app = App::with_config(workspace, config)?;
+    let shutdown_requested = install_shutdown_handlers()?;
     ratatui::run(|terminal| -> anyhow::Result<()> {
         let mut terminal_extras = TerminalExtrasGuard::enable(app.theme)?;
         let result = (|| {
@@ -5890,28 +6240,52 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
             let mut next_disk_poll = Instant::now() + Duration::from_secs(2);
             let mut next_recovery_flush = Instant::now() + Duration::from_millis(500);
             while !app.should_quit {
+                if observe_shutdown_request(&mut app, &shutdown_requested) {
+                    continue;
+                }
                 if needs_draw {
                     terminal.draw(|frame| ui::draw(frame, &mut app))?;
                     needs_draw = false;
                 }
-                if event::poll(Duration::from_millis(250))? {
-                    match event::read()? {
-                        Event::Key(key)
-                            if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
-                        {
-                            app.handle_key(key);
-                        }
-                        Event::Paste(text) => {
-                            if !app.paste_into_overlay(&text) {
-                                app.paste_into_document(&text);
+                let received_event = match event::poll(Duration::from_millis(250)) {
+                    Ok(true) => match event::read() {
+                        Ok(event) => {
+                            match event {
+                                Event::Key(key)
+                                    if matches!(
+                                        key.kind,
+                                        KeyEventKind::Press | KeyEventKind::Repeat
+                                    ) =>
+                                {
+                                    app.handle_key(key);
+                                }
+                                Event::Paste(text) => {
+                                    if !app.paste_into_overlay(&text) {
+                                        app.paste_into_document(&text);
+                                    }
+                                }
+                                Event::Mouse(mouse) => app.handle_mouse(mouse),
+                                _ => {}
                             }
+                            true
                         }
-                        Event::Mouse(mouse) => app.handle_mouse(mouse),
-                        _ => {}
+                        Err(_error) if shutdown_requested.load(Ordering::Relaxed) => {
+                            app.should_quit = true;
+                            false
+                        }
+                        Err(error) => return Err(error.into()),
+                    },
+                    Ok(false) => false,
+                    Err(_error) if shutdown_requested.load(Ordering::Relaxed) => {
+                        app.should_quit = true;
+                        false
                     }
-                    needs_draw = true;
-                }
+                    Err(error) => return Err(error.into()),
+                };
+                needs_draw |= received_event && !app.should_quit;
                 needs_draw |= app.poll_workspace_search_results();
+                needs_draw |= app.poll_workspace_scan_results();
+                needs_draw |= app.materialize_next_session_tab();
                 if rendered_mode != app.mode {
                     let shape = if app.mode == Mode::Write {
                         SetCursorStyle::BlinkingBar
@@ -5935,8 +6309,7 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
                     next_recovery_flush = Instant::now() + Duration::from_millis(500);
                 }
             }
-            app.persist_recovery();
-            app.persist_session_if_changed();
+            app.flush_state();
             Ok(())
         })();
         terminal_extras
@@ -5944,6 +6317,26 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
             .context("restore mouse and cursor state")?;
         result
     })
+}
+
+fn observe_shutdown_request(app: &mut App, requested: &AtomicBool) -> bool {
+    if !requested.load(Ordering::Relaxed) {
+        return false;
+    }
+    app.should_quit = true;
+    true
+}
+
+fn install_shutdown_handlers() -> anyhow::Result<Arc<AtomicBool>> {
+    let requested = Arc::new(AtomicBool::new(false));
+    #[cfg(unix)]
+    {
+        signal_hook::flag::register(SIGTERM, Arc::clone(&requested))
+            .context("install SIGTERM shutdown handler")?;
+        signal_hook::flag::register(SIGHUP, Arc::clone(&requested))
+            .context("install SIGHUP shutdown handler")?;
+    }
+    Ok(requested)
 }
 
 struct TerminalExtrasGuard {
@@ -6017,6 +6410,18 @@ mod tests {
 
     use super::*;
 
+    fn session_view(path: PathBuf, line: usize, column: usize) -> DocumentViewState {
+        DocumentViewState {
+            path,
+            line,
+            column,
+            scroll_x: 0.0,
+            scroll_y: 0.0,
+            preview_scroll_x: 0.0,
+            preview_scroll_y: 0.0,
+        }
+    }
+
     #[test]
     fn terminal_cursor_color_follows_light_themes_and_resets_for_dark_themes() {
         let mut output = Vec::new();
@@ -6056,6 +6461,17 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         panic!("workspace search did not finish");
+    }
+
+    fn finish_workspace_scan(app: &mut App) {
+        for _ in 0..200 {
+            let _ = app.poll_workspace_scan_results();
+            if !app.workspace_is_indexing() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("workspace scan did not finish");
     }
 
     #[test]
@@ -6417,6 +6833,7 @@ command_manage_recovery = "Z"
         let selected = fs::canonicalize(selected).unwrap();
         let workspace = Workspace::from_target(directory.path()).unwrap();
         let mut app = App::with_state_services(workspace, Config::default(), None, None).unwrap();
+        finish_workspace_scan(&mut app);
 
         app.execute_command(CommandAction::FileFinder);
         let Some(Overlay::FileFinder {
@@ -6553,6 +6970,18 @@ command_manage_recovery = "Z"
         finish_workspace_search(&mut app);
         app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.active_tab().unwrap().document.text, "new disk needle");
+
+        let fresh = app.workspace.root.join("fresh.md");
+        fs::write(&fresh, "brand new search target").unwrap();
+        assert!(!app.entries.iter().any(|entry| entry.path == fresh));
+        app.execute_command(CommandAction::WorkspaceSearch);
+        assert!(app.paste_into_overlay("brand new search target"));
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        finish_workspace_search(&mut app);
+        let Some(Overlay::WorkspaceSearch { results, .. }) = &app.overlay else {
+            panic!("workspace search closed after fresh-file submission");
+        };
+        assert!(results.iter().any(|result| result.path == fresh));
     }
 
     #[test]
@@ -7118,6 +7547,8 @@ command_manage_recovery = "Z"
         let second = directory.path().join("second.md");
         fs::write(&first, "first").unwrap();
         fs::write(&second, "second").unwrap();
+        let first = first.canonicalize().unwrap();
+        let second = second.canonicalize().unwrap();
         let workspace = Workspace::from_target(&first).unwrap();
         let mut app = App::new(workspace).unwrap();
         app.open_document(&second).unwrap();
@@ -7466,6 +7897,7 @@ command_manage_recovery = "Z"
         let directory = tempfile::tempdir().unwrap();
         let workspace = Workspace::from_target(directory.path()).unwrap();
         let mut app = App::new(workspace).unwrap();
+        finish_workspace_scan(&mut app);
         app.focus = Focus::Explorer;
         app.update_viewport_width(120);
 
@@ -7490,6 +7922,7 @@ command_manage_recovery = "Z"
         fs::write(directory.path().join("readme.md"), "readme").unwrap();
         let workspace = Workspace::from_target(directory.path()).unwrap();
         let mut app = App::new(workspace).unwrap();
+        finish_workspace_scan(&mut app);
         app.focus = Focus::Explorer;
         let visible_paths = |app: &App| {
             app.visible_entry_indices()
@@ -7770,20 +8203,92 @@ command_manage_recovery = "Z"
     }
 
     #[test]
+    fn external_poll_rotates_through_inactive_tabs_without_activating_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.md");
+        let second = directory.path().join("second.md");
+        fs::write(&first, "first").unwrap();
+        fs::write(&second, "second").unwrap();
+        let workspace = Workspace::from_target(&first).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        let first = app.workspace.root.join("first.md");
+        let second = app.workspace.root.join("second.md");
+        app.open_document(&second).unwrap();
+
+        fs::write(&first, "external first").unwrap();
+        assert!(app.poll_external_state());
+        assert_eq!(app.active_tab().unwrap().document.path, second);
+        let first_tab = app
+            .tabs
+            .iter()
+            .find(|tab| tab.document.path == first)
+            .unwrap();
+        assert_eq!(first_tab.document.text, "external first");
+        assert!(!first_tab.document.conflict);
+
+        app.activate_tab(0);
+        app.active_tab_mut().unwrap().editor.insert_str("local ");
+        app.sync_active_document();
+        app.activate_tab(1);
+        fs::write(&first, "another external").unwrap();
+        assert!(app.poll_external_state());
+
+        let first_tab = app
+            .tabs
+            .iter()
+            .find(|tab| tab.document.path == first)
+            .unwrap();
+        assert_eq!(first_tab.document.text, "local external first");
+        assert!(first_tab.document.conflict);
+        assert_eq!(app.active_tab().unwrap().document.path, second);
+    }
+
+    #[test]
     fn external_poll_refreshes_the_workspace_tree() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("one.md");
         fs::write(&path, "one").unwrap();
         let workspace = Workspace::from_target(&path).unwrap();
         let mut app = App::new(workspace).unwrap();
+        finish_workspace_scan(&mut app);
 
         fs::write(directory.path().join("two.md"), "two").unwrap();
 
-        assert!(app.poll_external_state());
+        let _ = app.poll_external_state();
+        finish_workspace_scan(&mut app);
         assert!(
             app.entries
                 .iter()
                 .any(|entry| entry.relative == Path::new("two.md"))
+        );
+    }
+
+    #[test]
+    fn workspace_index_starts_shallow_and_finishes_in_the_background() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        fs::create_dir(root.join("notes")).unwrap();
+        fs::write(root.join("notes/nested.md"), "nested").unwrap();
+        let workspace = Workspace::from_target(&root).unwrap();
+
+        let mut app = App::new(workspace).unwrap();
+
+        assert!(app.workspace_is_indexing());
+        assert!(
+            app.entries
+                .iter()
+                .any(|entry| entry.relative == Path::new("notes"))
+        );
+        assert!(
+            !app.entries
+                .iter()
+                .any(|entry| entry.relative == Path::new("notes/nested.md"))
+        );
+        finish_workspace_scan(&mut app);
+        assert!(
+            app.entries
+                .iter()
+                .any(|entry| entry.relative == Path::new("notes/nested.md"))
         );
     }
 
@@ -7801,15 +8306,12 @@ command_manage_recovery = "Z"
                 workspace_root: root.clone(),
                 active_path: Some(second.clone()),
                 documents: vec![
+                    session_view(first.clone(), 1, 2),
                     DocumentViewState {
-                        path: first.clone(),
-                        line: 1,
-                        column: 2,
-                    },
-                    DocumentViewState {
-                        path: second.clone(),
-                        line: 1,
-                        column: 3,
+                        scroll_y: 1.0,
+                        preview_scroll_x: 2.0,
+                        preview_scroll_y: 3.0,
+                        ..session_view(second.clone(), 1, 3)
                     },
                 ],
                 open_paths: vec![first.clone(), second.clone()],
@@ -7817,12 +8319,20 @@ command_manage_recovery = "Z"
             .unwrap();
         let workspace = Workspace::from_target(&root).unwrap();
 
-        let app =
+        let mut app =
             App::with_state_services(workspace, Config::default(), Some(store), None).unwrap();
 
-        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.tabs.len(), 1);
         assert_eq!(app.active_tab().unwrap().document.path, second);
         assert_eq!(app.active_tab().unwrap().editor.cursor(), (1, 3));
+        assert_eq!(app.active_tab().unwrap().editor_scroll_y, 1);
+        assert_eq!(app.preview_horizontal_scroll, 2);
+        assert_eq!(app.preview_scroll, 3);
+
+        assert!(app.materialize_next_session_tab());
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.tabs[0].document.path, first);
+        assert_eq!(app.active_tab().unwrap().document.path, second);
     }
 
     #[test]
@@ -7839,16 +8349,8 @@ command_manage_recovery = "Z"
                 workspace_root: root.clone(),
                 active_path: Some(normal.clone()),
                 documents: vec![
-                    DocumentViewState {
-                        path: mixed.clone(),
-                        line: 0,
-                        column: 0,
-                    },
-                    DocumentViewState {
-                        path: normal.clone(),
-                        line: 0,
-                        column: 0,
-                    },
+                    session_view(mixed.clone(), 0, 0),
+                    session_view(normal.clone(), 0, 0),
                 ],
                 open_paths: vec![mixed.clone(), normal.clone()],
             })
@@ -7889,16 +8391,8 @@ command_manage_recovery = "Z"
                 workspace_root: root.clone(),
                 active_path: Some(first.clone()),
                 documents: vec![
-                    DocumentViewState {
-                        path: first.clone(),
-                        line: 0,
-                        column: 0,
-                    },
-                    DocumentViewState {
-                        path: second.clone(),
-                        line: 0,
-                        column: 0,
-                    },
+                    session_view(first.clone(), 0, 0),
+                    session_view(second.clone(), 0, 0),
                 ],
                 open_paths: vec![first.clone(), second.clone()],
             })
@@ -7915,6 +8409,7 @@ command_manage_recovery = "Z"
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(app.tabs[0].document.is_editable());
 
+        assert!(app.materialize_next_session_tab());
         app.switch_tab(1);
         assert_eq!(app.active_tab().unwrap().document.path, second);
         assert!(matches!(
@@ -7977,21 +8472,9 @@ command_manage_recovery = "Z"
                 workspace_root: root.clone(),
                 active_path: Some(current.clone()),
                 documents: vec![
-                    DocumentViewState {
-                        path: missing,
-                        line: 0,
-                        column: 0,
-                    },
-                    DocumentViewState {
-                        path: closed.clone(),
-                        line: 0,
-                        column: 0,
-                    },
-                    DocumentViewState {
-                        path: current.clone(),
-                        line: 0,
-                        column: 0,
-                    },
+                    session_view(missing, 0, 0),
+                    session_view(closed.clone(), 0, 0),
+                    session_view(current.clone(), 0, 0),
                 ],
                 open_paths: vec![current],
             })
@@ -8118,6 +8601,35 @@ command_manage_recovery = "Z"
         app.persist_recovery();
         assert!(!journal.path_for(&path).exists());
         assert_eq!(fs::read_to_string(path).unwrap(), "saved");
+    }
+
+    #[test]
+    fn cooperative_shutdown_flushes_dirty_recovery_and_session_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("note.md");
+        fs::write(&path, "saved").unwrap();
+        let journal = RecoveryJournal::new(root.join("recovery"));
+        let store = SessionStore::new(root.join("sessions"));
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::with_state_services(
+            workspace,
+            Config::default(),
+            Some(store.clone()),
+            Some(journal.clone()),
+        )
+        .unwrap();
+        app.active_tab_mut().unwrap().editor.insert_str("draft ");
+        let requested = AtomicBool::new(true);
+
+        assert!(observe_shutdown_request(&mut app, &requested));
+        assert!(app.should_quit);
+        app.flush_state();
+
+        assert_eq!(journal.load(&path).unwrap().unwrap().text, "draft saved");
+        let session = store.load(&root).state.unwrap();
+        assert_eq!(session.active_path, Some(path.clone()));
+        assert_eq!(session.open_paths, vec![path]);
     }
 
     #[test]
@@ -8533,6 +9045,77 @@ command_manage_recovery = "Z"
         assert!(journal.list_quarantined(Some(&root)).unwrap().is_empty());
         assert!(journal.path_for(&renamed).exists());
         assert!(matches!(app.overlay, Some(Overlay::Recovery { .. })));
+    }
+
+    #[test]
+    fn recovery_manager_opens_unavailable_drafts_only_through_save_as() {
+        for orphaned in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().canonicalize().unwrap();
+            let original = root.join("unavailable.md");
+            fs::write(&original, "saved").unwrap();
+            let loaded = load_file(&original).unwrap();
+            let journal = RecoveryJournal::new(root.join("recovery"));
+            journal
+                .publish(
+                    &original,
+                    &root,
+                    "unsaved draft",
+                    loaded.encoding,
+                    &loaded.snapshot,
+                )
+                .unwrap();
+            fs::remove_file(&original).unwrap();
+            if orphaned {
+                fs::create_dir(&original).unwrap();
+            }
+            let workspace = Workspace::from_target(&root).unwrap();
+            let mut app =
+                App::with_state_services(workspace, Config::default(), None, Some(journal.clone()))
+                    .unwrap();
+
+            app.open_recovery_manager();
+            app.handle_overlay_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+
+            let tab = app.active_tab().unwrap();
+            assert_eq!(tab.document.path, original);
+            assert_eq!(tab.document.text, "unsaved draft");
+            assert!(tab.document.is_dirty());
+            assert!(tab.document.conflict);
+            assert!(tab.document.recovery_conflict);
+            assert!(matches!(
+                app.overlay,
+                Some(Overlay::Conflict {
+                    kind: ConflictKind::Missing | ConflictKind::Unavailable,
+                    can_reload: false,
+                    ..
+                })
+            ));
+
+            app.handle_overlay_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+            let Some(Overlay::PathInput { input, .. }) = &mut app.overlay else {
+                panic!("unavailable recovery did not require Save As");
+            };
+            input.value = "rescued.md".to_owned();
+            input.cursor = input.value.chars().count();
+            app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+            assert_eq!(
+                fs::read_to_string(root.join("rescued.md")).unwrap(),
+                "unsaved draft"
+            );
+            assert!(!journal.path_for(&original).exists());
+            assert_eq!(
+                app.active_tab().unwrap().document.path,
+                root.join("rescued.md")
+            );
+            assert!(!app.active_tab().unwrap().document.is_dirty());
+            if orphaned {
+                assert!(original.is_dir());
+            } else {
+                assert!(!original.exists());
+            }
+        }
     }
 
     #[test]

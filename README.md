@@ -133,10 +133,12 @@ When running without `cargo install`, replace `termdraft` with
 
 ## Features
 
-- Multiple documents with independent undo histories, restored tabs, active document, and cursor
-  positions
+- Multiple documents with independent undo histories, active-document-first restored tabs, cursor
+  positions, and editor/preview scroll continuity
 - Fuzzy file finding, four-mode workspace search, active-document find and replace, recent
   documents, and heading outline
+- Shallow first-frame Files indexing followed by a recursive background scan with visible warnings
+- Rotating inactive-tab monitoring for external edits, deletion, and unreadability
 - File and folder creation, copy, cut, paste, rename, move, Trash, Save As, and duplication through
   no-clobber workspace-relative paths
 - UTF-8 and UTF-8 BOM support with LF, CRLF, or CR preservation
@@ -155,12 +157,13 @@ When running without `cargo install`, replace `termdraft` with
 - Mixed-ending files remain exact until the first edit and normalize only to a disclosed target
   after consent
 - Conflict-checked atomic saves, safe external-conflict choices, per-document guarded exits, crash
-  journals, and a recovery inventory/retarget/archive/restore/export/delete/retention manager
+  journals, and a recovery inventory/open/retarget/archive/restore/export/delete/retention manager;
+  missing and orphan drafts open only into a protected Save As workflow
 - All 52 compatible application binding IDs plus the native `command_change_theme` binding,
   effective remapping, live `R` reload, and a 33-action command palette
 - Markdown syntax, semantic-block, experimental reader, and coordinate-diagnostic overlays
-- Sessions remain content-free; crash-recovery journals contain dirty source and share their v2
-  data format with the legacy Python implementation
+- Sessions remain content-free and share their v3 cursor/scroll format with the legacy Python
+  implementation; crash-recovery journals contain dirty source in the compatible v2 format
 - Default state locations align on macOS and Linux/XDG; Windows paths and recovery locks still
   differ
 
@@ -223,8 +226,8 @@ not require Python at runtime. The Python implementation remains in `src/termdra
 compatibility reference and regression oracle. Releases continue on the 0.x line; there is no 1.0
 roadmap at present.
 
-The largest remaining differences are collapsible/lazy Files and inactive-tab monitoring, direct
-opening of missing recovery drafts, session scroll restoration, and TCSS themes. See
+The largest remaining differences are fully backgrounded filesystem I/O, TCSS themes, the deepest
+parent-directory save hardening, and Windows state/lock compatibility. See
 [RUST_PORT.md](RUST_PORT.md) for the accepted parity boundary.
 
 ## Documentation

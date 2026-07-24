@@ -26,6 +26,10 @@ pub struct DocumentViewState {
     pub path: PathBuf,
     pub line: usize,
     pub column: usize,
+    pub scroll_x: f64,
+    pub scroll_y: f64,
+    pub preview_scroll_x: f64,
+    pub preview_scroll_y: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -87,6 +91,10 @@ struct ViewFile {
     column: usize,
     scroll_x: f64,
     scroll_y: f64,
+    #[serde(default)]
+    preview_scroll_x: f64,
+    #[serde(default)]
+    preview_scroll_y: f64,
 }
 
 impl SessionStore {
@@ -145,8 +153,9 @@ impl SessionStore {
         {
             return Err(SessionError::TooManyDocuments);
         }
+        validate_state(state)?;
         let file = SessionFile {
-            version: 2,
+            version: 3,
             workspace_root: path_string(&state.workspace_root)?,
             active_path: state
                 .active_path
@@ -166,8 +175,10 @@ impl SessionStore {
                         path: relative_string(&state.workspace_root, &view.path)?,
                         line: view.line,
                         column: view.column,
-                        scroll_x: 0.0,
-                        scroll_y: 0.0,
+                        scroll_x: view.scroll_x,
+                        scroll_y: view.scroll_y,
+                        preview_scroll_x: view.preview_scroll_x,
+                        preview_scroll_y: view.preview_scroll_y,
                     })
                 })
                 .collect::<Result<_, SessionError>>()?,
@@ -221,7 +232,7 @@ impl SessionStore {
         }
         let file: SessionFile = serde_json::from_slice(&bytes)
             .map_err(|error| SessionError::Invalid(error.to_string()))?;
-        if !matches!(file.version, 1 | 2) {
+        if !matches!(file.version, 1..=3) {
             return Err(SessionError::Invalid(
                 "unsupported session version".to_owned(),
             ));
@@ -245,6 +256,10 @@ impl SessionStore {
                     || view.scroll_x < 0.0
                     || !view.scroll_y.is_finite()
                     || view.scroll_y < 0.0
+                    || !view.preview_scroll_x.is_finite()
+                    || view.preview_scroll_x < 0.0
+                    || !view.preview_scroll_y.is_finite()
+                    || view.preview_scroll_y < 0.0
                 {
                     return Err(SessionError::Invalid(
                         "view scroll coordinates must be finite and non-negative".to_owned(),
@@ -254,6 +269,10 @@ impl SessionStore {
                     path: resolve_relative(workspace_root, &view.path)?,
                     line: view.line,
                     column: view.column,
+                    scroll_x: view.scroll_x,
+                    scroll_y: view.scroll_y,
+                    preview_scroll_x: view.preview_scroll_x,
+                    preview_scroll_y: view.preview_scroll_y,
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -270,12 +289,66 @@ impl SessionStore {
                 .map(|path| resolve_relative(workspace_root, path))
                 .collect::<Result<Vec<_>, _>>()?
         };
-        Ok(Some(SessionState {
+        let state = SessionState {
             workspace_root: workspace_root.to_path_buf(),
             active_path,
             documents,
             open_paths,
-        }))
+        };
+        validate_state(&state)?;
+        Ok(Some(state))
+    }
+}
+
+fn validate_state(state: &SessionState) -> Result<(), SessionError> {
+    if state.documents.iter().any(|view| {
+        !view.scroll_x.is_finite()
+            || view.scroll_x < 0.0
+            || !view.scroll_y.is_finite()
+            || view.scroll_y < 0.0
+            || !view.preview_scroll_x.is_finite()
+            || view.preview_scroll_x < 0.0
+            || !view.preview_scroll_y.is_finite()
+            || view.preview_scroll_y < 0.0
+    }) {
+        return Err(SessionError::Invalid(
+            "view scroll coordinates must be finite and non-negative".to_owned(),
+        ));
+    }
+    let document_paths = state
+        .documents
+        .iter()
+        .map(|view| &view.path)
+        .collect::<std::collections::HashSet<_>>();
+    if document_paths.len() != state.documents.len() {
+        return Err(SessionError::Invalid("duplicate document path".to_owned()));
+    }
+    let open_paths = state
+        .open_paths
+        .iter()
+        .collect::<std::collections::HashSet<_>>();
+    if open_paths.len() != state.open_paths.len() {
+        return Err(SessionError::Invalid(
+            "duplicate open document path".to_owned(),
+        ));
+    }
+    if state
+        .open_paths
+        .iter()
+        .any(|path| !document_paths.contains(path))
+    {
+        return Err(SessionError::Invalid(
+            "every open document must have a stored view".to_owned(),
+        ));
+    }
+    match &state.active_path {
+        Some(active) if !open_paths.contains(active) => Err(SessionError::Invalid(
+            "active document must be open".to_owned(),
+        )),
+        None if !state.open_paths.is_empty() => Err(SessionError::Invalid(
+            "open documents require an active document".to_owned(),
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -366,11 +439,19 @@ mod tests {
                     path: first.clone(),
                     line: 3,
                     column: 8,
+                    scroll_x: 1.0,
+                    scroll_y: 2.0,
+                    preview_scroll_x: 3.0,
+                    preview_scroll_y: 4.0,
                 },
                 DocumentViewState {
                     path: second.clone(),
                     line: 9,
                     column: 2,
+                    scroll_x: 5.0,
+                    scroll_y: 6.0,
+                    preview_scroll_x: 7.0,
+                    preview_scroll_y: 8.0,
                 },
             ],
             open_paths: vec![first, second],
@@ -390,8 +471,9 @@ mod tests {
             serde_json::from_slice(&fs::read(store.path_for(&workspace)).unwrap()).unwrap();
 
         assert_eq!(loaded, expected);
-        assert_eq!(payload["version"], 2);
+        assert_eq!(payload["version"], 3);
         assert_eq!(payload["open_paths"][0], "notes/café.md");
+        assert_eq!(payload["documents"][0]["preview_scroll_y"], 4.0);
         assert!(payload.get("text").is_none());
         assert!(payload.get("content").is_none());
     }

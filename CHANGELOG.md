@@ -9,6 +9,28 @@ supported releases.
 
 ## [Unreleased]
 
+### Added
+
+- Added safe Recovery Manager opening for missing and orphan drafts. These drafts enter a protected
+  conflict tab that can only publish through Save As, so TermDraft never recreates the unavailable
+  original path.
+- Added content-free session v3 state with editor and preview scroll restoration. The active
+  document opens first and remaining tabs materialize incrementally after the first frame.
+
+### Changed
+
+- Made Files startup non-blocking by showing a shallow workspace snapshot first and completing the
+  recursive index in the background, with indexing and scan-warning state kept visible in its title.
+- Added rotating inactive-tab checks so external edits, deletion, and unreadability are detected
+  without activating every document.
+- Made each workspace text search scan the current workspace instead of relying on an older Files
+  snapshot, including visible discovery and source-read warnings.
+
+### Fixed
+
+- Made `SIGTERM` and `SIGHUP` drain recovery and session state before restoring terminal mouse,
+  screen, cursor-shape, cursor-color, and cursor-visibility state.
+
 ## [0.5.1] - 2026-07-22
 
 ### Added

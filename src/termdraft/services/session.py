@@ -15,7 +15,7 @@ from typing import Any
 
 from termdraft.models.workspace import EDITABLE_SUFFIXES
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 MAX_SESSION_BYTES = 512 * 1024
 MAX_SESSION_DOCUMENTS = 100
 
@@ -33,6 +33,8 @@ class DocumentViewState:
     column: int = 0
     scroll_x: float = 0.0
     scroll_y: float = 0.0
+    preview_scroll_x: float = 0.0
+    preview_scroll_y: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +188,8 @@ def _serialize(state: SessionState) -> bytes:
                 "column": view.column,
                 "scroll_x": view.scroll_x,
                 "scroll_y": view.scroll_y,
+                "preview_scroll_x": view.preview_scroll_x,
+                "preview_scroll_y": view.preview_scroll_y,
             }
             for view in state.documents
         ],
@@ -215,10 +219,10 @@ def _state_from_payload(payload: Any) -> SessionState:
     if not isinstance(payload, dict):
         raise SessionError("expected a JSON object")
     version = payload.get("version")
-    if not isinstance(version, int) or isinstance(version, bool) or version not in {1, 2}:
+    if not isinstance(version, int) or isinstance(version, bool) or version not in {1, 2, 3}:
         raise SessionError("unsupported session version")
     expected_keys = {"version", "workspace_root", "active_path", "documents"}
-    if version == 2:
+    if version >= 2:
         expected_keys.add("open_paths")
     _require_keys(payload, expected_keys, "session")
     workspace_value = payload["workspace_root"]
@@ -234,7 +238,7 @@ def _state_from_payload(payload: Any) -> SessionState:
     if len(documents_value) > MAX_SESSION_DOCUMENTS:
         raise SessionError(f"session has more than {MAX_SESSION_DOCUMENTS} documents")
     documents = tuple(
-        _view_from_payload(item, workspace_root, index)
+        _view_from_payload(item, workspace_root, index, version)
         for index, item in enumerate(documents_value)
     )
 
@@ -270,12 +274,20 @@ def _open_path_from_payload(value: Any, root: Path, index: int) -> Path:
     return _document_path_from_relative(value, root, f"open_paths[{index}]")
 
 
-def _view_from_payload(payload: Any, root: Path, index: int) -> DocumentViewState:
+def _view_from_payload(
+    payload: Any,
+    root: Path,
+    index: int,
+    version: int,
+) -> DocumentViewState:
     if not isinstance(payload, dict):
         raise SessionError(f"documents[{index}] must be an object")
+    expected = {"path", "line", "column", "scroll_x", "scroll_y"}
+    if version == 3:
+        expected.update({"preview_scroll_x", "preview_scroll_y"})
     _require_keys(
         payload,
-        {"path", "line", "column", "scroll_x", "scroll_y"},
+        expected,
         f"documents[{index}]",
     )
     path_value = payload["path"]
@@ -287,6 +299,14 @@ def _view_from_payload(payload: Any, root: Path, index: int) -> DocumentViewStat
         column=_nonnegative_int(payload["column"], f"documents[{index}].column"),
         scroll_x=_nonnegative_float(payload["scroll_x"], f"documents[{index}].scroll_x"),
         scroll_y=_nonnegative_float(payload["scroll_y"], f"documents[{index}].scroll_y"),
+        preview_scroll_x=_nonnegative_float(
+            payload.get("preview_scroll_x", 0.0),
+            f"documents[{index}].preview_scroll_x",
+        ),
+        preview_scroll_y=_nonnegative_float(
+            payload.get("preview_scroll_y", 0.0),
+            f"documents[{index}].preview_scroll_y",
+        ),
     )
 
 
@@ -306,6 +326,8 @@ def _validate_state(state: SessionState) -> None:
         _nonnegative_int(view.column, "column")
         _nonnegative_float(view.scroll_x, "scroll_x")
         _nonnegative_float(view.scroll_y, "scroll_y")
+        _nonnegative_float(view.preview_scroll_x, "preview_scroll_x")
+        _nonnegative_float(view.preview_scroll_y, "preview_scroll_y")
         if view.path in paths:
             raise SessionError(f"duplicate document path: {view.path}")
         paths.add(view.path)
