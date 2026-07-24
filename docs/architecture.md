@@ -73,10 +73,10 @@ and `.txt`, case-insensitively.
 
 The scanner uses `ignore::WalkBuilder`, does not follow symlinks, disables repository `.gitignore`
 rules, and excludes `.git`, `.venv`, `node_modules`, and `__pycache__`. Startup returns a shallow
-sorted root snapshot, then a revisioned background scan installs the full always-expanded directory
-and supported-file index while preserving selection. `Files …` stays visible while indexing;
-`Files ⚠ N` and a status detail preserve individual walk warnings. The two-second poll requests a
-new background scan rather than walking the tree in the event loop.
+sorted root snapshot, then a revisioned background scan installs the full collapsible directory and
+supported-file index while preserving expansion and selection state. `Files …` stays visible while
+indexing; `Files ⚠ N` and a status detail preserve individual walk warnings. The two-second poll
+requests a new background scan rather than walking the tree in the event loop.
 
 The Files surface supports explicit file/folder creation, copy, cut, paste, rename, move, and
 operating-system Trash. Mutations reject workspace escapes, selected or nested symlinks, ignored

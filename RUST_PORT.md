@@ -93,7 +93,7 @@ menu; the focused Files key layer is a second contextual menu.
 | Palette layout | Responsive grouped two-column cheatsheet that stacks when narrow; descriptions below | Searchable grouped two-column grid with descriptions and a compact narrow fallback | Actions, order, shortcuts, and explanatory copy match |
 | Shortcut help | Generated TermDraft-action reference | Scrollable 28-row action summary | Rust `--commands` is the fuller TermDraft-action reference; `?` is intentionally more compact |
 | Preview engine | `markdown-it-py`/Textual with tables, tasks, alerts, footnotes, definitions, link selection, and internal footnote navigation | Active-line source plus rendered inactive lines by default; semantic `pulldown-cmark` split preview with the same common families, selectable links, alerts, and internal footnote/backlink navigation | Source remains authoritative in both; Rust deliberately leaves external destinations inert rather than launching another process |
-| Explorer model | Lazy, collapsible Textual `DirectoryTree` plus asynchronous indexing | Shallow first-frame snapshot followed by an always-expanded recursive background index from `ignore::WalkBuilder` | Rust starts promptly and keeps scan warnings visible, but a large expanded tree can occupy more space |
+| Explorer model | Lazy, collapsible Textual `DirectoryTree` plus asynchronous indexing | Shallow first-frame snapshot followed by a collapsible, recursively indexed tree from `ignore::WalkBuilder` | Rust starts promptly, preserves expansion state across background refreshes, and keeps scan warnings visible; the complete recursive index is still built in the worker |
 | Search regex engine | Python `regex`, full case folding, and a per-line timeout | Rust `regex`, a linear-time syntax subset, and the same 500-character input limit | Common regexes work; look-around/backreferences accepted by Python are not Rust syntax |
 | Workspace-search discovery | Fresh cancellable workspace scan for each submission, including scan warnings | Fresh cancellable workspace scan for each submission, including scan and source-read warnings | Newly created files are discoverable immediately in both |
 | Markdown continuation details | Preserves marker spacing, validates nested indentation with CommonMark, and intercepts only unmodified Enter | Normalizes supported marker spacing and conservatively rejects tab/four-space-leading lines; only unmodified Enter is intercepted | Common continuations match; unusual spacing and nested indentation can differ |
@@ -114,19 +114,17 @@ menu; the focused Files key layer is a second contextual menu.
 
 These are current gaps, not items that were merely absent in the early port:
 
-1. **Collapsible Files.** Rust shows a shallow snapshot immediately and builds its recursive index
-   in the background, but the completed tree remains always expanded rather than lazily collapsible.
-2. **Python-equivalent startup recovery cancellation.** Rust `Esc` means Later after the readable
+1. **Python-equivalent startup recovery cancellation.** Rust `Esc` means Later after the readable
    disk document is already open; Python can Cancel opening before installing it.
-3. **`theme.tcss`.** Rust creates the compatibility template but never parses or watches Textual
+2. **`theme.tcss`.** Rust creates the compatibility template but never parses or watches Textual
    CSS. It provides six built-in runtime themes instead; `--safe-mode` has no additional effect.
-4. **Full background I/O.** Recursive workspace scans and text search are threaded, but file
+3. **Full background I/O.** Recursive workspace scans and text search are threaded, but file
    reads/saves, mutations, session/recovery publication, and diagnostics still run in the event
    loop.
-5. **The deepest Python persistence guarantees.** Rust does not bind publication to an open parent
+4. **The deepest Python persistence guarantees.** Rust does not bind publication to an open parent
     descriptor, retry a moving read, or verify the final published digest with Python's uncertainty
     reporting.
-6. **Windows state-path and lock compatibility.** Rust does not yet use Python's LocalAppData state
+5. **Windows state-path and lock compatibility.** Rust does not yet use Python's LocalAppData state
     root or its Windows recovery locking implementation.
 
 ## Main interface comparison
@@ -135,7 +133,7 @@ These are current gaps, not items that were merely absent in the early port:
 | --- | --- | --- | --- |
 | Title | App/workspace title | Same title | Parity |
 | Tabs | Clickable Textual tabs with modified/conflict state | Clickable tabs with `●` modified and `!` conflict indicators | Parity |
-| Files | Collapsible tree, icons, click and keyboard | Shallow first frame, background recursive index, visible scan warnings, matching Nerd Font icons, click/double-click, keyboard, and keyboard/mouse resizing | Responsive indexing; different expanded tree model |
+| Files | Collapsible tree, icons, click and keyboard | Shallow first frame, collapsible background-indexed tree, visible scan warnings, matching Nerd Font icons, click/double-click, keyboard, and keyboard/mouse resizing | Responsive indexing with expand/collapse parity; different indexing model |
 | Workbench | Inline editor or resizable split source/preview | Active-line source plus rendered inactive lines, or resizable split source/semantic preview | Presentation and layout parity for common Markdown |
 | `v` in Inline/narrow | Switch editor and preview | Switch editor and preview | Parity |
 | `v` in wide Split | Show/hide preview | Show/hide preview | Parity |

@@ -226,8 +226,8 @@ not require Python at runtime. The Python implementation remains in `src/termdra
 compatibility reference and regression oracle. Releases continue on the 0.x line; there is no 1.0
 roadmap at present.
 
-The largest remaining differences are collapsible Files, fully backgrounded filesystem I/O, TCSS
-themes, the deepest parent-directory save hardening, and Windows state/lock compatibility. See
+The largest remaining differences are fully backgrounded filesystem I/O, TCSS themes, the deepest
+parent-directory save hardening, and Windows state/lock compatibility. See
 [RUST_PORT.md](RUST_PORT.md) for the accepted parity boundary.
 
 ## Documentation
