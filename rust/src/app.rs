@@ -32,7 +32,7 @@ use crate::bindings::{Action as BindingAction, BindingScope};
 use crate::config::{self, Config, EditorConfig, StartupMode, StartupView};
 use crate::continuation::{EnterAction, action_for};
 use crate::coordinate_diagnostic::{CoordinateDiagnostic, diagnose_coordinate};
-use crate::document::{Document, Encoding, LineEnding, MixedSource};
+use crate::document::{Document, Encoding, LineEnding, MixedSource, SourceRevision};
 use crate::editor::{
     apply_editor_config, cursor_at_screen_position, inline_preview_editor, source_from_textarea,
     style_cursor, sync_inline_preview_cursor, textarea_from_source,
@@ -358,6 +358,29 @@ struct WorkspaceSearchCompletion {
 struct WorkspaceScanCompletion {
     revision: u64,
     report: WorkspaceScan,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct PreviewKey {
+    path: PathBuf,
+    revision: SourceRevision,
+    selected_link: Option<usize>,
+}
+
+struct PreviewCache {
+    key: PreviewKey,
+    rendered: RenderedMarkdown,
+}
+
+struct PendingPreview {
+    key: PreviewKey,
+    source: String,
+    ready_at: Instant,
+}
+
+struct PreviewCompletion {
+    key: PreviewKey,
+    rendered: RenderedMarkdown,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -734,6 +757,7 @@ pub struct EditorTab {
     pub document: Document,
     pub editor: TextArea<'static>,
     pub inline_editor: TextArea<'static>,
+    preview_cache: Option<PreviewCache>,
     pub(crate) editor_scroll_x: u16,
     pub(crate) editor_scroll_y: u16,
     pub(crate) preview_scroll_x: u16,
@@ -762,6 +786,7 @@ impl EditorTab {
             inline_cursor: editor.cursor(),
             editor,
             inline_editor,
+            preview_cache: None,
             editor_scroll_x: 0,
             editor_scroll_y: 0,
             preview_scroll_x: 0,
@@ -787,6 +812,7 @@ impl EditorTab {
         let mut editor = textarea_from_source(&normalized);
         apply_editor_config(&mut editor, config);
         let inline_editor = inline_preview_editor(&editor);
+        let source_revision = SourceRevision::initial(&source);
         Self {
             document: Document {
                 path: entry.document_path.clone(),
@@ -798,11 +824,13 @@ impl EditorTab {
                 snapshot: entry.baseline_snapshot(),
                 conflict: true,
                 recovery_conflict: true,
+                source_revision,
             },
             inline_source_lines: editor.lines().to_vec(),
             inline_cursor: editor.cursor(),
             editor,
             inline_editor,
+            preview_cache: None,
             editor_scroll_x: 0,
             editor_scroll_y: 0,
             preview_scroll_x: 0,
@@ -1038,6 +1066,13 @@ pub struct App {
     workspace_search_revision: Arc<AtomicU64>,
     workspace_search_tx: Sender<WorkspaceSearchCompletion>,
     workspace_search_rx: Receiver<WorkspaceSearchCompletion>,
+    pending_preview: Option<PendingPreview>,
+    preview_inflight: HashSet<PreviewKey>,
+    preview_tx: Sender<PreviewCompletion>,
+    preview_rx: Receiver<PreviewCompletion>,
+    preview_renders_started: u64,
+    preview_synchronous_renders: u64,
+    preview_stale_completions: u64,
     pending_transition: Option<PendingTransition>,
     should_quit: bool,
 }
@@ -1089,6 +1124,7 @@ impl App {
         };
         let (workspace_scan_tx, workspace_scan_rx) = mpsc::channel();
         let (workspace_search_tx, workspace_search_rx) = mpsc::channel();
+        let (preview_tx, preview_rx) = mpsc::channel();
         let mut app = Self {
             workspace,
             config,
@@ -1137,6 +1173,13 @@ impl App {
             workspace_search_revision: Arc::new(AtomicU64::new(0)),
             workspace_search_tx,
             workspace_search_rx,
+            pending_preview: None,
+            preview_inflight: HashSet::new(),
+            preview_tx,
+            preview_rx,
+            preview_renders_started: 0,
+            preview_synchronous_renders: 0,
+            preview_stale_completions: 0,
             pending_transition: None,
             should_quit: false,
         };
@@ -1314,11 +1357,12 @@ impl App {
             u16::try_from(cursor.1).unwrap_or(u16::MAX),
         ));
         self.tabs[index].editor = editor;
-        self.tabs[index].document.text = if mixed_target.is_some() {
+        let recovered_source = if mixed_target.is_some() {
             entry.text.clone()
         } else {
             normalized.clone()
         };
+        self.tabs[index].document.replace_source(recovered_source);
         self.tabs[index].document.encoding = entry.encoding;
         self.tabs[index].document.line_ending = line_ending;
         self.tabs[index].document.mixed_source =
@@ -1862,6 +1906,147 @@ impl App {
         }
     }
 
+    fn current_preview_key(&self) -> Option<PreviewKey> {
+        let tab = self.active_tab()?;
+        Some(PreviewKey {
+            path: tab.document.path.clone(),
+            revision: tab.document.source_revision,
+            selected_link: self.preview_selected_link,
+        })
+    }
+
+    fn schedule_preview_render(&mut self) {
+        self.schedule_preview_render_at(Instant::now());
+    }
+
+    fn schedule_preview_render_at(&mut self, now: Instant) {
+        if !self.preview_is_visible() {
+            self.pending_preview = None;
+            return;
+        }
+        self.sync_active_document();
+        let Some(key) = self.current_preview_key() else {
+            self.pending_preview = None;
+            return;
+        };
+        let Some(cache_key) = self
+            .active_tab()
+            .and_then(|tab| tab.preview_cache.as_ref())
+            .map(|cache| &cache.key)
+        else {
+            self.pending_preview = None;
+            return;
+        };
+        if cache_key == &key
+            || self
+                .pending_preview
+                .as_ref()
+                .is_some_and(|pending| pending.key == key)
+            || self.preview_inflight.contains(&key)
+        {
+            return;
+        }
+        let Some(source) = self.active_tab().map(|tab| tab.document.text.clone()) else {
+            return;
+        };
+        self.pending_preview = Some(PendingPreview {
+            key,
+            source,
+            ready_at: now + Duration::from_millis(50),
+        });
+    }
+
+    fn start_due_preview_render(&mut self) {
+        self.start_due_preview_render_at(Instant::now());
+    }
+
+    fn start_due_preview_render_at(&mut self, now: Instant) {
+        let Some(pending) = self.pending_preview.take() else {
+            return;
+        };
+        if pending.ready_at > now {
+            self.pending_preview = Some(pending);
+            return;
+        }
+        self.preview_inflight.insert(pending.key.clone());
+        self.preview_renders_started += 1;
+        let sender = self.preview_tx.clone();
+        let _worker = thread::spawn(move || {
+            let rendered = render_markdown_document(&pending.source, pending.key.selected_link);
+            let _ = sender.send(PreviewCompletion {
+                key: pending.key,
+                rendered,
+            });
+        });
+    }
+
+    fn poll_preview_results(&mut self) -> bool {
+        let completions = self.preview_rx.try_iter().collect::<Vec<_>>();
+        let mut changed = false;
+        for completion in completions {
+            self.preview_inflight.remove(&completion.key);
+            if self.current_preview_key().as_ref() != Some(&completion.key) {
+                self.preview_stale_completions += 1;
+                continue;
+            }
+            if let Some(tab) = self.active_tab_mut() {
+                tab.preview_cache = Some(PreviewCache {
+                    key: completion.key,
+                    rendered: completion.rendered,
+                });
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    fn preview_poll_timeout(&self) -> Duration {
+        let standard = Duration::from_millis(250);
+        let worker_poll = if self.preview_inflight.is_empty() {
+            standard
+        } else {
+            Duration::from_millis(16)
+        };
+        self.pending_preview
+            .as_ref()
+            .map_or(worker_poll, |pending| {
+                pending
+                    .ready_at
+                    .saturating_duration_since(Instant::now())
+                    .min(worker_poll)
+            })
+    }
+
+    pub(crate) fn preview_for_draw(&mut self) -> Option<RenderedMarkdown> {
+        self.sync_active_document();
+        let key = self.current_preview_key()?;
+        let active_index = self.active_tab?;
+        if let Some(cache) = self.tabs[active_index].preview_cache.as_ref() {
+            if cache.key == key {
+                return Some(cache.rendered.clone());
+            }
+            if cache.key.path == key.path && cache.key.revision != key.revision {
+                return Some(cache.rendered.clone());
+            }
+        }
+
+        let source = self.tabs[active_index].document.text.clone();
+        self.preview_synchronous_renders += 1;
+        let rendered = render_markdown_document(&source, key.selected_link);
+        self.tabs[active_index].preview_cache = Some(PreviewCache {
+            key: key.clone(),
+            rendered: rendered.clone(),
+        });
+        if self
+            .pending_preview
+            .as_ref()
+            .is_some_and(|pending| pending.key == key)
+        {
+            self.pending_preview = None;
+        }
+        Some(rendered)
+    }
+
     fn cache_active_view(&mut self) {
         let Some(index) = self.active_tab else {
             return;
@@ -2088,6 +2273,8 @@ impl App {
         let preview_scroll_x = self.tabs[index].preview_scroll_x;
         let preview_scroll_y = self.tabs[index].preview_scroll_y;
         let mut tab = EditorTab::from_loaded(loaded, &self.config.editor);
+        tab.document
+            .continue_source_revision_from(&self.tabs[index].document);
         let mixed_target = tab.document.mixed_line_ending_target();
         style_cursor(&mut tab.editor, self.mode);
         tab.editor.move_cursor(CursorMove::Jump(
@@ -5720,6 +5907,8 @@ impl App {
         let preview_scroll_x = self.tabs[index].preview_scroll_x;
         let preview_scroll_y = self.tabs[index].preview_scroll_y;
         let mut tab = EditorTab::from_loaded(loaded, &self.config.editor);
+        tab.document
+            .continue_source_revision_from(&self.tabs[index].document);
         tab.pending_mixed_open = tab.document.mixed_line_ending_target().is_some();
         style_cursor(&mut tab.editor, self.mode);
         tab.editor.move_cursor(CursorMove::Jump(
@@ -6243,11 +6432,13 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
                 if observe_shutdown_request(&mut app, &shutdown_requested) {
                     continue;
                 }
+                app.schedule_preview_render();
+                app.start_due_preview_render();
                 if needs_draw {
                     terminal.draw(|frame| ui::draw(frame, &mut app))?;
                     needs_draw = false;
                 }
-                let received_event = match event::poll(Duration::from_millis(250)) {
+                let received_event = match event::poll(app.preview_poll_timeout()) {
                     Ok(true) => match event::read() {
                         Ok(event) => {
                             match event {
@@ -6283,6 +6474,7 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
                     Err(error) => return Err(error.into()),
                 };
                 needs_draw |= received_event && !app.should_quit;
+                needs_draw |= app.poll_preview_results();
                 needs_draw |= app.poll_workspace_search_results();
                 needs_draw |= app.poll_workspace_scan_results();
                 needs_draw |= app.materialize_next_session_tab();
@@ -8183,6 +8375,7 @@ command_manage_recovery = "Z"
         fs::write(&path, "first").unwrap();
         let workspace = Workspace::from_target(&path).unwrap();
         let mut app = App::new(workspace).unwrap();
+        let opened_revision = app.active_tab().unwrap().document.source_revision;
 
         fs::write(&path, "external").unwrap();
         assert!(app.poll_external_state());
@@ -8191,6 +8384,18 @@ command_manage_recovery = "Z"
             "external"
         );
         assert!(!app.active_tab().unwrap().document.conflict);
+        assert_eq!(
+            app.active_tab()
+                .unwrap()
+                .document
+                .source_revision
+                .generation,
+            opened_revision.generation + 1
+        );
+        assert_ne!(
+            app.active_tab().unwrap().document.source_revision.sha256,
+            opened_revision.sha256
+        );
 
         app.active_tab_mut().unwrap().editor.insert_str("local ");
         fs::write(&path, "second external").unwrap();
@@ -9301,5 +9506,219 @@ command_manage_recovery = "Z"
         app.handle_overlay_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         assert!(!archived_path.exists());
         assert!(journal.list_quarantined(Some(&root)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rapid_preview_changes_coalesce_into_the_latest_revision() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "# First\n").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::with_state_services(workspace, Config::default(), None, None).unwrap();
+        app.view_mode = ViewMode::Split;
+        app.viewport_width = 160;
+
+        let initial_key = app.current_preview_key().unwrap();
+        let initial_revision = initial_key.revision;
+        let initial_source = app.active_tab().unwrap().document.text.clone();
+        app.active_tab_mut().unwrap().preview_cache = Some(PreviewCache {
+            key: initial_key,
+            rendered: render_markdown_document(&initial_source, None),
+        });
+        let started = Instant::now();
+
+        app.active_tab_mut().unwrap().editor.insert_str(" second");
+        app.sync_active_document();
+        app.schedule_preview_render_at(started);
+        let first_pending_revision = app.pending_preview.as_ref().unwrap().key.revision;
+
+        app.active_tab_mut().unwrap().editor.insert_str(" third");
+        app.sync_active_document();
+        app.schedule_preview_render_at(started + Duration::from_millis(10));
+        let pending = app.pending_preview.as_ref().unwrap();
+        assert!(pending.key.revision.generation > first_pending_revision.generation);
+        assert!(pending.source.ends_with(" second third# First\n"));
+        assert_eq!(pending.ready_at, started + Duration::from_millis(60));
+        assert!(app.preview_for_draw().is_some());
+        assert_eq!(
+            app.active_tab()
+                .unwrap()
+                .preview_cache
+                .as_ref()
+                .unwrap()
+                .key
+                .revision,
+            initial_revision
+        );
+
+        app.start_due_preview_render_at(started + Duration::from_millis(59));
+        assert_eq!(app.preview_renders_started, 0);
+        app.start_due_preview_render_at(started + Duration::from_millis(60));
+        assert_eq!(app.preview_renders_started, 1);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !app.preview_inflight.is_empty() {
+            assert!(Instant::now() < deadline, "preview worker did not finish");
+            std::thread::yield_now();
+            app.poll_preview_results();
+        }
+        assert_eq!(
+            app.active_tab()
+                .unwrap()
+                .preview_cache
+                .as_ref()
+                .unwrap()
+                .key,
+            app.current_preview_key().unwrap()
+        );
+    }
+
+    #[test]
+    fn stale_preview_completion_never_replaces_newer_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "# First\n").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::with_state_services(workspace, Config::default(), None, None).unwrap();
+        app.view_mode = ViewMode::Split;
+        app.viewport_width = 160;
+
+        let stale_key = app.current_preview_key().unwrap();
+        let stale_source = app.active_tab().unwrap().document.text.clone();
+        app.active_tab_mut().unwrap().editor.insert_str("newer ");
+        app.sync_active_document();
+        app.preview_tx
+            .send(PreviewCompletion {
+                key: stale_key,
+                rendered: render_markdown_document(&stale_source, None),
+            })
+            .unwrap();
+
+        assert!(!app.poll_preview_results());
+        assert!(app.active_tab().unwrap().preview_cache.is_none());
+        assert_eq!(app.preview_stale_completions, 1);
+        assert!(
+            app.active_tab()
+                .unwrap()
+                .document
+                .text
+                .starts_with("newer ")
+        );
+    }
+
+    #[test]
+    fn unchanged_preview_draws_reuse_the_cached_parse() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "# First\n\n[Example](https://example.com).\n").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::with_state_services(workspace, Config::default(), None, None).unwrap();
+
+        assert!(app.preview_for_draw().is_some());
+        app.preview_selected_link = Some(0);
+        assert!(app.preview_for_draw().is_some());
+        assert!(app.preview_for_draw().is_some());
+        assert_eq!(app.preview_synchronous_renders, 2);
+        assert_eq!(
+            app.active_tab()
+                .unwrap()
+                .preview_cache
+                .as_ref()
+                .unwrap()
+                .key,
+            app.current_preview_key().unwrap()
+        );
+        assert_eq!(
+            app.active_tab()
+                .unwrap()
+                .preview_cache
+                .as_ref()
+                .unwrap()
+                .key
+                .revision,
+            app.active_tab().unwrap().document.source_revision
+        );
+    }
+
+    #[test]
+    fn responsiveness_gate_many_tabs_keeps_switching_bounded_without_eviction() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = (0..256).fold(String::new(), |mut source, line| {
+            writeln!(source, "Paragraph {line}: local-first Markdown source.").unwrap();
+            source
+        });
+        let paths = (0..24)
+            .map(|index| {
+                let path = directory.path().join(format!("note-{index:02}.md"));
+                fs::write(&path, &source).unwrap();
+                path
+            })
+            .collect::<Vec<_>>();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let mut app = App::with_state_services(workspace, Config::default(), None, None).unwrap();
+
+        let open_started = Instant::now();
+        for path in &paths {
+            app.open_document(path).unwrap();
+            assert!(app.preview_for_draw().is_some());
+        }
+        let open_elapsed = open_started.elapsed();
+        let switch_started = Instant::now();
+        for _ in 0..240 {
+            app.switch_tab(1);
+            let tab = app.active_tab().unwrap();
+            let cache = tab.preview_cache.as_ref().unwrap();
+            assert_eq!(cache.key.path, tab.document.path);
+            assert_eq!(cache.key.revision, tab.document.source_revision);
+        }
+        let switch_elapsed = switch_started.elapsed();
+        let tracked_source_bytes = app
+            .tabs
+            .iter()
+            .map(|tab| {
+                tab.document.text.len()
+                    + tab.document.saved_text.len()
+                    + tab.editor.lines().iter().map(String::len).sum::<usize>()
+                    + tab
+                        .inline_source_lines
+                        .iter()
+                        .map(String::len)
+                        .sum::<usize>()
+                    + tab
+                        .inline_editor
+                        .lines()
+                        .iter()
+                        .map(String::len)
+                        .sum::<usize>()
+                    + tab.preview_cache.as_ref().map_or(0, |cache| {
+                        cache
+                            .rendered
+                            .text
+                            .lines
+                            .iter()
+                            .flat_map(|line| &line.spans)
+                            .map(|span| span.content.len())
+                            .sum::<usize>()
+                    })
+            })
+            .sum::<usize>();
+        eprintln!(
+            "many-tab gate: open={open_elapsed:?} switch={switch_elapsed:?} tracked_source_bytes={tracked_source_bytes}"
+        );
+
+        let open_limit = if cfg!(debug_assertions) {
+            Duration::from_secs(6)
+        } else {
+            Duration::from_millis(1_500)
+        };
+        let switch_limit = if cfg!(debug_assertions) {
+            Duration::from_secs(1)
+        } else {
+            Duration::from_millis(250)
+        };
+        assert_eq!(app.tabs.len(), paths.len());
+        assert!(open_elapsed < open_limit);
+        assert!(switch_elapsed < switch_limit);
+        assert!(tracked_source_bytes <= source.len() * paths.len() * 6);
     }
 }

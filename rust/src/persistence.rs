@@ -9,7 +9,7 @@ use tempfile::NamedTempFile;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-use crate::document::{Document, Encoding, FileSnapshot, LineEnding, MixedSource};
+use crate::document::{Document, Encoding, FileSnapshot, LineEnding, MixedSource, SourceRevision};
 
 const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 
@@ -34,6 +34,7 @@ impl LoadedFile {
         } else {
             self.text
         };
+        let source_revision = SourceRevision::initial(&source);
         Document {
             path: self.path,
             text: source.clone(),
@@ -44,6 +45,7 @@ impl LoadedFile {
             snapshot: self.snapshot,
             conflict: false,
             recovery_conflict: false,
+            source_revision,
         }
     }
 

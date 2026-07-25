@@ -132,6 +132,30 @@ impl FileSnapshot {
     }
 }
 
+/// Monotonic in-memory identity for the current source.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct SourceRevision {
+    pub generation: u64,
+    pub sha256: [u8; 32],
+}
+
+impl SourceRevision {
+    #[must_use]
+    pub fn initial(source: &str) -> Self {
+        Self {
+            generation: 0,
+            sha256: source_digest(source),
+        }
+    }
+}
+
+/// Returned when a caller tries to replace source based on an older revision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RevisionMismatch {
+    pub expected: SourceRevision,
+    pub actual: SourceRevision,
+}
+
 #[derive(Clone, Debug)]
 pub struct MixedSource {
     exact: String,
@@ -169,6 +193,7 @@ pub struct Document {
     pub snapshot: FileSnapshot,
     pub conflict: bool,
     pub recovery_conflict: bool,
+    pub source_revision: SourceRevision,
 }
 
 impl Document {
@@ -204,17 +229,60 @@ impl Document {
     }
 
     /// Synchronize normalized editor text while retaining untouched mixed source bytes.
-    pub fn update_from_editor(&mut self, editor_text: String) {
-        let Some(source) = self.mixed_source.as_ref() else {
-            self.text = editor_text;
-            return;
+    pub fn update_from_editor(&mut self, editor_text: String) -> bool {
+        let updated = if let Some(source) = self.mixed_source.as_ref() {
+            if editor_text == source.normalized {
+                self.line_ending = LineEnding::Mixed;
+                source.exact.clone()
+            } else if source.consented {
+                self.line_ending = source.target;
+                editor_text
+            } else {
+                return false;
+            }
+        } else {
+            editor_text
         };
-        if editor_text == source.normalized {
-            self.text.clone_from(&source.exact);
-            self.line_ending = LineEnding::Mixed;
-        } else if source.consented {
-            self.text = editor_text;
-            self.line_ending = source.target;
+        self.replace_source(updated)
+    }
+
+    /// Replace source only if the caller still targets the current revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns the expected and actual revisions when the caller targets stale source.
+    pub fn update_from_editor_if_revision(
+        &mut self,
+        expected: SourceRevision,
+        editor_text: String,
+    ) -> Result<bool, RevisionMismatch> {
+        if expected != self.source_revision {
+            return Err(RevisionMismatch {
+                expected,
+                actual: self.source_revision,
+            });
+        }
+        Ok(self.update_from_editor(editor_text))
+    }
+
+    /// Install source and advance its identity when the bytes actually changed.
+    pub fn replace_source(&mut self, source: String) -> bool {
+        if source == self.text {
+            return false;
+        }
+        self.text = source;
+        self.source_revision = SourceRevision {
+            generation: self.source_revision.generation + 1,
+            sha256: source_digest(&self.text),
+        };
+        true
+    }
+
+    pub(crate) fn continue_source_revision_from(&mut self, previous: &Self) {
+        if self.text == previous.text {
+            self.source_revision = previous.source_revision;
+        } else {
+            self.source_revision.generation = previous.source_revision.generation + 1;
         }
     }
 
@@ -235,6 +303,10 @@ impl Document {
             self.mixed_source = None;
         }
     }
+}
+
+fn source_digest(source: &str) -> [u8; 32] {
+    Sha256::digest(source.as_bytes()).into()
 }
 
 trait UnicodeWords {
@@ -268,5 +340,47 @@ mod tests {
             Some(LineEnding::Crlf)
         );
         assert_eq!(LineEnding::mixed_target("a\nb"), None);
+    }
+
+    #[test]
+    fn source_revision_advances_only_when_source_changes() {
+        let mut document = test_document("first");
+        let initial = document.source_revision;
+
+        assert!(!document.update_from_editor("first".to_owned()));
+        assert_eq!(document.source_revision, initial);
+
+        assert!(document.update_from_editor("second".to_owned()));
+        assert_eq!(document.source_revision.generation, initial.generation + 1);
+        assert_ne!(document.source_revision.sha256, initial.sha256);
+    }
+
+    #[test]
+    fn expected_revision_rejects_stale_source_atomically() {
+        let mut document = test_document("first");
+        let expected = document.source_revision;
+        assert!(document.update_from_editor("second".to_owned()));
+        let current = document.source_revision;
+
+        let result = document.update_from_editor_if_revision(expected, "stale".to_owned());
+
+        assert_eq!(
+            result,
+            Err(RevisionMismatch {
+                expected,
+                actual: current,
+            })
+        );
+        assert_eq!(document.text, "second");
+        assert_eq!(document.source_revision, current);
+    }
+
+    fn test_document(source: &str) -> Document {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        std::fs::write(&path, source).unwrap();
+        crate::persistence::load_file(&path)
+            .unwrap()
+            .into_document()
     }
 }

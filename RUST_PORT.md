@@ -46,7 +46,7 @@ This inventory was recounted from the Python source and the current Rust impleme
   **21 overlay types are currently user-reachable**;
 - shared dialog types serve several workflows, so the operation-by-operation popup matrix below is
   the authoritative interface comparison;
-- the Rust suite passes **206 library tests plus 4 binary tests**; the Python suite passes
+- the Rust suite passes **213 library tests plus 4 binary tests**; the Python suite passes
   **681 tests with 2 platform skips**.
 
 Neither frontend has a native menu bar. In both, the searchable command palette is the application
@@ -98,7 +98,7 @@ menu; the focused Files key layer is a second contextual menu.
 | Workspace-search discovery | Fresh cancellable workspace scan for each submission, including scan warnings | Fresh cancellable workspace scan for each submission, including scan and source-read warnings | Newly created files are discoverable immediately in both |
 | Markdown continuation details | Preserves marker spacing, validates nested indentation with CommonMark, and intercepts only unmodified Enter | Normalizes supported marker spacing and conservatively rejects tab/four-space-leading lines; only unmodified Enter is intercepted | Common continuations match; unusual spacing and nested indentation can differ |
 | I/O scheduling | Most scans, reads, probes, saves, mutations, sessions, recovery, and semantic work run in Textual workers | Recursive workspace indexing and text search use cancellable revisioned threads; most other I/O runs in the event loop | Rust avoids blocking startup on a recursive scan, but another slow filesystem operation can still pause drawing |
-| Preview updates | Revisioned/debounced render pipeline | Re-parses the complete split preview synchronously on each draw | Rust stays simple, but large documents can add per-frame work |
+| Preview updates | Revisioned/debounced render pipeline | Monotonic source identity plus cached, revision-checked, 50 ms-debounced background rendering | Rapid edits coalesce and stale preview work cannot replace newer source |
 | Session restoration | Deferred inactive tabs plus cursor and scroll restoration | Active document first, then one restored tab per event-loop turn, with cursor and editor/preview scroll restoration | Content-free open order, MRU, and viewport continuity match |
 | Session validation | Rejects duplicate paths and inconsistent active/open/view relationships | Same duplicate and active/open/view relationship checks, plus finite non-negative scroll validation | Malformed cross-field state is rejected in both |
 | External monitoring | Active tab plus rotating inactive-tab probes and focus checks | Active tab plus one rotating inactive-tab probe and a background workspace rescan every two seconds | Both detect inactive-file changes without changing the active tab; focus timing differs |
@@ -393,7 +393,7 @@ feature.
 
 ## Verification
 
-Current code state: the primary Rust implementation targeted for 0.6.0.
+Current code state: the primary Rust implementation under 0.7.0 development.
 
 ```bash
 cargo fmt --all -- --check
@@ -405,7 +405,9 @@ cargo test --locked --release
 
 Results at this checkpoint:
 
-- 206 Rust library tests and 4 Rust binary tests pass;
+- 213 Rust library tests and 4 Rust binary tests pass;
+- the current responsiveness gates and real-PTY journey are documented in
+  [docs/responsiveness.md](docs/responsiveness.md);
 - strict Clippy and rustfmt pass;
 - the Python suite passes 681 tests with 2 expected platform skips;
 - source-format and documentation diff checks pass.

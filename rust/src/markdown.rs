@@ -27,6 +27,7 @@ pub(crate) struct PreviewLink {
     pub target: PreviewLinkTarget,
 }
 
+#[derive(Clone)]
 pub(crate) struct RenderedMarkdown {
     pub text: Text<'static>,
     pub source_lines: Vec<usize>,
@@ -714,5 +715,35 @@ mod tests {
         assert!(screen.contains("│ NOTE\n│ Read this."), "{screen}");
         assert!(screen.contains("│ CAUTION\n│ Be careful."));
         assert!(screen.contains("│ [!DANGER] Stays literal."));
+    }
+
+    #[test]
+    fn responsiveness_gate_long_document_preview_stays_bounded() {
+        use std::fmt::Write as _;
+
+        let source = (0..10_000).fold(String::new(), |mut source, index| {
+            write!(
+                source,
+                "## Section {index}\n\nParagraph **{index}** with [link](https://example.com/{index}).\n\n"
+            )
+            .unwrap();
+            source
+        });
+        let started = std::time::Instant::now();
+        let rendered = render_markdown_document(&source, None);
+        let elapsed = started.elapsed();
+        eprintln!(
+            "long-document gate: source_bytes={} rendered_lines={} elapsed={elapsed:?}",
+            source.len(),
+            rendered.text.lines.len()
+        );
+
+        let limit = if cfg!(debug_assertions) {
+            std::time::Duration::from_secs(4)
+        } else {
+            std::time::Duration::from_millis(500)
+        };
+        assert_eq!(rendered.links.len(), 10_000);
+        assert!(elapsed < limit);
     }
 }

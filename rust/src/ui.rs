@@ -19,7 +19,6 @@ use crate::document::LineEnding;
 use crate::editor::{editor_scroll_offset, restore_editor_scroll, style_cursor};
 #[cfg(test)]
 use crate::markdown::render_markdown;
-use crate::markdown::render_markdown_document;
 use crate::markdown_help::MARKDOWN_SYNTAX_HELP;
 use crate::recovery::{RecoveryRecord, RecoveryRecordStatus};
 use crate::search::{TextMatch, TextSearchMode};
@@ -344,9 +343,6 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
 }
 
 fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
-    let Some(source) = app.active_tab().map(|tab| tab.document.text.clone()) else {
-        return;
-    };
     let title_style = if app.focus == Focus::Preview {
         Style::new().fg(BRIGHT).bold()
     } else {
@@ -363,8 +359,16 @@ fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
         .padding(Padding::horizontal(2));
     let area = centered(area, 104);
     let inner = block.inner(area);
+    let Some(rendered) = app.preview_for_draw() else {
+        frame.render_widget(
+            Paragraph::new(Text::default())
+                .block(block)
+                .style(Style::new().fg(TEXT)),
+            area,
+        );
+        return;
+    };
     let content_width = usize::from(inner.width.max(1));
-    let rendered = render_markdown_document(&source, app.preview_selected_link);
     if app
         .preview_selected_link
         .is_some_and(|selected| selected >= rendered.links.len())

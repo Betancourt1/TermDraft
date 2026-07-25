@@ -234,6 +234,7 @@ parent-directory save hardening, and Windows state/lock compatibility. See
 
 - [Rust comparison](RUST_PORT.md) — parity, omissions, safety differences, and benchmarks
 - [Architecture](docs/architecture.md) — Rust modules, state flow, persistence, and recovery
+- [Responsiveness](docs/responsiveness.md) — 0.7 performance gates and real-PTY journey
 - [Markdown gallery](docs/markdown-gallery.md) — exercise the inline and split renderers
 - [Semantic editing](docs/semantic-editing.md) — future block-aware editing boundary
 - [Design QA](design-qa.md) — Ratatui frontend acceptance checks

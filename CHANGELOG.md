@@ -9,6 +9,19 @@ supported releases.
 
 ## [Unreleased]
 
+### Added
+
+- Added a monotonic generation and SHA-256 identity for every in-memory source revision, including
+  atomic expected-revision checks for asynchronous consumers.
+- Added reproducible long-document and many-tab responsiveness gates with a real-PTY acceptance
+  journey.
+
+### Changed
+
+- Removed repeated split-preview parsing from the draw path. Rapid edits now debounce into one
+  background render, unchanged revisions reuse cached output, and stale completions cannot replace
+  newer source.
+
 ## [0.6.0] - 2026-07-23
 
 ### Added

@@ -40,6 +40,8 @@ The app/domain tests separately cover:
 - fuzzy file search, four workspace-search modes, filters, dirty overrides, cancellation, warnings,
   Unicode coordinates, find/replace, and one-step Replace All undo;
 - recent order, restored tabs/cursors, content-free sessions, and open-tab reuse;
+- monotonic source revisions, unchanged-source stability, debounced preview coalescing, cached
+  draws, and stale-render rejection;
 - create/copy/cut/paste/rename/move/Trash and clean-tab/session retargeting;
 - main-pane mouse focus, Files selection/double-click, wheel scrolling, and both divider drags;
 - external change conflicts and filename-specific per-document close/quit traversal;
@@ -56,7 +58,7 @@ cargo test --locked --all-targets
 cargo test --locked --release
 ```
 
-On the current release commit, 170 library tests and 4 binary tests pass.
+On the current 0.7 development checkpoint, 213 library tests and 4 binary tests pass.
 
 ## Manual PTY check
 
@@ -91,6 +93,9 @@ Verify in order:
 11. Dirty close/quit prompts each document by name; Enter never discards.
 12. Files click/double-click, wheel scroll, and both dividers work; overlay clicks remain inert.
 13. A clean `q` restores the normal terminal screen, cursor, raw mode, and mouse reporting.
+14. Complete the long-document and many-tab journey in
+    [docs/responsiveness.md](docs/responsiveness.md); the newest edit must reach split preview,
+    tab switching must remain immediate, and quitting must follow the ordinary interface.
 
 ## Result and accepted gaps
 
@@ -98,8 +103,7 @@ The preserved shell, keyboard modes, full command menu, file workflows, search/r
 conflict decisions, Recovery Manager, diagnostics, main mouse regions, source fidelity, dirty
 transitions, and normal terminal cleanup pass at this checkpoint.
 
-The remaining UI gaps are the richer Python preview/link/footnote behavior, outline filtering and
-preview reveal, collapsible/lazy Files, proactive inactive-tab checks, tab/editor/overlay mouse
-interaction, missing/orphan recovery opening, session scroll restoration, TCSS themes, and
-cooperative SIGTERM/SIGHUP shutdown. See [RUST_PORT.md](RUST_PORT.md) for the exhaustive inventory
-and safety differences.
+The remaining UI gaps are Python-equivalent startup recovery cancellation and TCSS theme loading.
+The main technical gaps are the remaining synchronous filesystem/state operations, deeper
+parent-directory save hardening, and Windows state/lock compatibility. See
+[RUST_PORT.md](RUST_PORT.md) for the exhaustive inventory and safety differences.
