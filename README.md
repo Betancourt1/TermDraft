@@ -199,7 +199,8 @@ unknown settings are rejected. Invalid live reloads leave the active configurati
 
 `theme.tcss` is created for compatibility but is not evaluated by the Rust frontend. Press `t` in
 COMMAND mode to cycle from the default Carbon theme through Paper, Linen, Mist, Midnight, and Void.
-Use `--config-dir PATH` for an isolated configuration.
+TermDraft stores the selected built-in theme in `theme-choice` beside `config.toml` and restores it
+on the next launch. Use `--config-dir PATH` for an isolated configuration.
 
 For a fully isolated comparison, set `XDG_STATE_HOME=/tmp/termdraft-test-state` and pass
 `--config-dir /tmp/termdraft-test-config`.

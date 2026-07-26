@@ -1118,6 +1118,7 @@ impl App {
         let initial_file = workspace.initial_file.clone();
         let restore_open_tabs = initial_file.is_none();
         let startup_mode = config.editor.startup_mode;
+        let theme = config.theme;
         let view_mode = match config.editor.view_mode {
             StartupView::Inline => ViewMode::Inline,
             StartupView::Split => ViewMode::Split,
@@ -1134,7 +1135,7 @@ impl App {
             tabs: Vec::new(),
             active_tab: None,
             mode: Mode::Command,
-            theme: Theme::default(),
+            theme,
             view_mode,
             focus: Focus::Editor,
             show_explorer: true,
@@ -2818,6 +2819,7 @@ impl App {
                     self.narrow_pane = Focus::Editor;
                     self.focus = Focus::Editor;
                 }
+                self.theme = config.theme;
                 self.config = config;
                 self.status_message = Some("Reloaded config.toml".to_owned());
             }
@@ -2901,7 +2903,15 @@ impl App {
                 } else {
                     "dark"
                 };
-                self.status_message = Some(format!("Theme · {} ({mode})", self.theme.name()));
+                self.status_message = Some(match self.config.save_theme_choice(self.theme) {
+                    Ok(()) => format!("Theme · {} ({mode})", self.theme.name()),
+                    Err(error) => {
+                        format!(
+                            "Theme · {} ({mode}) · not saved: {error}",
+                            self.theme.name()
+                        )
+                    }
+                });
             }
             CommandAction::ManageRecovery => self.open_recovery_manager(),
             CommandAction::MarkdownHelp => {
@@ -6767,6 +6777,25 @@ mod tests {
                 .as_deref()
             );
         }
+    }
+
+    #[test]
+    fn selected_theme_is_restored_by_the_next_app_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace_path = directory.path().join("workspace");
+        let config_root = directory.path().join("config");
+        fs::create_dir(&workspace_path).unwrap();
+        let workspace = Workspace::from_target(&workspace_path).unwrap();
+        let config = config::load(config_root.clone()).unwrap();
+        let mut app = App::with_state_services(workspace, config, None, None).unwrap();
+
+        execute_palette_action(&mut app, CommandAction::ChangeTheme);
+        assert_eq!(app.theme, Theme::Paper);
+
+        let workspace = Workspace::from_target(&workspace_path).unwrap();
+        let config = config::load(config_root).unwrap();
+        let restored = App::with_state_services(workspace, config, None, None).unwrap();
+        assert_eq!(restored.theme, Theme::Paper);
     }
 
     #[test]

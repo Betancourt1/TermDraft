@@ -21,6 +21,8 @@ supported releases.
 - Removed repeated split-preview parsing from the draw path. Rapid edits now debounce into one
   background render, unchanged revisions reuse cached output, and stale completions cannot replace
   newer source.
+- Persisted the selected built-in theme in the configuration directory and restore it on the next
+  launch.
 
 ## [0.6.0] - 2026-07-23
 

@@ -12,9 +12,11 @@ use thiserror::Error;
 use time::{Date, OffsetDateTime};
 
 use crate::bindings::{BindingError, Keymap};
+use crate::theme::Theme;
 
 pub const CONFIG_FILE_NAME: &str = "config.toml";
 pub const THEME_FILE_NAME: &str = "theme.tcss";
+pub const THEME_CHOICE_FILE_NAME: &str = "theme-choice";
 
 pub const CONFIG_TEMPLATE: &str = r#"# TermDraft configuration. Unknown options are rejected instead of ignored.
 
@@ -102,6 +104,7 @@ pub struct Config {
     pub root: PathBuf,
     pub editor: EditorConfig,
     pub recovery: RecoveryConfig,
+    pub theme: Theme,
     /// Entries explicitly loaded from `[keybindings]`.
     pub keybinding_overrides: BTreeMap<String, String>,
     /// The complete validated keymap after applying overrides to official defaults.
@@ -114,6 +117,7 @@ impl Default for Config {
             root: PathBuf::new(),
             editor: EditorConfig::default(),
             recovery: RecoveryConfig::default(),
+            theme: Theme::default(),
             keybinding_overrides: BTreeMap::new(),
             keybindings: Keymap::default(),
         }
@@ -129,6 +133,52 @@ impl Config {
     #[must_use]
     pub fn theme_path(&self) -> PathBuf {
         self.root.join(THEME_FILE_NAME)
+    }
+
+    /// Persist the selected built-in theme without rewriting `config.toml`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the configuration directory or preference cannot be written safely.
+    pub fn save_theme_choice(&self, theme: Theme) -> Result<(), ConfigError> {
+        if self.root.as_os_str().is_empty() {
+            return Ok(());
+        }
+        fs::create_dir_all(&self.root).map_err(|source| ConfigError::Create {
+            path: self.root.clone(),
+            source,
+        })?;
+        secure_directory(&self.root)?;
+        let path = self.root.join(THEME_CHOICE_FILE_NAME);
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(&self.root).map_err(|source| ConfigError::Create {
+                path: path.clone(),
+                source,
+            })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            temporary
+                .as_file()
+                .set_permissions(fs::Permissions::from_mode(0o600))
+                .map_err(|source| ConfigError::Create {
+                    path: path.clone(),
+                    source,
+                })?;
+        }
+        writeln!(temporary, "{}", theme.storage_name())
+            .and_then(|()| temporary.as_file().sync_all())
+            .map_err(|source| ConfigError::Create {
+                path: path.clone(),
+                source,
+            })?;
+        temporary
+            .persist(&path)
+            .map_err(|error| ConfigError::Create {
+                path,
+                source: error.error,
+            })?;
+        Ok(())
     }
 }
 
@@ -210,6 +260,8 @@ pub enum ConfigError {
     InvalidRetention,
     #[error("recovery.retention_days is too large for the current date")]
     RetentionTooLarge,
+    #[error("{path} contains an unknown theme: {value}")]
+    InvalidTheme { path: PathBuf, value: String },
     #[error(transparent)]
     InvalidKeybindings(#[from] BindingError),
     #[error("cannot create configuration at {path}: {source}")]
@@ -270,13 +322,27 @@ pub fn load(root: PathBuf) -> Result<Config, ConfigError> {
         return Err(ConfigError::RetentionTooLarge);
     }
     let keybindings = Keymap::resolve(&parsed.keybindings)?;
+    let theme = load_theme_choice(&root)?;
     Ok(Config {
         root,
         editor: parsed.editor,
         recovery: parsed.recovery,
+        theme,
         keybinding_overrides: parsed.keybindings,
         keybindings,
     })
+}
+
+fn load_theme_choice(root: &Path) -> Result<Theme, ConfigError> {
+    let path = root.join(THEME_CHOICE_FILE_NAME);
+    match fs::read_to_string(&path) {
+        Ok(value) => Theme::from_storage_name(&value).ok_or_else(|| ConfigError::InvalidTheme {
+            path,
+            value: value.trim().to_owned(),
+        }),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(Theme::default()),
+        Err(source) => Err(ConfigError::Read { path, source }),
+    }
 }
 
 fn maximum_retention_days(now: OffsetDateTime) -> u32 {
@@ -500,5 +566,37 @@ retention_days = 45
             "[editor]\nsoft_wrap = false\n"
         );
         assert!(directory.path().join(THEME_FILE_NAME).is_file());
+    }
+
+    #[test]
+    fn selected_theme_persists_without_rewriting_config() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join(CONFIG_FILE_NAME);
+        fs::write(&config_path, "[editor]\nsoft_wrap = false\n").unwrap();
+        let config = load(directory.path().to_path_buf()).unwrap();
+
+        config.save_theme_choice(Theme::Mist).unwrap();
+        let reloaded = load(directory.path().to_path_buf()).unwrap();
+
+        assert_eq!(reloaded.theme, Theme::Mist);
+        assert_eq!(
+            fs::read_to_string(config_path).unwrap(),
+            "[editor]\nsoft_wrap = false\n"
+        );
+        assert_eq!(
+            fs::read_to_string(directory.path().join(THEME_CHOICE_FILE_NAME)).unwrap(),
+            "mist\n"
+        );
+    }
+
+    #[test]
+    fn rejects_an_unknown_persisted_theme() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join(THEME_CHOICE_FILE_NAME), "sepia\n").unwrap();
+
+        assert!(matches!(
+            load(directory.path().to_path_buf()),
+            Err(ConfigError::InvalidTheme { value, .. }) if value == "sepia"
+        ));
     }
 }

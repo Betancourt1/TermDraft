@@ -273,7 +273,8 @@ remains startup-only.
 
 `theme.tcss` is created as a no-clobber compatibility template but is never parsed or watched.
 Rust instead provides Paper, Linen, and Mist light themes plus Midnight, Void, and Carbon dark
-themes. `t` cycles them for the current run; `--safe-mode` remains behaviorally redundant.
+themes. `t` cycles them and atomically stores the selected built-in theme in `theme-choice` beside
+`config.toml`, so the next launch restores it; `--safe-mode` remains behaviorally redundant.
 
 The command palette preserves Python's 32 actions and adds the native Change theme action, rendered
 as a searchable grouped two-column grid with descriptions and a compact fallback for narrow
