@@ -9,6 +9,8 @@ supported releases.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-27
+
 ### Added
 
 - Added a monotonic generation and SHA-256 identity for every in-memory source revision, including
@@ -216,7 +218,8 @@ supported releases.
 - Established the local-first terminal writing loop with a file explorer, Markdown source editor,
   rendered preview, protected saves, and crash-recovery journals.
 
-[Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.7.0
 [0.6.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.6.0
 [0.5.1]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.5.1
 [0.5.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.5.0
