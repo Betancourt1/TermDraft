@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod bindings;
+pub mod checkpoint;
 pub mod config;
 pub mod continuation;
 pub mod coordinate_diagnostic;

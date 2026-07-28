@@ -5,15 +5,18 @@ use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap};
-use time::{Duration as TimeDuration, OffsetDateTime};
+use time::format_description::well_known::Rfc3339;
+use time::{Duration as TimeDuration, OffsetDateTime, UtcOffset};
 use tui_textarea::CursorRenderMode;
 
 use crate::app::{
     App, CommandAction, CommandSpec, ConfirmAction, ConflictKind, EXPLORER_MAX_WIDTH,
-    EXPLORER_MIN_WIDTH, FileFinderFocus, FindFocus, Focus, MixedLineEndingContext, Mode, Overlay,
-    RecoveryManagerFocus, TextInput, UiRegions, ViewMode, WorkspaceSearchFocus, command_candidates,
+    EXPLORER_MIN_WIDTH, FileFinderFocus, FindFocus, Focus, HistoryClearScope, HistoryDiffKind,
+    HistoryDiffLine, HistoryFocus, MixedLineEndingContext, Mode, Overlay, RecoveryManagerFocus,
+    TextInput, UiRegions, ViewMode, WorkspaceSearchFocus, command_candidates,
     text_search_mode_label,
 };
+use crate::checkpoint::{Checkpoint, CheckpointReason};
 use crate::coordinate_diagnostic::CoordinateDiagnostic;
 use crate::document::LineEnding;
 use crate::editor::{editor_scroll_offset, restore_editor_scroll, style_cursor};
@@ -34,7 +37,7 @@ const POPUP_BORDER: Color = Color::Rgb(82, 82, 82);
 const TEXT: Color = Color::Rgb(218, 218, 218);
 const MUTED: Color = Color::Rgb(118, 118, 118);
 const BRIGHT: Color = Color::Rgb(242, 242, 242);
-const SHORTCUT_HELP_LINE_COUNT: u16 = 28;
+const SHORTCUT_HELP_LINE_COUNT: u16 = 29;
 const MARKDOWN_ICON: &str = "";
 const FOLDER_ICON: &str = "";
 const COLLAPSED_FOLDER: &str = "▸";
@@ -585,8 +588,10 @@ pub(crate) fn overlay_area(frame_area: Rect, overlay: &Overlay) -> Rect {
         Overlay::PathInput { .. } | Overlay::WorkspaceInput { .. } => popup(frame_area, 66, 7),
         Overlay::Recovery { .. } | Overlay::MixedLineEndings { .. } => popup(frame_area, 70, 9),
         Overlay::RecoveryManager { .. } => popup(frame_area, 88, 34),
+        Overlay::LocalHistory { .. } => popup(frame_area, 96, 34),
         Overlay::RecoveryDeleteConfirm { .. } => popup(frame_area, 74, 9),
         Overlay::RecoveryCleanupConfirm { .. } => popup(frame_area, 82, 30),
+        Overlay::HistoryClearConfirm { .. } => popup(frame_area, 78, 9),
         Overlay::Conflict { .. } => popup(frame_area, 74, 10),
         Overlay::TrashConfirm { .. } => popup(frame_area, 70, 8),
         Overlay::Confirm(_) | Overlay::Message(_) => popup(frame_area, 62, 7),
@@ -599,6 +604,63 @@ pub(crate) fn overlay_inner_area(area: Rect) -> Rect {
         .borders(Borders::ALL)
         .padding(Padding::horizontal(2))
         .inner(area)
+}
+
+fn history_content_area(area: Rect) -> Rect {
+    let inner = overlay_inner_area(area);
+    let [_, content, _] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Min(1),
+        Constraint::Length(2),
+    ])
+    .areas(inner);
+    content
+}
+
+fn history_pane_areas(area: Rect) -> (Rect, Rect) {
+    let content = history_content_area(area);
+    if area.width >= 88 {
+        let [list, _, diff] = Layout::horizontal([
+            Constraint::Length(44),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .areas(content);
+        (list, diff)
+    } else {
+        let [list, _, diff] = Layout::vertical([
+            Constraint::Percentage(38),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .areas(content);
+        (list, diff)
+    }
+}
+
+#[must_use]
+pub(crate) fn history_list_area(area: Rect) -> Rect {
+    let (list, _) = history_pane_areas(area);
+    Block::new().borders(Borders::ALL).inner(list)
+}
+
+#[must_use]
+pub(crate) fn history_diff_area(area: Rect) -> Rect {
+    let (_, diff) = history_pane_areas(area);
+    Block::new().borders(Borders::ALL).inner(diff)
+}
+
+#[must_use]
+pub(crate) fn history_list_start(total: usize, selected: usize, height: u16) -> usize {
+    let visible = usize::from(height);
+    if total <= visible || visible == 0 {
+        return 0;
+    }
+    selected
+        .min(total.saturating_sub(1))
+        .saturating_add(1)
+        .saturating_sub(visible)
+        .min(total.saturating_sub(visible))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -812,6 +874,32 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
             *retention_days,
             status,
         ),
+        Overlay::LocalHistory {
+            enabled,
+            path,
+            checkpoints,
+            selected,
+            focus,
+            diff,
+            diff_scroll,
+            diff_truncated,
+            status,
+            ..
+        } => draw_local_history(
+            frame,
+            app,
+            area,
+            block,
+            *enabled,
+            path,
+            checkpoints,
+            *selected,
+            *focus,
+            diff,
+            *diff_scroll,
+            *diff_truncated,
+            status,
+        ),
         Overlay::RecoveryDeleteConfirm { record } => {
             let description = record.entry.as_ref().map_or_else(
                 || {
@@ -848,6 +936,19 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
             retention_days,
             ..
         } => draw_recovery_cleanup_confirmation(frame, app, area, block, records, *retention_days),
+        Overlay::HistoryClearConfirm {
+            scope,
+            path,
+            checkpoint_ids,
+        } => draw_history_clear_confirmation(
+            frame,
+            app,
+            area,
+            block,
+            *scope,
+            path,
+            checkpoint_ids.len(),
+        ),
         Overlay::MixedLineEndings {
             context, target, ..
         } => {
@@ -977,6 +1078,305 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
             area,
         ),
     }
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn draw_local_history(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    block: Block<'_>,
+    enabled: bool,
+    path: &std::path::Path,
+    checkpoints: &[Checkpoint],
+    selected: usize,
+    focus: HistoryFocus,
+    diff: &[HistoryDiffLine],
+    diff_scroll: usize,
+    diff_truncated: bool,
+    status: &str,
+) {
+    let inner = block.inner(area);
+    frame.render_widget(block.title(" Local History "), area);
+    let relative = app.workspace.relative(path);
+    if !enabled {
+        let [path_area, explanation_area, footer_area] = Layout::vertical([
+            Constraint::Length(2),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
+        .areas(inner);
+        frame.render_widget(
+            Paragraph::new(format!("Active document · {}", relative.display()))
+                .style(Style::new().fg(BRIGHT)),
+            path_area,
+        );
+        let mut lines = vec![
+            Line::from("Local History is off for this workspace.")
+                .style(Style::new().fg(TEXT).bold()),
+            Line::from(""),
+            Line::from("Undo keeps edits from this open editing session.")
+                .style(Style::new().fg(TEXT)),
+            Line::from("Recovery protects an unsaved draft after an interruption.")
+                .style(Style::new().fg(TEXT)),
+            Line::from("Local History keeps durable, named checkpoints across sessions.")
+                .style(Style::new().fg(TEXT)),
+        ];
+        if !status.is_empty() {
+            lines.extend([
+                Line::from(""),
+                Line::from(status.to_owned()).style(Style::new().fg(BRIGHT)),
+            ]);
+        }
+        frame.render_widget(
+            Paragraph::new(lines).wrap(Wrap { trim: false }),
+            explanation_area,
+        );
+        frame.render_widget(
+            Paragraph::new("e  Enable for this workspace     Esc  Close")
+                .style(Style::new().fg(BRIGHT)),
+            footer_area,
+        );
+        return;
+    }
+
+    let [header_area, _, footer_area] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Min(1),
+        Constraint::Length(2),
+    ])
+    .areas(inner);
+    let checkpoint_label = if checkpoints.len() == 1 {
+        "1 checkpoint · newest first".to_owned()
+    } else {
+        format!("{} checkpoints · newest first", checkpoints.len())
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(format!("Active document · {}", relative.display()))
+                .style(Style::new().fg(BRIGHT)),
+            Line::from(if status.is_empty() {
+                checkpoint_label
+            } else {
+                format!("{checkpoint_label} · {status}")
+            })
+            .style(Style::new().fg(if status.is_empty() { MUTED } else { BRIGHT })),
+        ]),
+        header_area,
+    );
+
+    let (list_outer, diff_outer) = history_pane_areas(area);
+    let list_focused = focus == HistoryFocus::Checkpoints;
+    let diff_focused = focus == HistoryFocus::Diff;
+    let list_block = Block::new()
+        .borders(Borders::ALL)
+        .title(if list_focused {
+            " Checkpoints · active "
+        } else {
+            " Checkpoints "
+        })
+        .border_style(Style::new().fg(if list_focused { BRIGHT } else { POPUP_BORDER }));
+    let list_area = list_block.inner(list_outer);
+    frame.render_widget(list_block, list_outer);
+    if checkpoints.is_empty() {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from("No checkpoints yet.").style(Style::new().fg(TEXT)),
+                Line::from("Press c to create one.").style(Style::new().fg(MUTED)),
+            ]),
+            list_area,
+        );
+    } else {
+        let selection = selected.min(checkpoints.len().saturating_sub(1));
+        let start = history_list_start(checkpoints.len(), selection, list_area.height);
+        let items = checkpoints
+            .iter()
+            .skip(start)
+            .take(usize::from(list_area.height))
+            .map(|checkpoint| {
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!("{}  ", compact_history_timestamp(&checkpoint.captured_at)),
+                        Style::new().fg(MUTED),
+                    ),
+                    Span::styled(
+                        history_reason_label(checkpoint.reason),
+                        Style::new().fg(TEXT),
+                    ),
+                ]))
+            });
+        let list = List::new(items)
+            .highlight_symbol("› ")
+            .highlight_style(if list_focused {
+                Style::new().bg(Color::Rgb(44, 44, 44)).fg(BRIGHT).bold()
+            } else {
+                Style::new().fg(BRIGHT).bold()
+            });
+        let mut state =
+            ratatui::widgets::ListState::default().with_selected(Some(selection - start));
+        frame.render_stateful_widget(list, list_area, &mut state);
+    }
+
+    let diff_block = Block::new()
+        .borders(Borders::ALL)
+        .title(if diff_focused {
+            " Checkpoint → current · active "
+        } else {
+            " Checkpoint → current "
+        })
+        .border_style(Style::new().fg(if diff_focused { BRIGHT } else { POPUP_BORDER }));
+    let diff_area = diff_block.inner(diff_outer);
+    frame.render_widget(diff_block, diff_outer);
+    draw_history_diff(
+        frame,
+        diff_area,
+        checkpoints.get(selected),
+        diff,
+        diff_scroll,
+        diff_truncated,
+    );
+
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from("c Checkpoint · r Restore · Tab Pane · e Disable")
+                .style(Style::new().fg(BRIGHT)),
+            Line::from("d Clear document · D Clear workspace · Esc Close")
+                .style(Style::new().fg(MUTED)),
+        ]),
+        footer_area,
+    );
+}
+
+fn draw_history_diff(
+    frame: &mut Frame,
+    area: Rect,
+    checkpoint: Option<&Checkpoint>,
+    diff: &[HistoryDiffLine],
+    diff_scroll: usize,
+    diff_truncated: bool,
+) {
+    let Some(checkpoint) = checkpoint else {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from("No checkpoint selected.").style(Style::new().fg(TEXT)),
+                Line::from("The current document is unchanged.").style(Style::new().fg(MUTED)),
+            ]),
+            area,
+        );
+        return;
+    };
+    let [detail_area, diff_area] =
+        Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(area);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(format!(
+                "{} · {}",
+                history_reason_label(checkpoint.reason),
+                compact_history_timestamp(&checkpoint.captured_at)
+            ))
+            .style(Style::new().fg(BRIGHT)),
+            Line::from(format!(
+                "Captured path · {}",
+                checkpoint.captured_path.display()
+            ))
+            .style(Style::new().fg(MUTED)),
+        ]),
+        detail_area,
+    );
+
+    let visible_height = usize::from(diff_area.height);
+    let reserve_notice = usize::from(diff_truncated && visible_height > 0);
+    let shown = visible_height.saturating_sub(reserve_notice);
+    let mut lines = diff
+        .iter()
+        .skip(diff_scroll)
+        .take(shown)
+        .map(history_diff_line)
+        .collect::<Vec<_>>();
+    if lines.is_empty() && !diff_truncated {
+        lines.push(Line::from("No changes from the current source.").style(Style::new().fg(MUTED)));
+    }
+    if diff_truncated && visible_height > 0 {
+        lines.push(
+            Line::from("… Diff truncated · full checkpoint retained.")
+                .style(Style::new().fg(BRIGHT).bold()),
+        );
+    }
+    frame.render_widget(Paragraph::new(lines), diff_area);
+}
+
+fn history_diff_line(line: &HistoryDiffLine) -> Line<'_> {
+    let (prefix, style) = match line.kind {
+        HistoryDiffKind::Context => ("  ", Style::new().fg(TEXT)),
+        HistoryDiffKind::Added => ("+ ", Style::new().fg(Color::Green)),
+        HistoryDiffKind::Removed => ("- ", Style::new().fg(Color::Red)),
+        HistoryDiffKind::Notice => ("  ", Style::new().fg(MUTED)),
+    };
+    Line::from(vec![
+        Span::styled(prefix, style.bold()),
+        Span::styled(line.text.as_str(), style),
+    ])
+}
+
+const fn history_reason_label(reason: CheckpointReason) -> &'static str {
+    match reason {
+        CheckpointReason::Manual => "Manual",
+        CheckpointReason::PreviousSavedVersion => "Previous saved version",
+        CheckpointReason::BeforeRestore => "Before restore",
+        CheckpointReason::BeforeExternalReload => "Before external reload",
+    }
+}
+
+fn compact_history_timestamp(timestamp: &str) -> String {
+    let Ok(timestamp) = OffsetDateTime::parse(timestamp, &Rfc3339) else {
+        return timestamp.to_owned();
+    };
+    let timestamp = timestamp.to_offset(UtcOffset::UTC);
+    format!(
+        "{:02}-{:02} {:02}:{:02} UTC",
+        u8::from(timestamp.month()),
+        timestamp.day(),
+        timestamp.hour(),
+        timestamp.minute()
+    )
+}
+
+fn draw_history_clear_confirmation(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    block: Block<'_>,
+    scope: HistoryClearScope,
+    path: &std::path::Path,
+    checkpoint_count: usize,
+) {
+    let count = if checkpoint_count == 1 {
+        "1 exact checkpoint".to_owned()
+    } else {
+        format!("{checkpoint_count} exact checkpoints")
+    };
+    let (title, target, action) = match scope {
+        HistoryClearScope::Document => (
+            " Clear document history? ",
+            format!("Document · {}", app.workspace.relative(path).display()),
+            "d  Clear document history",
+        ),
+        HistoryClearScope::Workspace => (
+            " Clear workspace history? ",
+            format!("Workspace · {}", app.workspace.root.display()),
+            "D  Clear workspace history",
+        ),
+    };
+    let text = Text::from(vec![
+        Line::from(format!("Delete {count}? This cannot be undone.")).style(Style::new().fg(TEXT)),
+        Line::from(target).style(Style::new().fg(MUTED)),
+        Line::from("Only the records listed when this confirmation opened are eligible.")
+            .style(Style::new().fg(MUTED)),
+        Line::from(""),
+        Line::from(format!("{action}     Enter / Esc  Cancel (default)"))
+            .style(Style::new().fg(BRIGHT)),
+    ]);
+    frame.render_widget(Paragraph::new(text).block(block.title(title)), area);
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -1981,6 +2381,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, block: Block<'_>, scroll:
             shortcut(app, &["command_undo", "command_redo"]),
             "Undo / redo",
         ),
+        help_line("HISTORY", "menu", "Create checkpoints / open Local History"),
         help_line(
             "EDIT",
             shortcut(app, &["command_inspect_semantic_blocks"]),
@@ -2068,6 +2469,9 @@ fn command_shortcut(app: &App, action: crate::app::CommandAction) -> String {
         CommandAction::CommandMode => return "Esc".to_owned(),
         CommandAction::Undo => &["command_undo", "undo"],
         CommandAction::Redo => &["command_redo", "redo"],
+        CommandAction::CreateCheckpoint | CommandAction::LocalHistory => {
+            return "menu".to_owned();
+        }
         CommandAction::ReloadConfig => &["command_reload_config"],
         CommandAction::ChangeTheme => &["command_change_theme"],
         CommandAction::ManageRecovery => &["command_manage_recovery"],
@@ -2263,6 +2667,10 @@ const fn command_description(action: CommandAction) -> &'static str {
         CommandAction::CommandMode => "Use single-key application commands",
         CommandAction::Undo => "Undo the last editor change",
         CommandAction::Redo => "Redo the last undone editor change",
+        CommandAction::CreateCheckpoint => {
+            "Capture the current source in this workspace's Local History"
+        }
+        CommandAction::LocalHistory => "Compare, restore, or clear Local History checkpoints",
         CommandAction::ReloadConfig => "Reload keybindings, editor, and retention options",
         CommandAction::ChangeTheme => {
             "Cycle through Paper, Linen, Mist, Midnight, Void, and Carbon"
@@ -2453,6 +2861,7 @@ mod tests {
     use super::*;
     use crate::config::{Config, StartupView};
     use crate::coordinate_diagnostic::diagnose_coordinate;
+    use crate::document::SourceRevision;
     use crate::persistence::load_file;
     use crate::recovery::RecoveryJournal;
     use crate::semantic_blocks::map_semantic_blocks;
@@ -2664,7 +3073,7 @@ mod tests {
         let Some(Overlay::Help { scroll, max_scroll }) = &mut app.overlay else {
             panic!("shortcut help should remain open");
         };
-        assert_eq!(*max_scroll, 9);
+        assert_eq!(*max_scroll, 10);
         *scroll = *max_scroll;
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -2673,6 +3082,228 @@ mod tests {
         assert!(last_page.contains("Scroll preview table horizontally"));
         assert!(last_page.contains("Open grouped command menu"));
         assert!(last_page.contains("Enter/Esc/F1"));
+    }
+
+    fn checkpoint(
+        id: &str,
+        captured_at: &str,
+        captured_path: &str,
+        reason: CheckpointReason,
+        source: &str,
+    ) -> Checkpoint {
+        Checkpoint {
+            id: id.to_owned(),
+            document_path: "note.md".into(),
+            captured_path: captured_path.into(),
+            source: source.to_owned(),
+            digest: "a".repeat(64),
+            captured_at: captured_at.to_owned(),
+            reason,
+        }
+    }
+
+    #[test]
+    fn local_history_renders_wide_checkpoint_diff_and_truncation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "current").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        let path = app.active_tab().unwrap().document.path.clone();
+        app.overlay = Some(Overlay::LocalHistory {
+            enabled: true,
+            path: path.clone(),
+            checkpoints: vec![
+                checkpoint(
+                    "new",
+                    "2026-07-27T18:42:00-05:00",
+                    "archive/note.md",
+                    CheckpointReason::BeforeRestore,
+                    "before",
+                ),
+                checkpoint(
+                    "old",
+                    "2026-07-27T17:30:00Z",
+                    "note.md",
+                    CheckpointReason::PreviousSavedVersion,
+                    "older",
+                ),
+            ],
+            selected: 0,
+            focus: HistoryFocus::Checkpoints,
+            diff: vec![
+                HistoryDiffLine {
+                    kind: HistoryDiffKind::Context,
+                    text: "@@ -1 +1 @@".to_owned(),
+                },
+                HistoryDiffLine {
+                    kind: HistoryDiffKind::Removed,
+                    text: "before".to_owned(),
+                },
+                HistoryDiffLine {
+                    kind: HistoryDiffKind::Added,
+                    text: "current".to_owned(),
+                },
+            ],
+            diff_scroll: 0,
+            diff_truncated: true,
+            expected_revision: SourceRevision::initial("current"),
+            status: "Warning: one corrupt checkpoint was skipped".to_owned(),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(120, 34)).unwrap();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let screen = rendered(&terminal);
+        assert!(screen.contains("Local History"));
+        assert!(
+            screen.contains("Active document · note.md"),
+            "rendered Local History:\n{screen}"
+        );
+        assert!(screen.contains("07-27 23:42 UTC"));
+        assert!(screen.contains("Before restore"));
+        assert!(screen.contains("Previous saved version"));
+        assert!(screen.contains("Captured path · archive/note.md"));
+        assert!(screen.contains("- before"));
+        assert!(screen.contains("+ current"));
+        assert!(screen.contains("Diff truncated · full checkpoint retained"));
+        assert!(screen.contains("one corrupt checkpoint was skipped"));
+        assert!(screen.contains("c Checkpoint · r Restore · Tab Pane · e Disable"));
+        assert!(screen.contains("d Clear document · D Clear workspace · Esc Close"));
+
+        let overlay = app.overlay.as_ref().unwrap();
+        let area = overlay_area(terminal.backend().buffer().area, overlay);
+        let list = history_list_area(area);
+        let diff = history_diff_area(area);
+        assert!(list.x < diff.x);
+        assert_eq!(list.y, diff.y);
+        assert_eq!(history_list_start(20, 0, 4), 0);
+        assert_eq!(history_list_start(20, 8, 4), 5);
+        assert_eq!(history_list_start(3, 2, 4), 0);
+    }
+
+    #[test]
+    fn local_history_stacks_narrow_and_clear_confirmations_default_to_cancel() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "current").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        let path = app.active_tab().unwrap().document.path.clone();
+        let mut terminal = Terminal::new(TestBackend::new(70, 24)).unwrap();
+
+        app.overlay = Some(Overlay::LocalHistory {
+            enabled: false,
+            path: path.clone(),
+            checkpoints: Vec::new(),
+            selected: 0,
+            focus: HistoryFocus::Checkpoints,
+            diff: Vec::new(),
+            diff_scroll: 0,
+            diff_truncated: false,
+            expected_revision: SourceRevision::initial("current"),
+            status: "Enable Local History before creating checkpoints".to_owned(),
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let disabled = rendered(&terminal);
+        assert!(disabled.contains("Local History is off for this workspace"));
+        assert!(disabled.contains("Undo keeps edits from this open editing session"));
+        assert!(disabled.contains("Recovery protects an unsaved draft"));
+        assert!(disabled.contains("Local History keeps durable, named checkpoints"));
+        assert!(disabled.contains("e  Enable for this workspace"));
+
+        app.overlay = Some(Overlay::LocalHistory {
+            enabled: true,
+            path: path.clone(),
+            checkpoints: Vec::new(),
+            selected: 0,
+            focus: HistoryFocus::Diff,
+            diff: Vec::new(),
+            diff_scroll: 0,
+            diff_truncated: false,
+            expected_revision: SourceRevision::initial("current"),
+            status: String::new(),
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let empty = rendered(&terminal);
+        assert!(empty.contains("No checkpoints yet"));
+        assert!(empty.contains("Press c to create one"));
+        let overlay = app.overlay.as_ref().unwrap();
+        let area = overlay_area(terminal.backend().buffer().area, overlay);
+        assert!(history_list_area(area).y < history_diff_area(area).y);
+
+        app.overlay = Some(Overlay::HistoryClearConfirm {
+            scope: HistoryClearScope::Document,
+            path: path.clone(),
+            checkpoint_ids: vec!["one".to_owned(), "two".to_owned()],
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let document = rendered(&terminal);
+        assert!(document.contains("Clear document history?"));
+        assert!(document.contains("Delete 2 exact checkpoints"));
+        assert!(document.contains("d  Clear document history"));
+        assert!(document.contains("Enter / Esc  Cancel (default)"));
+
+        app.overlay = Some(Overlay::HistoryClearConfirm {
+            scope: HistoryClearScope::Workspace,
+            path,
+            checkpoint_ids: vec!["one".to_owned()],
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let workspace = rendered(&terminal);
+        assert!(workspace.contains("Clear workspace history?"));
+        assert!(workspace.contains("Delete 1 exact checkpoint"));
+        assert!(workspace.contains("D  Clear workspace history"));
+        assert!(workspace.contains("Enter / Esc  Cancel (default)"));
+    }
+
+    #[test]
+    fn local_history_is_discoverable_only_through_menu_and_help() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 34)).unwrap();
+
+        assert_eq!(
+            command_shortcut(&app, CommandAction::CreateCheckpoint),
+            "menu"
+        );
+        assert_eq!(command_shortcut(&app, CommandAction::LocalHistory), "menu");
+
+        app.overlay = Some(Overlay::Palette {
+            input: TextInput {
+                value: "checkpoint".to_owned(),
+                cursor: 10,
+            },
+            selected: 0,
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let checkpoint_menu = rendered(&terminal);
+        assert!(checkpoint_menu.contains("Create checkpoint"));
+        assert!(checkpoint_menu.contains("menu"));
+        assert!(checkpoint_menu.contains("Capture the current source"));
+
+        app.overlay = Some(Overlay::Palette {
+            input: TextInput {
+                value: "local history".to_owned(),
+                cursor: 13,
+            },
+            selected: 0,
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let history_menu = rendered(&terminal);
+        assert!(history_menu.contains("Open Local History"));
+        assert!(history_menu.contains("Compare, restore, or clear Local History"));
+
+        app.overlay = Some(Overlay::Help {
+            scroll: 0,
+            max_scroll: 0,
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let help = rendered(&terminal);
+        assert!(help.contains("HISTORY"));
+        assert!(help.contains("menu"));
+        assert!(help.contains("Create checkpoints / open Local History"));
     }
 
     #[test]

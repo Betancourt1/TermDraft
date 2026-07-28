@@ -101,6 +101,11 @@ const CONFIGURED_ROWS: &[(&str, &str)] = &[
     ("show_help", "Show shortcut help"),
 ];
 
+const MENU_ROWS: &[(&str, &str)] = &[
+    ("menu", "Create a Local History checkpoint"),
+    ("menu", "Open Local History"),
+];
+
 #[derive(Debug, Parser)]
 #[allow(clippy::struct_excessive_bools)]
 #[command(
@@ -189,6 +194,10 @@ fn format_command_help(config: &Config) -> String {
         .iter()
         .map(|(id, description)| (display_keys(binding_text(config, id)), *description))
         .collect::<Vec<_>>();
+    let menu_rows = MENU_ROWS
+        .iter()
+        .map(|(keys, description)| ((*keys).to_owned(), *description))
+        .collect::<Vec<_>>();
     let mut control_rows = vec![
         (
             "Up / Down / j / k in preview".to_owned(),
@@ -229,6 +238,7 @@ fn format_command_help(config: &Config) -> String {
         .iter()
         .chain(&file_rows)
         .chain(&configured_rows)
+        .chain(&menu_rows)
         .chain(&control_rows)
         .map(|(keys, _)| keys.chars().count())
         .max()
@@ -238,10 +248,11 @@ fn format_command_help(config: &Config) -> String {
     let global_palette = display_keys(binding_text(config, "command_palette"));
 
     format!(
-        "TermDraft commands\n\nModes and COMMAND keys\n{}\n\nFocused Files keys\n{}\n\nConfigured shortcuts (available in both modes)\n{}\n\nEditor and preview controls\n{}\n\nPress {command_palette} in COMMAND mode or {global_palette} in either mode to search all commands, including:\n  Save, find file, open recent,\n  next/previous/close tab, search workspace text,\n  toggle files, toggle preview,\n  undo, redo,\n  reload configuration, manage recovery drafts, inspect semantic blocks,\n  read semantic blocks experimentally, inspect cursor coordinates,\n  shortcut help,\n  Markdown syntax help, and safe quit.\n\nFocus Files to create, copy, cut, paste, rename, move, or trash workspace entries.\n",
+        "TermDraft commands\n\nModes and COMMAND keys\n{}\n\nFocused Files keys\n{}\n\nConfigured shortcuts (available in both modes)\n{}\n\nMenu-only actions (no direct shortcut)\n{}\n\nEditor and preview controls\n{}\n\nPress {command_palette} in COMMAND mode or {global_palette} in either mode to search all commands, including:\n  Save, find file, open recent,\n  next/previous/close tab, search workspace text,\n  toggle files, toggle preview,\n  undo, redo, create a checkpoint, open Local History,\n  reload configuration, manage recovery drafts, inspect semantic blocks,\n  read semantic blocks experimentally, inspect cursor coordinates,\n  shortcut help,\n  Markdown syntax help, and safe quit.\n\nFocus Files to create, copy, cut, paste, rename, move, or trash workspace entries.\n",
         format_rows(&command_rows, width),
         format_rows(&file_rows, width),
         format_rows(&configured_rows, width),
+        format_rows(&menu_rows, width),
         format_rows(&control_rows, width),
     )
 }
@@ -348,6 +359,7 @@ mod tests {
             "Modes and COMMAND keys",
             "Focused Files keys",
             "Configured shortcuts (available in both modes)",
+            "Menu-only actions (no direct shortcut)",
             "Editor and preview controls",
         ] {
             assert!(help.contains(section));
@@ -362,6 +374,8 @@ mod tests {
             "Left / Right / h / l in preview",
             "Move to the left or right edge of a wide table",
             "Enter in a list",
+            "menu                              Create a Local History checkpoint",
+            "menu                              Open Local History",
             "Press : in COMMAND mode or Ctrl+\\ in either mode",
         ] {
             assert!(

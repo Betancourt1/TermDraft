@@ -9,6 +9,17 @@ supported releases.
 
 ## [Unreleased]
 
+### Added
+
+- Added opt-in, per-workspace Local History with private full-source checkpoints for manual
+  captures, previous saved versions, pre-restore buffers, and outgoing clean reloads.
+- Added newest-first checkpoint-to-current diffs plus safe buffer-only restores that remain one
+  Undo step and leave disk unchanged until Save.
+
+### Fixed
+
+- Defaulted new files without an extension to `.md` so they remain visible and indexed.
+
 ## [0.7.0] - 2026-07-27
 
 ### Added
