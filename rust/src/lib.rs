@@ -20,6 +20,8 @@ pub mod ui;
 pub mod workspace;
 pub mod workspace_entries;
 
-pub use document::{Document, Encoding, FileSnapshot, LineEnding};
+pub use document::{
+    Document, Encoding, FileSnapshot, LineEnding, RevisionMismatch, SourceRevision,
+};
 pub use persistence::{LoadedFile, SaveError, load_file, save_atomic};
 pub use workspace::{Workspace, WorkspaceEntry, WorkspaceError};

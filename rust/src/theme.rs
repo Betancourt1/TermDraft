@@ -38,6 +38,31 @@ impl Theme {
     }
 
     #[must_use]
+    pub const fn storage_name(self) -> &'static str {
+        match self {
+            Self::Paper => "paper",
+            Self::Linen => "linen",
+            Self::Mist => "mist",
+            Self::Midnight => "midnight",
+            Self::Void => "void",
+            Self::Carbon => "carbon",
+        }
+    }
+
+    #[must_use]
+    pub fn from_storage_name(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "paper" => Some(Self::Paper),
+            "linen" => Some(Self::Linen),
+            "mist" => Some(Self::Mist),
+            "midnight" => Some(Self::Midnight),
+            "void" => Some(Self::Void),
+            "carbon" => Some(Self::Carbon),
+            _ => None,
+        }
+    }
+
+    #[must_use]
     pub const fn is_light(self) -> bool {
         matches!(self, Self::Paper | Self::Linen | Self::Mist)
     }
@@ -316,6 +341,18 @@ mod tests {
 
         assert_eq!(visited, Theme::ALL);
         assert_eq!(theme.next(), Theme::Paper);
+    }
+
+    #[test]
+    fn stored_names_round_trip_every_theme() {
+        for theme in Theme::ALL {
+            assert_eq!(Theme::from_storage_name(theme.storage_name()), Some(theme));
+            assert_eq!(
+                Theme::from_storage_name(&theme.name().to_ascii_uppercase()),
+                Some(theme)
+            );
+        }
+        assert_eq!(Theme::from_storage_name("unknown"), None);
     }
 
     #[test]

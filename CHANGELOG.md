@@ -9,6 +9,23 @@ supported releases.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-27
+
+### Added
+
+- Added a monotonic generation and SHA-256 identity for every in-memory source revision, including
+  atomic expected-revision checks for asynchronous consumers.
+- Added reproducible long-document and many-tab responsiveness gates with a real-PTY acceptance
+  journey.
+
+### Changed
+
+- Removed repeated split-preview parsing from the draw path. Rapid edits now debounce into one
+  background render, unchanged revisions reuse cached output, and stale completions cannot replace
+  newer source.
+- Persisted the selected built-in theme in the configuration directory and restore it on the next
+  launch.
+
 ## [0.6.0] - 2026-07-23
 
 ### Added
@@ -201,7 +218,8 @@ supported releases.
 - Established the local-first terminal writing loop with a file explorer, Markdown source editor,
   rendered preview, protected saves, and crash-recovery journals.
 
-[Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.7.0
 [0.6.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.6.0
 [0.5.1]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.5.1
 [0.5.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.5.0

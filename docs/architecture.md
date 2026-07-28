@@ -120,8 +120,8 @@ It also preserves the two configured view modes:
    nested lists, labeled code fences, and aligned tables. Delimiters are removed rather than
    replaced by equal-width gaps; the cursor line remains exact source.
 2. **Split** shows the exact source editor beside a read-only semantic `pulldown-cmark` preview.
-   Rust reparses that complete preview synchronously on each draw; Python instead uses a
-   revisioned/debounced preview pipeline.
+   Rust and Python both use revisioned/debounced preview pipelines rather than reparsing the
+   complete preview on every draw.
 
 There is no separate Source view. In Inline or a narrow terminal, `v` switches between editor and
 preview. In a wide Split layout, it hides or shows the preview. Reading-width limits affect only
@@ -136,6 +136,28 @@ Markdown continuation runs only for an unmodified Enter in editable WRITE mode w
 selection. The pure continuation service either continues a supported marker, ends an empty marker,
 or requests an ordinary newline; the grouped editor history keeps that operation undoable as one
 action.
+
+## Source revisions and split preview
+
+Every open Rust document carries a `SourceRevision`: a monotonic in-memory generation plus the
+SHA-256 digest of its authoritative source. Opening a document starts at generation zero. A real
+source change advances both fields; cursor movement and synchronizing unchanged editor text do not.
+Undo, redo, replacement, paste, recovery restore, ordinary typing, and Markdown continuation all
+converge on the same update path. An asynchronous consumer can provide its expected revision and a
+mismatch rejects the replacement before the buffer changes.
+
+The split preview no longer parses Markdown inside every terminal draw. The event loop keys preview
+work by path, source revision, and selected link. The first visible render populates that tab's
+cache once; later source changes wait for 50 ms of quiet so rapid edits coalesce in a worker. The
+last completed preview stays visible during that short wait, while worker completion is polled at
+16 ms. An unchanged complete key reuses the cached semantic render, and changing only the selected
+link refreshes its highlight immediately. Completions install only when their complete key still
+matches the active document, so an older worker can never overwrite a newer source revision.
+Wrapping, horizontal table clipping, cursor/viewport state, and preview styling remain draw-time
+concerns and preserve the previous interface.
+
+The repeatable workloads, thresholds, current measurements, and normal-interface PTY journey are
+documented in [responsiveness.md](responsiveness.md).
 
 ## Search and navigation
 
@@ -251,7 +273,8 @@ remains startup-only.
 
 `theme.tcss` is created as a no-clobber compatibility template but is never parsed or watched.
 Rust instead provides Paper, Linen, and Mist light themes plus Midnight, Void, and Carbon dark
-themes. `t` cycles them for the current run; `--safe-mode` remains behaviorally redundant.
+themes. `t` cycles them and atomically stores the selected built-in theme in `theme-choice` beside
+`config.toml`, so the next launch restores it; `--safe-mode` remains behaviorally redundant.
 
 The command palette preserves Python's 32 actions and adds the native Change theme action, rendered
 as a searchable grouped two-column grid with descriptions and a compact fallback for narrow
@@ -284,6 +307,6 @@ cargo test --locked --all-targets
 cargo test --locked --release
 ```
 
-At this checkpoint, 206 Rust library tests and 4 Rust binary tests pass. The Python reference suite
+At this checkpoint, 217 Rust library tests and 4 Rust binary tests pass. The Python reference suite
 passes 681 tests with 2 expected platform skips. The exhaustive interface and gap inventory, plus
 the explicitly historical benchmark, live in [RUST_PORT.md](../RUST_PORT.md).
