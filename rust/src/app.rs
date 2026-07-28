@@ -8013,6 +8013,54 @@ command_manage_recovery = "Z"
     }
 
     #[test]
+    fn hybrid_write_mode_drag_selects_across_rendered_lines() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "alpha bravo\n**charlie**\nthird").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut config = Config::default();
+        config.editor.startup_mode = StartupMode::Write;
+        let mut app = App::with_config(workspace, config).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 16)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let cursor = app
+            .active_tab()
+            .unwrap()
+            .inline_editor
+            .rendered_cursor_position()
+            .unwrap();
+        let mouse = |kind, column, row| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            cursor.x,
+            cursor.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            cursor.x.saturating_add(3),
+            cursor.y.saturating_add(1),
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            cursor.x.saturating_add(3),
+            cursor.y.saturating_add(1),
+        ));
+
+        let tab = app.active_tab().unwrap();
+        assert_eq!(selected_text(tab).as_deref(), Some("alpha bravo\n**c"));
+        assert_eq!(
+            tab.inline_editor.selection_range(),
+            tab.editor.selection_range()
+        );
+    }
+
+    #[test]
     fn hybrid_write_mode_paste_and_command_undo_share_grouped_history() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("note.md");
