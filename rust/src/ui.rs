@@ -729,7 +729,7 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
             let footer = match action {
                 crate::app::WorkspaceInputAction::Create => {
                     format!(
-                        "Location: {} · trailing / creates a folder",
+                        "Location: {} · no suffix adds .md · trailing / creates folder",
                         relative.display()
                     )
                 }
@@ -2598,6 +2598,26 @@ mod tests {
             POPUP_BACKGROUND
         );
         assert_eq!(buffer[(popup_area.x, popup_area.y)].fg, POPUP_BORDER);
+    }
+
+    #[test]
+    fn create_overlay_explains_the_default_markdown_suffix() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let root = workspace.root.clone();
+        let mut app = App::new(workspace).unwrap();
+        app.overlay = Some(Overlay::WorkspaceInput {
+            action: crate::app::WorkspaceInputAction::Create,
+            source: root,
+            input: TextInput::default(),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let output = rendered(&terminal);
+        assert!(output.contains("no suffix adds .md"));
+        assert!(output.contains("trailing / creates folder"));
     }
 
     #[test]

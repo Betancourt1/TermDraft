@@ -3537,15 +3537,15 @@ impl App {
         match action {
             WorkspaceInputAction::Create => {
                 let folder = value.ends_with('/');
-                let relative = value.trim_end_matches('/');
-                if relative.is_empty() {
+                let relative = created_entry_path(value.trim_end_matches('/'), folder);
+                if relative.as_os_str().is_empty() {
                     self.status_message = Some("Enter a file or folder path".to_owned());
                     return false;
                 }
                 let result = if folder {
-                    create_folder(&self.workspace, source, Path::new(relative))
+                    create_folder(&self.workspace, source, &relative)
                 } else {
-                    create_file(&self.workspace, source, Path::new(relative))
+                    create_file(&self.workspace, source, &relative)
                 };
                 match result {
                     Ok(target) => {
@@ -5979,6 +5979,14 @@ const fn line_ending_name(line_ending: LineEnding) -> &'static str {
     }
 }
 
+fn created_entry_path(value: &str, folder: bool) -> PathBuf {
+    let mut path = PathBuf::from(value);
+    if !folder && path.extension().is_none_or(std::ffi::OsStr::is_empty) {
+        path.set_extension("md");
+    }
+    path
+}
+
 fn conflict_copy_path(workspace: &Workspace, source: &Path) -> String {
     let stem = source.file_stem().unwrap_or_default().to_string_lossy();
     let extension = source
@@ -8254,6 +8262,34 @@ command_manage_recovery = "Z"
         assert_eq!(tab.editor.cursor(), (1, 1));
         assert_eq!(source_from_textarea(&tab.editor), "alpha\nbeta\ncharlie");
         assert!(!tab.document.is_dirty());
+    }
+
+    #[test]
+    fn extensionless_file_creation_defaults_to_markdown_and_is_indexed() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let root = workspace.root.clone();
+        let mut app = App::new(workspace).unwrap();
+
+        assert!(app.apply_workspace_input(WorkspaceInputAction::Create, &root, "daily-note"));
+
+        let markdown = root.join("daily-note.md");
+        assert!(markdown.is_file());
+        assert!(!root.join("daily-note").exists());
+        assert_eq!(app.active_tab().unwrap().document.path, markdown);
+        assert!(app.entries.iter().any(|entry| entry.path == markdown));
+        assert_eq!(app.status_message.as_deref(), Some("Created daily-note.md"));
+
+        assert!(app.apply_workspace_input(WorkspaceInputAction::Create, &root, "plain.txt"));
+        assert!(root.join("plain.txt").is_file());
+        assert_eq!(
+            app.active_tab().unwrap().document.path,
+            root.join("plain.txt")
+        );
+
+        assert!(app.apply_workspace_input(WorkspaceInputAction::Create, &root, "archive/"));
+        assert!(root.join("archive").is_dir());
+        assert!(!root.join("archive.md").exists());
     }
 
     #[test]
