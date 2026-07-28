@@ -46,7 +46,7 @@ This inventory was recounted from the Python source and the current Rust impleme
   **21 overlay types are currently user-reachable**;
 - shared dialog types serve several workflows, so the operation-by-operation popup matrix below is
   the authoritative interface comparison;
-- the Rust suite passes **213 library tests plus 4 binary tests**; the Python suite passes
+- the Rust suite passes **217 library tests plus 4 binary tests**; the Python suite passes
   **681 tests with 2 platform skips**.
 
 Neither frontend has a native menu bar. In both, the searchable command palette is the application
@@ -405,7 +405,7 @@ cargo test --locked --release
 
 Results at this checkpoint:
 
-- 213 Rust library tests and 4 Rust binary tests pass;
+- 217 Rust library tests and 4 Rust binary tests pass;
 - the current responsiveness gates and real-PTY journey are documented in
   [docs/responsiveness.md](docs/responsiveness.md);
 - strict Clippy and rustfmt pass;

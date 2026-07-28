@@ -58,7 +58,7 @@ cargo test --locked --all-targets
 cargo test --locked --release
 ```
 
-On the current 0.7 development checkpoint, 213 library tests and 4 binary tests pass.
+On the current 0.7 development checkpoint, 217 library tests and 4 binary tests pass.
 
 ## Manual PTY check
 
