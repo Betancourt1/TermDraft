@@ -55,6 +55,7 @@ slow filesystem operation can still delay a frame. Python performs most I/O thro
 | `workspace.rs` | target validation, recursive discovery, new-path containment, path-alias checks |
 | `workspace_entries.rs` | create, copy, move, rename, and operating-system Trash safeguards |
 | `persistence.rs` | stable reads and conflict-checked atomic/no-clobber publication |
+| `checkpoint.rs` | private opt-in Local History snapshots, retention, integrity, clear, and path retargeting |
 | `path_filter.rs` | shared include/exclude path-filter contract |
 | `search.rs` | file ranking, four-mode text search, document replace, and heading outline |
 | `continuation.rs` | Markdown list, task, ordered-list, and quote continuation |
@@ -226,6 +227,34 @@ appears only for readable changed source; Continue without copy appears only for
 missing/unavailable close/quit transition; Escape cancels. Quit traverses dirty documents one at a
 time, keeps the original MRU order, and checks every tab's disk state before completing.
 
+## Local History
+
+The Rust frontend adds an opt-in `CheckpointStore` beside, but separate from, sessions and recovery.
+Each exact workspace has private enablement state and bounded full-source JSON checkpoints.
+Checkpoints are captured manually, from the previous baseline after a successful Save, from the
+outgoing clean source before an automatic external reload, and from the current buffer before a
+restore. Adjacent identical source is deduplicated; retention is 20 checkpoints per current
+document path, 16 MiB per checkpoint, and 100 MiB per workspace.
+
+The Local History overlay lists valid checkpoints newest first and computes a bounded,
+checkpoint-to-current line diff. Distant unchanged context is compacted so a late change remains
+visible. Corrupt or unreadable sibling entries remain on disk and become visible warnings.
+Disabling stops capture without clearing existing state.
+
+Restore re-lists the selected ID, checks the open `SourceRevision`, document protection, and disk
+baseline, then requires a durable pre-restore checkpoint. Only then does one grouped editor
+transaction replace the buffer. The document's saved baseline, encoding, and disk bytes remain
+unchanged until Save; Undo and Redo treat restore as one action. An unconsented mixed-ending
+document remains protected. After consent, restore is the first edit and activates the already
+selected normalization target, matching ordinary typing and Replace All. Missing source files
+remain protected and require Save As. Clear confirmations carry exact checkpoint IDs into a single
+locked revalidation-and-delete operation, so stale or unlisted records are never swept.
+
+In-app file and folder rename/move retarget current checkpoint paths while preserving captured-path
+provenance. Save As and Duplicate do not move the active lineage. Identity is deliberately
+workspace-path based in this first version, so reusing an older path can reveal its retained
+history. See [local-history.md](local-history.md) for the user-facing contract.
+
 ## Sessions and recovery
 
 Sessions use the content-free version-3 JSON shape shared with Python; recovery remains on the
@@ -271,7 +300,7 @@ sections/fields, invalid editor values, zero or unrepresentable retention ages, 
 empty/malformed keys, reserved preview controls, duplicate tokens, and cross-action collisions.
 
 The generated `config.toml` template documents all 53 binding IDs. Rust applies every global,
-editor, preview, and COMMAND override; effective mappings drive runtime dispatch, the 33-action
+editor, preview, and COMMAND override; effective mappings drive runtime dispatch, the 35-action
 palette, `?`, and `--commands`. `R` validates and applies editor, view, retention, and binding changes
 as one replacement; a failed reload leaves the previous configuration untouched. Startup mode
 remains startup-only.
@@ -281,10 +310,11 @@ Rust instead provides Paper, Linen, and Mist light themes plus Midnight, Void, a
 themes. `t` cycles them and atomically stores the selected built-in theme in `theme-choice` beside
 `config.toml`, so the next launch restores it; `--safe-mode` remains behaviorally redundant.
 
-The command palette preserves Python's 32 actions and adds the native Change theme action, rendered
-as a searchable grouped two-column grid with descriptions and a compact fallback for narrow
-terminals. Rust's `?` screen is a scrollable 28-row action summary; `--commands` is the fuller action
-reference. Neither substitutes for the underlying editor-key inventory in
+The command palette preserves Python's 32 actions and adds native Change theme, Create checkpoint,
+and Open Local History actions, rendered as a searchable grouped two-column grid with descriptions
+and a compact fallback for narrow terminals. The two history actions are intentionally menu-only.
+Rust's `?` screen is a scrollable 29-row action summary; `--commands` is the fuller action reference.
+Neither substitutes for the underlying editor-key inventory in
 [RUST_PORT.md](../RUST_PORT.md).
 
 ## Terminal lifecycle
@@ -304,8 +334,8 @@ and machine-level termination remain outside any process's cooperative cleanup b
 
 The Rust suite covers bindings/config generation and reload, encoding and exact mixed-source
 behavior, stable conflict rejection, workspace mutations, search/replace, inline fidelity, main
-mouse regions, sessions, recovery core/manager, semantic diagnostics, UI rendering, and dirty
-transitions. The standard local gates are:
+mouse regions, sessions, recovery core/manager, Local History storage and restore transactions,
+semantic diagnostics, UI rendering, and dirty transitions. The standard local gates are:
 
 ```bash
 cargo fmt --all -- --check
@@ -314,6 +344,6 @@ cargo test --locked --all-targets
 cargo test --locked --release
 ```
 
-At this checkpoint, 222 Rust library tests and 5 Rust binary tests pass. The Python reference suite
+At this checkpoint, 250 Rust library tests and 5 Rust binary tests pass. The Python reference suite
 passes 681 tests with 2 expected platform skips. The exhaustive interface and gap inventory, plus
 the explicitly historical benchmark, live in [RUST_PORT.md](../RUST_PORT.md).

@@ -13,6 +13,10 @@ supported releases.
 
 - Added `--debug` sessions with an in-app input/command strip and a flushed temporary event log;
   typed and pasted document content is not copied into the trace.
+- Added opt-in, per-workspace Local History with private full-source checkpoints for manual
+  captures, previous saved versions, pre-restore buffers, and outgoing clean reloads.
+- Added newest-first checkpoint-to-current diffs plus safe buffer-only restores that remain one
+  Undo step and leave disk unchanged until Save.
 
 ### Fixed
 
@@ -20,6 +24,7 @@ supported releases.
   without changing the existing macOS `Super+C`, `Super+X`, and `Super+V` path.
 - Stopped mouse cursor mapping from looping between both sides of a wide character when a selection
   passes through its middle terminal cell.
+- Defaulted new files without an extension to `.md` so they remain visible and indexed.
 
 ## [0.7.0] - 2026-07-27
 

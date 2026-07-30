@@ -34,8 +34,8 @@ document format, cloud account, or background service.
 - **Source and structure stay together.** Hybrid mode renders inactive Markdown while keeping the
   current line exact; split mode places source and semantic preview side by side. Neither view
   rewrites the document.
-- **Local work is treated carefully.** Atomic saves, conflict checks, crash journals, recovery tools,
-  and session restoration protect unfinished writing.
+- **Local work is treated carefully.** Atomic saves, conflict checks, crash journals, recovery
+  tools, opt-in Local History, and session restoration protect unfinished writing.
 
 ## Workflow
 
@@ -64,6 +64,10 @@ the compact runtime reference, or run this outside it for the complete effective
 ```bash
 termdraft --commands
 ```
+
+Search the command palette for **Create checkpoint** or **Open Local History**. Local History has no
+direct shortcut: it is opt-in for each workspace, and restoring a checkpoint changes only the
+buffer until you explicitly Save.
 
 <details>
 <summary><strong>More workspace and navigation shortcuts</strong></summary>
@@ -147,6 +151,8 @@ When running without `cargo install`, replace `termdraft` with
 - File and folder creation, copy, cut, paste, rename, move, Trash, Save As, and duplication through
   no-clobber workspace-relative paths
 - UTF-8 and UTF-8 BOM support with LF, CRLF, or CR preservation
+- Opt-in, per-workspace Local History with full-source checkpoints, bounded checkpoint-to-current
+  diffs, and one-step-undo buffer restores
 - Mouse focus, clickable tabs and preview links, Files and overlay row selection/activation,
   hybrid-editor text selection, wheel scrolling, draggable dividers, and keyboard Files-pane resizing
 - Three light themes (Paper, Linen, and Mist) and three dark themes (Midnight, Void, and Carbon)
@@ -165,7 +171,9 @@ When running without `cargo install`, replace `termdraft` with
   journals, and a recovery inventory/open/retarget/archive/restore/export/delete/retention manager;
   missing and orphan drafts open only into a protected Save As workflow
 - All 52 compatible application binding IDs plus the native `command_change_theme` binding,
-  effective remapping, live `R` reload, and a 33-action command palette
+  effective remapping, live `R` reload, and a 35-action command palette
+- Private Local History state remains separate from content-free sessions and crash-recovery
+  journals; disabling it keeps existing checkpoints until an exact, cancel-default clear
 - Markdown syntax, semantic-block, experimental reader, and coordinate-diagnostic overlays
 - Sessions remain content-free and share their v3 cursor/scroll format with the legacy Python
   implementation; crash-recovery journals contain dirty source in the compatible v2 format
@@ -253,6 +261,7 @@ parent-directory save hardening, and Windows state/lock compatibility. See
 
 - [Rust comparison](RUST_PORT.md) — parity, omissions, safety differences, and benchmarks
 - [Architecture](docs/architecture.md) — Rust modules, state flow, persistence, and recovery
+- [Local History](docs/local-history.md) — checkpoints, restore safety, retention, and privacy
 - [Responsiveness](docs/responsiveness.md) — 0.7 performance gates and real-PTY journey
 - [Markdown gallery](docs/markdown-gallery.md) — exercise the inline and split renderers
 - [Semantic editing](docs/semantic-editing.md) — future block-aware editing boundary

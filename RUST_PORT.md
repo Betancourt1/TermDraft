@@ -40,13 +40,14 @@ For an isolated comparison, set `XDG_STATE_HOME=/tmp/termdraft-test-state` and p
 This inventory was recounted from the Python source and the current Rust implementation:
 
 - Python contains **32 palette actions** and **52 binding IDs**; Rust preserves those contracts and
-  adds **Change theme** plus `command_change_theme`, for **33 actions** and **53 binding IDs**;
+  adds **Change theme**, **Create checkpoint**, and **Open Local History**. Only Change theme adds a
+  binding ID, for **35 actions** and **53 binding IDs**;
 - Python defines 19 modal dialog classes plus its command palette, or **20 concrete modal types**;
-- Rust defines 23 `Overlay` variants; `SearchResults` and `Message` have no construction site, so
-  **21 overlay types are currently user-reachable**;
+- Rust defines 25 `Overlay` variants; only `SearchResults` has no construction site, so
+  **24 overlay types are currently user-reachable**;
 - shared dialog types serve several workflows, so the operation-by-operation popup matrix below is
   the authoritative interface comparison;
-- the Rust suite passes **222 library tests plus 5 binary tests**; the Python suite passes
+- the Rust suite passes **250 library tests plus 5 binary tests**; the Python suite passes
   **681 tests with 2 platform skips**.
 
 Neither frontend has a native menu bar. In both, the searchable command palette is the application
@@ -60,7 +61,7 @@ menu; the focused Files key layer is a second contextual menu.
 | Main workbench | Title, optional tabs, Files pane, editor/preview workbench, persistent mode/status line |
 | Interaction modes | Explicit COMMAND and WRITE modes, block/bar cursors, `Esc` protection, Yazi-style movement |
 | Runtime tabs | Independent buffers and undo histories; open-file reuse; next, previous, and guarded close |
-| Command palette | Python's 32 actions plus the native Change theme action, preserving six groups and effective shortcuts |
+| Command palette | Python's 32 actions plus three native actions, preserving six groups and effective shortcuts where bound |
 | Configurable commands | The 52 compatible binding IDs plus `command_change_theme`; generated template entries, strict parsing, collision checks, effective overrides, and `R` reload |
 | File finding | Fuzzy relative-path search, shared include/exclude filters, normalized matching, bounded ranking |
 | Workspace text search | Fresh workspace discovery; literal, fuzzy, whole-word, and regex modes; case toggle; path filter; dirty/open overrides; warnings; deterministic 100-result bound; cancellable revisioned background search |
@@ -91,7 +92,8 @@ menu; the focused Files key layer is a second contextual menu.
 | Executable and runtime | Legacy `termdraft`; Python/Textual and Nerd Font icons | Published `termdraft`; one native executable with the same Files icons | Rust starts with less runtime overhead; both interfaces expect a Nerd Font for the intended icons |
 | Shell chrome | Textual styling and Nerd Font glyphs | Four built-in Ratatui themes and Yazi-style Nerd Font glyphs | Same hierarchy and Files icon language, not pixel parity |
 | Palette layout | Responsive grouped two-column cheatsheet that stacks when narrow; descriptions below | Searchable grouped two-column grid with descriptions and a compact narrow fallback | Actions, order, shortcuts, and explanatory copy match |
-| Shortcut help | Generated TermDraft-action reference | Scrollable 28-row action summary | Rust `--commands` is the fuller TermDraft-action reference; `?` is intentionally more compact |
+| Shortcut help | Generated TermDraft-action reference | Scrollable 29-row action summary | Rust `--commands` is the fuller TermDraft-action reference; `?` is intentionally more compact |
+| Local History | Not available | Opt-in private checkpoints, bounded diffs, safe buffer-only restore, and exact clear | Rust-only; separate from compatible sessions and Recovery |
 | Preview engine | `markdown-it-py`/Textual with tables, tasks, alerts, footnotes, definitions, link selection, and internal footnote navigation | Active-line source plus rendered inactive lines by default; semantic `pulldown-cmark` split preview with the same common families, selectable links, alerts, and internal footnote/backlink navigation | Source remains authoritative in both; Rust deliberately leaves external destinations inert rather than launching another process |
 | Explorer model | Lazy, collapsible Textual `DirectoryTree` plus asynchronous indexing | Shallow first-frame snapshot followed by a collapsible, recursively indexed tree from `ignore::WalkBuilder` | Rust starts promptly, preserves expansion state across background refreshes, and keeps scan warnings visible; the complete recursive index is still built in the worker |
 | Search regex engine | Python `regex`, full case folding, and a per-line timeout | Rust `regex`, a linear-time syntax subset, and the same 500-character input limit | Common regexes work; look-around/backreferences accepted by Python are not Rust syntax |
@@ -149,7 +151,7 @@ presentation-only styling; Split shows that source editor beside the read-only p
 
 ## Complete menu inventory
 
-The Rust palette preserves the Python actions and adds one native theme command. The table lists
+The Rust palette preserves the Python actions and adds three native commands. The table lists
 every menu action in display order; the key shown is its default COMMAND/context shortcut and
 follows effective remaps where the action has a configurable ID.
 
@@ -159,18 +161,18 @@ follows effective remaps where the action has a configurable ID.
 | NAVIGATE | Next tab; Previous tab; Search workspace; Find and replace; Outline; Explorer | `]`; `[`; `/`; `s`; `S`; `e` |
 | FILES | Create; Copy; Cut; Paste; Rename; Move; Trash | `a`; `c`; `x`; `p`; `r`; `m`; `d` |
 | MODE | Write mode; Command mode | `i`; `Esc` |
-| EDIT | Undo; Redo; Reload config; Inspect blocks; Read blocks | `u`; `U`; `R`; `b`; `B` |
+| EDIT | Undo; Redo; Create checkpoint; Open Local History; Reload config; Inspect blocks; Read blocks | `u`; `U`; menu; menu; `R`; `b`; `B` |
 | VIEW | Preview; Change theme; Recovery drafts; Shortcut help; Markdown help; Cursor coordinates; Quit | `v`; `t`; `M`; `?`; `K`; `I`; `q` |
 
 Python presents its actions as six visible groups in a responsive grid. Rust keeps the same groups
-and fuzzy-filters its complete 33-action set.
+and fuzzy-filters its complete 35-action set.
 
 ## Complete popup and window inventory
 
 | User-facing surface | Python/Textual | Rust/Ratatui | Status or changed behavior |
 | --- | --- | --- | --- |
 | Command palette | Search, six responsive groups, descriptions, mouse/keyboard | Search, same grouped grid/actions/order/descriptions, mouse/keyboard | Parity |
-| Shortcut help | Full TermDraft-action binding reference | Scrollable 28-row action summary | Rust is intentionally shorter; every row remains reachable at 80x24 and `--commands` is fuller |
+| Shortcut help | Full TermDraft-action binding reference | Scrollable 29-row action summary | Rust is intentionally shorter; every row remains reachable at 80x24 and `--commands` is fuller |
 | Markdown syntax help | `HelpDialog` with supported syntax and examples | Dedicated scrollable Markdown Help overlay | Parity, with Rust limitations stated truthfully |
 | Find file | Query, include/exclude filter, ranked results | Same fields, filter contract, ranking, and open action | Parity |
 | Workspace search | Query, literal/fuzzy/word/regex, case, filter, fresh-scan warnings/results | Same controls, fresh scan, warnings, and cancellable source search | Parity |
@@ -193,6 +195,8 @@ and fuzzy-filters its complete 33-action set.
 | Missing/orphan recovery | Automatic offer and Manager Open into unavailable-path conflict | Manager Open installs the draft in a protected conflict that requires Save As | Direct-open parity; automatic startup offer still differs |
 | Permanent recovery deletion | Separate cancel-default confirmation | Separate confirmation; only `d` deletes, Enter/Esc cancel | Parity |
 | Retention cleanup | Exact listed inventory, configured age, cancel-default confirmation | Exact listed inventory, configured age, only `d` deletes, per-record errors | Parity |
+| Local History | Not available | Responsive checkpoint/diff overlay with opt-in, manual capture, restore, and disable controls | Rust-only; wide panes stack when narrow |
+| Local History clear | Not available | Separate document/workspace confirmations over exact checkpoint IDs | Rust-only; Enter/Esc cancel and destructive pointer spans are explicit |
 | Semantic inspector | Read-only segments and source jump | Read-only segments and source jump | Parity |
 | Experimental semantic reader | Render headings/paragraphs; exact source fallback | Same block policy in a scrollable overlay | Parity |
 | Coordinate inspector | Source, character, UTF-8, wrapped, grapheme, screen coordinates | Same diagnostic families | Parity |
@@ -381,7 +385,7 @@ configurable `h`/`j`/`k`/`l`, `0`/`$`, and `g`/`G` commands provide its Yazi/Vim
 | `--safe-mode` | Ignore `theme.tcss` for this launch | Built-in themes are always used; the flag has no additional effect |
 | `--init-config` | No-clobber `config.toml` and `theme.tcss` templates | Same compatible templates |
 | `--config-path` | Print resolved config/theme paths | Same |
-| `--commands` | Effective TermDraft command, Files, global, editor-action, and preview-action reference | Same section structure and effective mappings, including interactive preview links |
+| `--commands` | Effective TermDraft command, Files, global, editor-action, and preview-action reference | Same section structure and effective mappings, plus explicit menu-only Local History actions |
 | `--version` / `--help` | Python package identity/help | Rust package identity/help |
 | `--inspect TARGET` | Not available | Rust-only validation/index count without opening the TUI |
 | `termdraft-benchmark` | Installed Python-only CLI: `--semantic-kib`, `--tab-kib`, `--tabs`, `--watch-kib`, `--iterations`, `--warmup`, `--help` | Not available | Developer measurement surface, not an editor command |
@@ -392,7 +396,7 @@ feature.
 
 ## Verification
 
-Current code state: the primary Rust implementation under 0.7.0 development.
+Current code state: the primary Rust implementation on the Unreleased line after 0.7.0.
 
 ```bash
 cargo fmt --all -- --check
@@ -404,7 +408,7 @@ cargo test --locked --release
 
 Results at this checkpoint:
 
-- 222 Rust library tests and 5 Rust binary tests pass;
+- 250 Rust library tests and 5 Rust binary tests pass;
 - the current responsiveness gates and real-PTY journey are documented in
   [docs/responsiveness.md](docs/responsiveness.md);
 - strict Clippy and rustfmt pass;

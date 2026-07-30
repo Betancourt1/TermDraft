@@ -15,15 +15,16 @@ changes practical, not to claim pixel parity with Textual.
 | Preview toggle | `v` switches editor/preview in Inline or narrow layouts and shows/hides preview in wide Split |
 | Files | Yazi-style Nerd Font folder/Markdown icons; keyboard navigation and resizing plus click selection/double-click open |
 | Tabs | Open order, modified `●`, conflict `!`, active state, and keyboard switching remain legible |
-| Menu | Exact 32-action Python group/order contract in a searchable two-column grid with descriptions |
+| Menu | Python's 32-action group/order contract plus three native actions in a searchable two-column grid |
 | Overlays | Square bordered panels, concise keyboard footer, visible focus, and cancel-default destructive prompts |
 | Recovery | Inventory/detail/target layout, active/quarantine state, protected records, explicit irreversible actions |
-| Mouse | Main-pane focus, Files selection/open, wheel scroll, and draggable Files/Split dividers |
+| Local History | Responsive checkpoint/diff panes, explicit opt-in, buffer-only restore, and exact clear confirmation |
+| Mouse | Main-pane focus, Files/overlay selection and actions, wheel scroll, and draggable Files/Split dividers |
 | Exit | Alternate screen, raw mode, mouse capture, and cursor shape restore on the normal exit path |
 
 The remaining visible differences are intentional: Python notifications can appear as toasts while
-Rust keeps feedback in the status line. Rust overlays, tabs, preview links, and source click
-positioning remain keyboard-only.
+Rust keeps feedback in the status line. Rust adds pointer interaction for overlays, tabs, preview
+links, and source positioning without making destructive blank areas clickable.
 
 ## Automated coverage
 
@@ -33,7 +34,7 @@ destructive confirmations, and narrow/small-terminal bounds.
 
 The app/domain tests separately cover:
 
-- exact 32-action palette group/order/shortcut parity and all 52 effective binding actions;
+- exact Python palette group/order/shortcut parity, three native actions, and all 53 binding IDs;
 - COMMAND arrow/Vim navigation, WRITE editing, exact-modifier Markdown continuation, undo/redo, and
   conflict-checked atomic saves;
 - mixed-line-ending open/reload/recovery consent, exact no-edit save, and first-edit normalization;
@@ -47,6 +48,8 @@ The app/domain tests separately cover:
 - external change conflicts and filename-specific per-document close/quit traversal;
 - recovery publish/restore, inventory, locks, retarget, quarantine, export, restore, permanent delete,
   configured retention, alias protection, stale-fingerprint rejection, and per-record errors;
+- Local History opt-in, private storage, capture boundaries, retention, diff bounds, lineage,
+  revision-checked one-step restores, exact clear revalidation, and wide/narrow pointer UI;
 - Markdown help, semantic inspector/reader, and cursor-coordinate diagnostics.
 
 Run the complete gates with:
@@ -58,7 +61,7 @@ cargo test --locked --all-targets
 cargo test --locked --release
 ```
 
-On the current 0.7 development checkpoint, 217 library tests and 4 binary tests pass.
+On the current Unreleased checkpoint, 250 library tests and 5 binary tests pass.
 
 ## Manual PTY check
 
@@ -81,8 +84,8 @@ Verify in order:
    no-clobber file/folder flows.
 3. `i`, Unicode typing/paste, `Esc`, and `w` preserve the expected bytes.
 4. `v` follows Inline/Split behavior without altering source; Alt+Up/Down navigates preview headings.
-5. `:` contains the same six groups and 32 ordered actions as Python; `?` shows the compact action
-   summary and `--commands` remains the fuller TermDraft-action reference.
+5. `:` contains the same six groups and 32 ordered Python actions plus Change theme, Create
+   checkpoint, and Open Local History; `?` and `--commands` identify history actions as menu-only.
 6. `f`, `o`, `/`, `s`, and `S` exercise file, recent, workspace, document, and heading navigation.
 7. `K`, `b`, `B`, and `I` open the read-only reference/diagnostic windows and return safely.
 8. `M` shows active/quarantine/corrupt inventory; Tab changes record/target focus; irreversible
@@ -91,9 +94,13 @@ Verify in order:
    after the first edit.
 10. A dirty external edit never overwrites either version and shows only its valid conflict actions.
 11. Dirty close/quit prompts each document by name; Enter never discards.
-12. Files click/double-click, wheel scroll, and both dividers work; overlay clicks remain inert.
-13. A clean `q` restores the normal terminal screen, cursor, raw mode, and mouse reporting.
-14. Complete the long-document and many-tab journey in
+12. Enable Local History, create a checkpoint, compare it in wide and narrow layouts, restore it,
+   verify disk is unchanged, Undo back to the prior buffer, and exercise both cancel-default clear
+   confirmations with keyboard and pointer.
+13. Files and overlay click/double-click, wheel scroll, explicit action labels, and both dividers
+   work; blank destructive-confirmation space remains inert.
+14. A clean `q` restores the normal terminal screen, cursor, raw mode, and mouse reporting.
+15. Complete the long-document and many-tab journey in
     [docs/responsiveness.md](docs/responsiveness.md); the newest edit must reach split preview,
     tab switching must remain immediate, and quitting must follow the ordinary interface.
 

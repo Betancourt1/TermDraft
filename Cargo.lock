@@ -1783,6 +1783,7 @@ version = "0.7.0"
 dependencies = [
  "anyhow",
  "clap",
+ "diff",
  "directories",
  "ignore",
  "libc",

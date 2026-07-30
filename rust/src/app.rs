@@ -21,7 +21,7 @@ use ratatui::crossterm::event::{
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::widgets::ListState;
 #[cfg(unix)]
 use signal_hook::consts::{SIGHUP, SIGTERM};
@@ -29,11 +29,17 @@ use tui_textarea::{CursorMove, TextArea};
 use unicode_width::UnicodeWidthStr;
 
 use crate::bindings::{Action as BindingAction, BindingScope};
+use crate::checkpoint::{
+    CaptureOutcome, Checkpoint, CheckpointError, CheckpointList, CheckpointReason, CheckpointStore,
+    CheckpointWarning,
+};
 use crate::config::{self, Config, EditorConfig, StartupMode, StartupView};
 use crate::continuation::{EnterAction, action_for};
 use crate::coordinate_diagnostic::{CoordinateDiagnostic, diagnose_coordinate};
 use crate::debug_trace::DebugTrace;
-use crate::document::{Document, Encoding, LineEnding, MixedSource, SourceRevision};
+use crate::document::{
+    Document, Encoding, LineEnding, MixedSource, RevisionMismatch, SourceRevision,
+};
 use crate::editor::{
     apply_editor_config, cursor_at_screen_position, inline_preview_editor, source_from_textarea,
     style_cursor, sync_inline_preview_cursor, textarea_from_source,
@@ -70,6 +76,9 @@ use crate::workspace_entries::{
 pub const EXPLORER_DEFAULT_WIDTH: u16 = 34;
 pub const EXPLORER_MIN_WIDTH: u16 = 20;
 pub const EXPLORER_MAX_WIDTH: u16 = 48;
+const HISTORY_DIFF_MAX_BYTES: usize = 512 * 1024;
+const HISTORY_DIFF_MAX_SOURCE_LINES: usize = 2_000;
+const HISTORY_DIFF_MAX_OUTPUT_LINES: usize = 400;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode {
@@ -188,6 +197,33 @@ pub enum RecoveryManagerFocus {
     Target,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HistoryFocus {
+    #[default]
+    Checkpoints,
+    Diff,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HistoryDiffKind {
+    Context,
+    Added,
+    Removed,
+    Notice,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoryDiffLine {
+    pub kind: HistoryDiffKind,
+    pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HistoryClearScope {
+    Document,
+    Workspace,
+}
+
 #[derive(Clone, Debug)]
 struct PendingTransition {
     action: ConfirmAction,
@@ -200,6 +236,12 @@ enum DiskState {
     Current(LoadedFile),
     Missing,
     Unavailable(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SourceTransactionError {
+    Protected,
+    Stale(RevisionMismatch),
 }
 
 #[derive(Clone, Debug)]
@@ -302,6 +344,23 @@ pub enum Overlay {
         records: Vec<RecoveryRecord>,
         cutoff: OffsetDateTime,
         retention_days: i64,
+    },
+    LocalHistory {
+        enabled: bool,
+        path: PathBuf,
+        checkpoints: Vec<Checkpoint>,
+        selected: usize,
+        focus: HistoryFocus,
+        diff: Vec<HistoryDiffLine>,
+        diff_scroll: usize,
+        diff_truncated: bool,
+        expected_revision: SourceRevision,
+        status: String,
+    },
+    HistoryClearConfirm {
+        scope: HistoryClearScope,
+        path: PathBuf,
+        checkpoint_ids: Vec<String>,
     },
     MixedLineEndings {
         tab_index: usize,
@@ -542,6 +601,8 @@ pub enum CommandAction {
     CommandMode,
     Undo,
     Redo,
+    CreateCheckpoint,
+    LocalHistory,
     ReloadConfig,
     ChangeTheme,
     ManageRecovery,
@@ -698,6 +759,18 @@ pub const COMMANDS: &[CommandSpec] = &[
         label: "Redo",
         shortcut: "U",
         action: CommandAction::Redo,
+    },
+    CommandSpec {
+        group: "EDIT",
+        label: "Create checkpoint",
+        shortcut: "",
+        action: CommandAction::CreateCheckpoint,
+    },
+    CommandSpec {
+        group: "EDIT",
+        label: "Open Local History",
+        shortcut: "",
+        action: CommandAction::LocalHistory,
     },
     CommandSpec {
         group: "EDIT",
@@ -1018,11 +1091,41 @@ impl EditorTab {
         self.sync_document();
     }
 
-    fn replace_all(&mut self, source: &str) {
+    fn replace_source_transaction(
+        &mut self,
+        expected: SourceRevision,
+        source: &str,
+        allow_conflict: bool,
+    ) -> Result<bool, SourceTransactionError> {
+        if (!allow_conflict && (self.document.recovery_conflict || self.document.conflict))
+            || !self.document.is_editable()
+        {
+            return Err(SourceTransactionError::Protected);
+        }
+        let current_source = source_from_textarea(&self.editor);
+        let changed = self
+            .document
+            .update_from_editor_if_revision(expected, source.to_owned())
+            .map_err(SourceTransactionError::Stale)?;
+        if !changed {
+            return Ok(false);
+        }
+
+        let cursor = self.editor.cursor();
         self.editor.select_all();
         self.editor.insert_str(source);
-        self.record_edit(1 + usize::from(!source.is_empty()));
-        self.sync_document();
+        self.record_edit(usize::from(!current_source.is_empty()) + usize::from(!source.is_empty()));
+        self.editor.move_cursor(CursorMove::Jump(
+            u16::try_from(cursor.0).unwrap_or(u16::MAX),
+            u16::try_from(cursor.1).unwrap_or(u16::MAX),
+        ));
+        self.refresh_inline_editor();
+        Ok(true)
+    }
+
+    fn replace_all(&mut self, source: &str) -> Result<bool, SourceTransactionError> {
+        let expected = self.document.source_revision;
+        self.replace_source_transaction(expected, source, true)
     }
 }
 
@@ -1060,6 +1163,7 @@ pub struct App {
     session_store: Option<SessionStore>,
     last_session_state: Option<SessionState>,
     recovery_journal: Option<RecoveryJournal>,
+    checkpoint_store: Option<CheckpointStore>,
     published_recovery: HashMap<PathBuf, (String, String)>,
     recent_paths: Vec<PathBuf>,
     session_views: HashMap<PathBuf, DocumentViewState>,
@@ -1104,7 +1208,14 @@ impl App {
     pub fn with_config(workspace: Workspace, config: Config) -> anyhow::Result<Self> {
         let session_store = SessionStore::platform_default().ok();
         let recovery_journal = RecoveryJournal::platform_default().ok();
-        Self::with_state_services(workspace, config, session_store, recovery_journal)
+        let checkpoint_store = CheckpointStore::platform_default().ok();
+        Self::with_state_services_and_history(
+            workspace,
+            config,
+            session_store,
+            recovery_journal,
+            checkpoint_store,
+        )
     }
 
     pub(crate) fn enable_debug(&mut self, path: &Path) -> io::Result<()> {
@@ -1143,11 +1254,28 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     fn with_state_services(
         workspace: Workspace,
         config: Config,
         session_store: Option<SessionStore>,
         recovery_journal: Option<RecoveryJournal>,
+    ) -> anyhow::Result<Self> {
+        Self::with_state_services_and_history(
+            workspace,
+            config,
+            session_store,
+            recovery_journal,
+            None,
+        )
+    }
+
+    fn with_state_services_and_history(
+        workspace: Workspace,
+        config: Config,
+        session_store: Option<SessionStore>,
+        recovery_journal: Option<RecoveryJournal>,
+        checkpoint_store: Option<CheckpointStore>,
     ) -> anyhow::Result<Self> {
         let shallow_scan = workspace.scan_top_level();
         let entries = shallow_scan.entries;
@@ -1205,6 +1333,7 @@ impl App {
             session_store,
             last_session_state: None,
             recovery_journal,
+            checkpoint_store,
             published_recovery: HashMap::new(),
             recent_paths: Vec::new(),
             session_views: HashMap::new(),
@@ -1953,6 +2082,435 @@ impl App {
         }
     }
 
+    fn open_local_history(&mut self) {
+        self.show_local_history(None, None);
+    }
+
+    fn show_local_history(&mut self, selected_id: Option<&str>, status: Option<String>) {
+        self.sync_active_document();
+        let Some(tab) = self.active_tab() else {
+            self.status_message = Some("Open a Markdown document first".to_owned());
+            return;
+        };
+        let path = tab.document.path.clone();
+        let current = tab.document.text.clone();
+        let expected_revision = tab.document.source_revision;
+        let Some(store) = self.checkpoint_store.clone() else {
+            self.overlay = Some(Overlay::Message(
+                "Local History is unavailable on this system.".to_owned(),
+            ));
+            return;
+        };
+        let enabled = match store.is_enabled(&self.workspace.root) {
+            Ok(enabled) => enabled,
+            Err(error) => {
+                self.overlay = Some(Overlay::Message(format!(
+                    "Cannot open Local History · {error}"
+                )));
+                return;
+            }
+        };
+        let listed = if enabled {
+            match store.list(&self.workspace.root, &path) {
+                Ok(listed) => listed,
+                Err(error) => {
+                    self.overlay = Some(Overlay::Message(format!(
+                        "Cannot read Local History · {error}"
+                    )));
+                    return;
+                }
+            }
+        } else {
+            CheckpointList::default()
+        };
+        let selected = selected_id
+            .and_then(|id| {
+                listed
+                    .checkpoints
+                    .iter()
+                    .position(|checkpoint| checkpoint.id == id)
+            })
+            .unwrap_or_default()
+            .min(listed.checkpoints.len().saturating_sub(1));
+        let (diff, diff_truncated) = listed.checkpoints.get(selected).map_or_else(
+            || (Vec::new(), false),
+            |checkpoint| build_history_diff(&checkpoint.source, &current),
+        );
+        let default_status = if !enabled {
+            "Local History is disabled for this workspace.".to_owned()
+        } else if listed.checkpoints.is_empty() {
+            "No checkpoints for this document yet.".to_owned()
+        } else {
+            format!(
+                "{} checkpoint{} · newest first",
+                listed.checkpoints.len(),
+                if listed.checkpoints.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            )
+        };
+        let status = append_history_warnings(status.unwrap_or(default_status), &listed.warnings);
+        self.overlay = Some(Overlay::LocalHistory {
+            enabled,
+            path,
+            checkpoints: listed.checkpoints,
+            selected,
+            focus: HistoryFocus::Checkpoints,
+            diff,
+            diff_scroll: 0,
+            diff_truncated,
+            expected_revision,
+            status,
+        });
+    }
+
+    fn create_manual_checkpoint(&mut self) {
+        self.sync_active_document();
+        let Some(tab) = self.active_tab() else {
+            self.status_message = Some("Open a Markdown document first".to_owned());
+            return;
+        };
+        let path = tab.document.path.clone();
+        let source = tab.document.text.clone();
+        let Some(store) = self.checkpoint_store.clone() else {
+            self.overlay = Some(Overlay::Message(
+                "Local History is unavailable on this system.".to_owned(),
+            ));
+            return;
+        };
+        match store.capture(
+            &self.workspace.root,
+            &path,
+            &source,
+            CheckpointReason::Manual,
+        ) {
+            Ok(CaptureOutcome::Stored {
+                checkpoint,
+                pruned,
+                warnings,
+            }) => {
+                let mut status = "Checkpoint created".to_owned();
+                if pruned > 0 {
+                    let _ = write!(status, " · pruned {pruned} oldest");
+                }
+                self.show_local_history(
+                    Some(&checkpoint.id),
+                    Some(append_history_warnings(status, &warnings)),
+                );
+            }
+            Ok(CaptureOutcome::Duplicate {
+                checkpoint_id,
+                warnings,
+            }) => {
+                self.show_local_history(
+                    Some(&checkpoint_id),
+                    Some(append_history_warnings(
+                        "Already the newest checkpoint".to_owned(),
+                        &warnings,
+                    )),
+                );
+            }
+            Ok(CaptureOutcome::Disabled) => self.show_local_history(
+                None,
+                Some("Enable Local History before creating a checkpoint.".to_owned()),
+            ),
+            Err(error) => {
+                self.overlay = Some(Overlay::Message(format!(
+                    "Checkpoint not created · {error}"
+                )));
+            }
+        }
+    }
+
+    fn set_history_enabled(&mut self, enabled: bool) {
+        let Some(store) = self.checkpoint_store.clone() else {
+            self.overlay = Some(Overlay::Message(
+                "Local History is unavailable on this system.".to_owned(),
+            ));
+            return;
+        };
+        match store.set_enabled(&self.workspace.root, enabled) {
+            Ok(()) => self.show_local_history(
+                None,
+                Some(if enabled {
+                    "Local History enabled for this workspace.".to_owned()
+                } else {
+                    "Local History disabled · existing checkpoints kept.".to_owned()
+                }),
+            ),
+            Err(error) => {
+                self.overlay = Some(Overlay::Message(format!(
+                    "Local History setting not changed · {error}"
+                )));
+            }
+        }
+    }
+
+    fn request_history_clear(&mut self, scope: HistoryClearScope, path: &Path) {
+        let Some(store) = self.checkpoint_store.clone() else {
+            self.overlay = Some(Overlay::Message(
+                "Local History is unavailable on this system.".to_owned(),
+            ));
+            return;
+        };
+        let listed = match scope {
+            HistoryClearScope::Document => store.list(&self.workspace.root, path),
+            HistoryClearScope::Workspace => store.list_all(&self.workspace.root),
+        };
+        let listed = match listed {
+            Ok(listed) => listed,
+            Err(error) => {
+                self.show_local_history(
+                    None,
+                    Some(format!("Cannot prepare clear confirmation · {error}")),
+                );
+                return;
+            }
+        };
+        if listed.checkpoints.is_empty() {
+            self.show_local_history(
+                None,
+                Some(append_history_warnings(
+                    "Nothing to clear.".to_owned(),
+                    &listed.warnings,
+                )),
+            );
+            return;
+        }
+        self.overlay = Some(Overlay::HistoryClearConfirm {
+            scope,
+            path: path.to_path_buf(),
+            checkpoint_ids: sorted_checkpoint_ids(&listed.checkpoints),
+        });
+    }
+
+    fn clear_history(&mut self, scope: HistoryClearScope, path: &Path, expected_ids: &[String]) {
+        let Some(store) = self.checkpoint_store.clone() else {
+            self.overlay = Some(Overlay::Message(
+                "Local History is unavailable on this system.".to_owned(),
+            ));
+            return;
+        };
+        let mutation = match scope {
+            HistoryClearScope::Document => {
+                store.clear_document(&self.workspace.root, path, expected_ids)
+            }
+            HistoryClearScope::Workspace => store.clear_all(&self.workspace.root, expected_ids),
+        };
+        match mutation {
+            Ok(mutation) => self.show_local_history(
+                None,
+                Some(append_history_warnings(
+                    format!("Cleared {} checkpoint(s)", mutation.affected),
+                    &mutation.warnings,
+                )),
+            ),
+            Err(CheckpointError::Stale(_)) => self.show_local_history(
+                None,
+                Some("Clear canceled · Local History changed.".to_owned()),
+            ),
+            Err(error) => {
+                self.show_local_history(None, Some(format!("Local History not cleared · {error}")));
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn restore_history_checkpoint(
+        &mut self,
+        path: &Path,
+        checkpoint_id: &str,
+        expected_revision: SourceRevision,
+    ) {
+        self.sync_active_document();
+        let Some(index) = self.active_tab else {
+            self.status_message = Some("Restore blocked · no document open".to_owned());
+            return;
+        };
+        if self.tabs[index].document.path != path
+            || self.tabs[index].document.source_revision != expected_revision
+        {
+            self.show_local_history(
+                Some(checkpoint_id),
+                Some("Restore blocked · source changed while history was open.".to_owned()),
+            );
+            return;
+        }
+        if self.tabs[index].document.recovery_conflict || !self.tabs[index].document.is_editable() {
+            self.show_local_history(
+                Some(checkpoint_id),
+                Some("Restore blocked · resolve document protection first.".to_owned()),
+            );
+            return;
+        }
+        let Some(store) = self.checkpoint_store.clone() else {
+            self.status_message = Some("Restore blocked · Local History unavailable".to_owned());
+            return;
+        };
+        let listed = match store.list(&self.workspace.root, path) {
+            Ok(listed) => listed,
+            Err(error) => {
+                self.show_local_history(
+                    None,
+                    Some(format!(
+                        "Restore blocked · cannot verify checkpoint: {error}"
+                    )),
+                );
+                return;
+            }
+        };
+        let Some(checkpoint) = listed
+            .checkpoints
+            .iter()
+            .find(|checkpoint| checkpoint.id == checkpoint_id)
+            .cloned()
+        else {
+            self.show_local_history(
+                None,
+                Some(append_history_warnings(
+                    "Restore blocked · checkpoint changed or is corrupt.".to_owned(),
+                    &listed.warnings,
+                )),
+            );
+            return;
+        };
+        let current = self.tabs[index].document.text.clone();
+        if checkpoint.source == current {
+            self.show_local_history(
+                Some(checkpoint_id),
+                Some("Already showing this checkpoint · no changes made.".to_owned()),
+            );
+            return;
+        }
+
+        let allow_missing_conflict = match disk_state(path) {
+            DiskState::Current(loaded) => {
+                let document = &self.tabs[index].document;
+                let same_content = loaded.snapshot.sha256 == document.snapshot.sha256;
+                let same_origin = loaded.snapshot.same_origin(&document.snapshot);
+                let safe = loaded.snapshot == document.snapshot || (same_content && same_origin);
+                if document.conflict || !safe {
+                    self.tabs[index].document.conflict = true;
+                    self.show_local_history(
+                        Some(checkpoint_id),
+                        Some(
+                            "Restore blocked · file changed outside TermDraft; reload or Save As."
+                                .to_owned(),
+                        ),
+                    );
+                    return;
+                }
+                false
+            }
+            DiskState::Missing => true,
+            DiskState::Unavailable(error) => {
+                self.show_local_history(
+                    Some(checkpoint_id),
+                    Some(format!("Restore blocked · file unavailable: {error}")),
+                );
+                return;
+            }
+        };
+
+        let capture = store.capture(
+            &self.workspace.root,
+            path,
+            &current,
+            CheckpointReason::BeforeRestore,
+        );
+        let capture_note = match capture {
+            Ok(CaptureOutcome::Stored {
+                pruned, warnings, ..
+            }) => {
+                let mut note = String::new();
+                if pruned > 0 {
+                    let _ = write!(note, "pruned {pruned} oldest");
+                }
+                append_history_warnings(note, &warnings)
+            }
+            Ok(CaptureOutcome::Duplicate { warnings, .. }) => {
+                append_history_warnings(String::new(), &warnings)
+            }
+            Ok(CaptureOutcome::Disabled) => {
+                self.show_local_history(
+                    Some(checkpoint_id),
+                    Some("Restore blocked · Local History is disabled.".to_owned()),
+                );
+                return;
+            }
+            Err(error) => {
+                self.show_local_history(
+                    Some(checkpoint_id),
+                    Some(format!(
+                        "Restore blocked · pre-restore checkpoint failed: {error}"
+                    )),
+                );
+                return;
+            }
+        };
+        match self.tabs[index].replace_source_transaction(
+            expected_revision,
+            &checkpoint.source,
+            allow_missing_conflict,
+        ) {
+            Ok(true) => {
+                if allow_missing_conflict {
+                    self.tabs[index].document.conflict = true;
+                }
+                self.preview_selected_link = None;
+                self.overlay = None;
+                let message = if allow_missing_conflict {
+                    "Restored checkpoint to buffer · original missing; use Save As".to_owned()
+                } else {
+                    "Restored checkpoint to buffer · disk unchanged until Save".to_owned()
+                };
+                self.status_message = Some(append_history_note(message, &capture_note));
+            }
+            Ok(false) => self.show_local_history(
+                Some(checkpoint_id),
+                Some("Already showing this checkpoint · no changes made.".to_owned()),
+            ),
+            Err(SourceTransactionError::Protected) => self.show_local_history(
+                Some(checkpoint_id),
+                Some("Restore blocked · document is protected.".to_owned()),
+            ),
+            Err(SourceTransactionError::Stale(_)) => self.show_local_history(
+                Some(checkpoint_id),
+                Some("Restore blocked · source revision changed.".to_owned()),
+            ),
+        }
+    }
+
+    fn capture_history_note(
+        &self,
+        index: usize,
+        source: &str,
+        reason: CheckpointReason,
+    ) -> Option<String> {
+        let store = self.checkpoint_store.as_ref()?;
+        let path = &self.tabs[index].document.path;
+        match store.capture(&self.workspace.root, path, source, reason) {
+            Ok(CaptureOutcome::Stored {
+                pruned, warnings, ..
+            }) => {
+                let mut note = String::new();
+                if pruned > 0 {
+                    let _ = write!(note, "Local History pruned {pruned} oldest");
+                }
+                let note = append_history_warnings(note, &warnings);
+                (!note.is_empty()).then_some(note)
+            }
+            Ok(CaptureOutcome::Duplicate { warnings, .. }) => {
+                let note = append_history_warnings(String::new(), &warnings);
+                (!note.is_empty()).then_some(note)
+            }
+            Ok(CaptureOutcome::Disabled) => None,
+            Err(error) => Some(format!("Local History unavailable: {error}")),
+        }
+    }
+
     fn current_preview_key(&self) -> Option<PreviewKey> {
         let tab = self.active_tab()?;
         Some(PreviewKey {
@@ -2271,8 +2829,17 @@ impl App {
                 self.tabs[index].document.conflict = false;
                 self.status_message = Some("Already saved".to_owned());
             } else {
+                let outgoing = self.tabs[index].document.text.clone();
+                let history_note = self.capture_history_note(
+                    index,
+                    &outgoing,
+                    CheckpointReason::BeforeExternalReload,
+                );
                 self.install_loaded(index, loaded, MixedLineEndingContext::Reload);
-                self.status_message = Some("Reloaded external changes".to_owned());
+                self.status_message = Some(append_optional_history_note(
+                    "Reloaded external changes".to_owned(),
+                    history_note.as_deref(),
+                ));
             }
             return;
         }
@@ -2296,8 +2863,17 @@ impl App {
         match result {
             Ok(snapshot) => {
                 let path = self.tabs[index].document.path.clone();
+                let previous_saved = self.tabs[index].document.saved_text.clone();
+                let history_note = self.capture_history_note(
+                    index,
+                    &previous_saved,
+                    CheckpointReason::PreviousSavedVersion,
+                );
                 self.tabs[index].document.mark_saved(snapshot);
-                self.status_message = Some("Saved".to_owned());
+                self.status_message = Some(append_optional_history_note(
+                    "Saved".to_owned(),
+                    history_note.as_deref(),
+                ));
                 self.discard_recovery_for(&path);
             }
             Err(SaveError::Conflict) => {
@@ -2973,6 +3549,8 @@ impl App {
                     tab.redo();
                 }
             }
+            CommandAction::CreateCheckpoint => self.create_manual_checkpoint(),
+            CommandAction::LocalHistory => self.open_local_history(),
             CommandAction::ReloadConfig => self.reload_config(),
             CommandAction::ChangeTheme => {
                 self.theme = self.theme.next();
@@ -3209,12 +3787,20 @@ impl App {
             return (expected_source.to_owned(), 0);
         };
         let changed = replaced != expected_source;
-        if changed {
-            tab.replace_all(&replaced);
-        }
+        let result = changed.then(|| tab.replace_all(&replaced));
         let updated = tab.document.text.clone();
-        if changed {
-            self.status_message = Some(format!("Replaced {} matches", matches.len()));
+        match result {
+            Some(Ok(true)) => {
+                self.status_message = Some(format!("Replaced {} matches", matches.len()));
+            }
+            Some(Err(SourceTransactionError::Protected)) => {
+                self.status_message =
+                    Some("Replace all blocked · document is protected".to_owned());
+            }
+            Some(Err(SourceTransactionError::Stale(_))) => {
+                self.status_message = Some("Replace all canceled · source changed".to_owned());
+            }
+            Some(Ok(false)) | None => {}
         }
         (updated, 0)
     }
@@ -3610,11 +4196,11 @@ impl App {
             }
             match move_entry(&self.workspace, &clipboard.source, &target) {
                 Ok(target) => {
-                    self.retarget_workspace_paths(&clipboard.source, &target);
+                    let history_note = self.retarget_workspace_paths(&clipboard.source, &target);
                     self.workspace_clipboard = None;
-                    self.status_message = Some(format!(
-                        "Moved to {}",
-                        self.workspace.relative(&target).display()
+                    self.status_message = Some(append_optional_history_note(
+                        format!("Moved to {}", self.workspace.relative(&target).display()),
+                        history_note.as_deref(),
                     ));
                     self.refresh_entries(Some(&target));
                 }
@@ -3648,15 +4234,15 @@ impl App {
         match action {
             WorkspaceInputAction::Create => {
                 let folder = value.ends_with('/');
-                let relative = value.trim_end_matches('/');
-                if relative.is_empty() {
+                let relative = created_entry_path(value.trim_end_matches('/'), folder);
+                if relative.as_os_str().is_empty() {
                     self.status_message = Some("Enter a file or folder path".to_owned());
                     return false;
                 }
                 let result = if folder {
-                    create_folder(&self.workspace, source, Path::new(relative))
+                    create_folder(&self.workspace, source, &relative)
                 } else {
-                    create_file(&self.workspace, source, Path::new(relative))
+                    create_file(&self.workspace, source, &relative)
                 };
                 match result {
                     Ok(target) => {
@@ -3698,11 +4284,11 @@ impl App {
                 }
                 match rename_entry(&self.workspace, source, Path::new(value).as_os_str()) {
                     Ok(target) => {
-                        self.retarget_workspace_paths(source, &target);
+                        let history_note = self.retarget_workspace_paths(source, &target);
                         self.refresh_entries(Some(&target));
-                        self.status_message = Some(format!(
-                            "Renamed to {}",
-                            self.workspace.relative(&target).display()
+                        self.status_message = Some(append_optional_history_note(
+                            format!("Renamed to {}", self.workspace.relative(&target).display()),
+                            history_note.as_deref(),
                         ));
                         true
                     }
@@ -3725,11 +4311,11 @@ impl App {
                 }
                 match move_entry(&self.workspace, source, &target) {
                     Ok(target) => {
-                        self.retarget_workspace_paths(source, &target);
+                        let history_note = self.retarget_workspace_paths(source, &target);
                         self.refresh_entries(Some(&target));
-                        self.status_message = Some(format!(
-                            "Moved to {}",
-                            self.workspace.relative(&target).display()
+                        self.status_message = Some(append_optional_history_note(
+                            format!("Moved to {}", self.workspace.relative(&target).display()),
+                            history_note.as_deref(),
                         ));
                         true
                     }
@@ -3778,7 +4364,7 @@ impl App {
         Ok(())
     }
 
-    fn retarget_workspace_paths(&mut self, source: &Path, target: &Path) {
+    fn retarget_workspace_paths(&mut self, source: &Path, target: &Path) -> Option<String> {
         let previous_paths = self
             .tabs
             .iter()
@@ -3827,6 +4413,15 @@ impl App {
             self.mark_recent(&path);
         }
         self.persist_session_if_changed();
+        self.checkpoint_store.as_ref().and_then(|store| {
+            match store.retarget_paths(&self.workspace.root, source, target) {
+                Ok(mutation) => {
+                    let note = append_history_warnings(String::new(), &mutation.warnings);
+                    (!note.is_empty()).then_some(note)
+                }
+                Err(error) => Some(format!("Local History path not updated: {error}")),
+            }
+        })
     }
 
     fn request_trash_entry(&mut self) {
@@ -4502,6 +5097,22 @@ impl App {
         if !UiRegions::contains(Some(area), mouse.column, mouse.row) {
             return;
         }
+        if matches!(
+            mouse.kind,
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+        ) && let Some(Overlay::LocalHistory {
+            enabled: true,
+            focus,
+            ..
+        }) = &mut self.overlay
+        {
+            let position = Position::new(mouse.column, mouse.row);
+            if ui::history_list_area(area).contains(position) {
+                *focus = HistoryFocus::Checkpoints;
+            } else if ui::history_diff_area(area).contains(position) {
+                *focus = HistoryFocus::Diff;
+            }
+        }
         match mouse.kind {
             MouseEventKind::ScrollUp => {
                 self.handle_overlay_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
@@ -4701,6 +5312,81 @@ impl App {
                     *focus = RecoveryManagerFocus::Records;
                     activation = Some(code);
                 }
+            }
+            Overlay::LocalHistory {
+                enabled,
+                checkpoints,
+                selected,
+                focus,
+                diff,
+                diff_scroll,
+                diff_truncated,
+                ..
+            } => {
+                if *enabled {
+                    let list_area = ui::history_list_area(area);
+                    let diff_area = ui::history_diff_area(area);
+                    if list_area.contains(Position::new(column, row)) {
+                        let start =
+                            ui::history_list_start(checkpoints.len(), *selected, list_area.height);
+                        let index = start + usize::from(row.saturating_sub(list_area.y));
+                        if index < checkpoints.len() {
+                            *focus = HistoryFocus::Checkpoints;
+                            *selected = index;
+                            let current = self
+                                .active_tab()
+                                .map_or("", |tab| tab.document.text.as_str());
+                            let (updated, truncated) =
+                                build_history_diff(&checkpoints[index].source, current);
+                            *diff = updated;
+                            *diff_scroll = 0;
+                            *diff_truncated = truncated;
+                        }
+                    } else if diff_area.contains(Position::new(column, row)) {
+                        *focus = HistoryFocus::Diff;
+                    } else if row == inner.bottom().saturating_sub(2) {
+                        activation = match column.saturating_sub(inner.x) {
+                            0..=11 => Some(KeyCode::Char('c')),
+                            15..=23 => Some(KeyCode::Char('r')),
+                            27..=34 => Some(KeyCode::Tab),
+                            38..=46 => Some(KeyCode::Char('e')),
+                            _ => None,
+                        };
+                    } else if row == inner.bottom().saturating_sub(1) {
+                        activation = match column.saturating_sub(inner.x) {
+                            0..=15 => Some(KeyCode::Char('d')),
+                            19..=35 => Some(KeyCode::Char('D')),
+                            39..=47 => Some(KeyCode::Esc),
+                            _ => None,
+                        };
+                    }
+                } else if row == inner.bottom().saturating_sub(2) {
+                    activation = match column.saturating_sub(inner.x) {
+                        0..=27 => Some(KeyCode::Char('e')),
+                        33..=42 => Some(KeyCode::Esc),
+                        _ => None,
+                    };
+                }
+            }
+            Overlay::HistoryClearConfirm { scope, .. }
+                if row == inner.bottom().saturating_sub(3) =>
+            {
+                let relative_column = column.saturating_sub(inner.x);
+                activation = match scope {
+                    HistoryClearScope::Document if relative_column <= 24 => {
+                        Some(KeyCode::Char('d'))
+                    }
+                    HistoryClearScope::Workspace if relative_column <= 25 => {
+                        Some(KeyCode::Char('D'))
+                    }
+                    HistoryClearScope::Document if (30..=58).contains(&relative_column) => {
+                        Some(KeyCode::Enter)
+                    }
+                    HistoryClearScope::Workspace if (31..=59).contains(&relative_column) => {
+                        Some(KeyCode::Enter)
+                    }
+                    _ => None,
+                };
             }
             Overlay::PathInput { .. }
             | Overlay::WorkspaceInput { .. }
@@ -4979,7 +5665,7 @@ impl App {
         });
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::if_not_else, clippy::too_many_lines)]
     fn handle_overlay_key(&mut self, key: KeyEvent) {
         if key.code == KeyCode::Esc {
             let overlay = self.overlay.take();
@@ -5602,6 +6288,137 @@ impl App {
                     _ => true,
                 }
             }
+            Overlay::LocalHistory {
+                enabled,
+                path,
+                checkpoints,
+                selected,
+                focus,
+                diff,
+                diff_scroll,
+                diff_truncated,
+                expected_revision,
+                ..
+            } => {
+                if !*enabled {
+                    if key.code == KeyCode::Char('e') {
+                        self.set_history_enabled(true);
+                        false
+                    } else {
+                        true
+                    }
+                } else {
+                    let previous_selected = *selected;
+                    let mut keep = true;
+                    match key.code {
+                        KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
+                            *focus = if *focus == HistoryFocus::Checkpoints {
+                                HistoryFocus::Diff
+                            } else {
+                                HistoryFocus::Checkpoints
+                            };
+                        }
+                        KeyCode::Up if *focus == HistoryFocus::Checkpoints => {
+                            *selected = selected.saturating_sub(1);
+                        }
+                        KeyCode::Down if *focus == HistoryFocus::Checkpoints => {
+                            *selected = (*selected + 1).min(checkpoints.len().saturating_sub(1));
+                        }
+                        KeyCode::PageUp if *focus == HistoryFocus::Checkpoints => {
+                            *selected = selected.saturating_sub(10);
+                        }
+                        KeyCode::PageDown if *focus == HistoryFocus::Checkpoints => {
+                            *selected = (*selected + 10).min(checkpoints.len().saturating_sub(1));
+                        }
+                        KeyCode::Home if *focus == HistoryFocus::Checkpoints => {
+                            *selected = 0;
+                        }
+                        KeyCode::End if *focus == HistoryFocus::Checkpoints => {
+                            *selected = checkpoints.len().saturating_sub(1);
+                        }
+                        KeyCode::Up if *focus == HistoryFocus::Diff => {
+                            *diff_scroll = diff_scroll.saturating_sub(1);
+                        }
+                        KeyCode::Down if *focus == HistoryFocus::Diff => {
+                            *diff_scroll = (*diff_scroll + 1).min(diff.len().saturating_sub(1));
+                        }
+                        KeyCode::PageUp if *focus == HistoryFocus::Diff => {
+                            *diff_scroll = diff_scroll.saturating_sub(10);
+                        }
+                        KeyCode::PageDown if *focus == HistoryFocus::Diff => {
+                            *diff_scroll = (*diff_scroll + 10).min(diff.len().saturating_sub(1));
+                        }
+                        KeyCode::Home if *focus == HistoryFocus::Diff => {
+                            *diff_scroll = 0;
+                        }
+                        KeyCode::End if *focus == HistoryFocus::Diff => {
+                            *diff_scroll = diff.len().saturating_sub(1);
+                        }
+                        KeyCode::Enter if !checkpoints.is_empty() => {
+                            *focus = HistoryFocus::Diff;
+                        }
+                        KeyCode::Char('c') => {
+                            self.create_manual_checkpoint();
+                            keep = false;
+                        }
+                        KeyCode::Char('r') => {
+                            if let Some(checkpoint) = checkpoints.get(*selected) {
+                                self.restore_history_checkpoint(
+                                    path,
+                                    &checkpoint.id,
+                                    *expected_revision,
+                                );
+                                keep = false;
+                            }
+                        }
+                        KeyCode::Char('d') => {
+                            self.request_history_clear(HistoryClearScope::Document, path);
+                            keep = false;
+                        }
+                        KeyCode::Char('D') => {
+                            self.request_history_clear(HistoryClearScope::Workspace, path);
+                            keep = false;
+                        }
+                        KeyCode::Char('e') => {
+                            self.set_history_enabled(false);
+                            keep = false;
+                        }
+                        _ => {}
+                    }
+                    if keep && *selected != previous_selected {
+                        let current = self
+                            .active_tab()
+                            .map_or("", |tab| tab.document.text.as_str());
+                        let (updated, truncated) = checkpoints.get(*selected).map_or_else(
+                            || (Vec::new(), false),
+                            |checkpoint| build_history_diff(&checkpoint.source, current),
+                        );
+                        *diff = updated;
+                        *diff_truncated = truncated;
+                        *diff_scroll = 0;
+                    }
+                    keep
+                }
+            }
+            Overlay::HistoryClearConfirm {
+                scope,
+                path,
+                checkpoint_ids,
+            } => {
+                let confirm = match scope {
+                    HistoryClearScope::Document => KeyCode::Char('d'),
+                    HistoryClearScope::Workspace => KeyCode::Char('D'),
+                };
+                if key.code == confirm {
+                    self.clear_history(*scope, path, checkpoint_ids);
+                    false
+                } else if key.code == KeyCode::Enter {
+                    self.show_local_history(None, Some("Clear canceled.".to_owned()));
+                    false
+                } else {
+                    true
+                }
+            }
             Overlay::RecoveryDeleteConfirm { record } => match key.code {
                 KeyCode::Char('d') => {
                     self.delete_managed_recovery(record);
@@ -6002,12 +6819,18 @@ impl App {
                 }
 
                 let mixed_target = loaded.mixed_line_ending_target();
+                let outgoing = self.tabs[index].document.text.clone();
+                let history_note = self.capture_history_note(
+                    index,
+                    &outgoing,
+                    CheckpointReason::BeforeExternalReload,
+                );
                 if active {
                     self.install_loaded(index, loaded, MixedLineEndingContext::Reload);
                 } else {
                     self.install_inactive_loaded(index, loaded);
                 }
-                self.status_message = Some(mixed_target.map_or_else(
+                let status = mixed_target.map_or_else(
                     || {
                         if active {
                             "Reloaded external changes".to_owned()
@@ -6026,6 +6849,10 @@ impl App {
                             line_ending_name(target)
                         )
                     },
+                );
+                self.status_message = Some(append_optional_history_note(
+                    status,
+                    history_note.as_deref(),
                 ));
                 true
             }
@@ -6066,6 +6893,142 @@ impl App {
         tab.preview_scroll_y = preview_scroll_y;
         tab.pending_scroll_restore = true;
         self.tabs[index] = tab;
+    }
+}
+
+fn build_history_diff(checkpoint: &str, current: &str) -> (Vec<HistoryDiffLine>, bool) {
+    if checkpoint == current {
+        return (
+            vec![HistoryDiffLine {
+                kind: HistoryDiffKind::Notice,
+                text: "No changes from the current source.".to_owned(),
+            }],
+            false,
+        );
+    }
+    let (checkpoint, checkpoint_truncated) = bounded_history_diff_source(checkpoint);
+    let (current, current_truncated) = bounded_history_diff_source(current);
+    let diff_lines = diff::lines(&checkpoint, &current);
+    let is_changed = diff_lines
+        .iter()
+        .map(|change| !matches!(change, diff::Result::Both(_, _)))
+        .collect::<Vec<_>>();
+    if !is_changed.iter().any(|changed| *changed) {
+        return (
+            vec![HistoryDiffLine {
+                kind: HistoryDiffKind::Notice,
+                text: "No changes in the compared prefix.".to_owned(),
+            }],
+            checkpoint_truncated || current_truncated,
+        );
+    }
+
+    let mut lines = Vec::new();
+    let mut truncated = checkpoint_truncated || current_truncated;
+    let mut omitted = 0;
+    for (index, change) in diff_lines.into_iter().enumerate() {
+        let context_start = index.saturating_sub(3);
+        let context_end = (index + 4).min(is_changed.len());
+        let include = is_changed[index]
+            || is_changed[context_start..context_end]
+                .iter()
+                .any(|line| *line);
+        if !include {
+            omitted += 1;
+            continue;
+        }
+        if omitted > 0 && lines.len() + 1 < HISTORY_DIFF_MAX_OUTPUT_LINES {
+            lines.push(HistoryDiffLine {
+                kind: HistoryDiffKind::Notice,
+                text: format!("… {omitted} unchanged lines …"),
+            });
+            omitted = 0;
+        }
+        if lines.len() == HISTORY_DIFF_MAX_OUTPUT_LINES {
+            truncated = true;
+            break;
+        }
+        let (kind, text) = match change {
+            diff::Result::Left(line) => (HistoryDiffKind::Removed, line),
+            diff::Result::Right(line) => (HistoryDiffKind::Added, line),
+            diff::Result::Both(line, _) => (HistoryDiffKind::Context, line),
+        };
+        lines.push(HistoryDiffLine {
+            kind,
+            text: text.to_owned(),
+        });
+    }
+    if omitted > 0 && lines.len() < HISTORY_DIFF_MAX_OUTPUT_LINES {
+        lines.push(HistoryDiffLine {
+            kind: HistoryDiffKind::Notice,
+            text: format!("… {omitted} unchanged lines …"),
+        });
+    }
+    (lines, truncated)
+}
+
+fn bounded_history_diff_source(source: &str) -> (String, bool) {
+    let mut output = String::new();
+    for (index, line) in source.split('\n').enumerate() {
+        let separator_bytes = usize::from(index > 0);
+        if index == HISTORY_DIFF_MAX_SOURCE_LINES
+            || output
+                .len()
+                .saturating_add(separator_bytes)
+                .saturating_add(line.len())
+                > HISTORY_DIFF_MAX_BYTES
+        {
+            return (output, true);
+        }
+        if index > 0 {
+            output.push('\n');
+        }
+        output.push_str(line);
+    }
+    (output, false)
+}
+
+fn sorted_checkpoint_ids(checkpoints: &[Checkpoint]) -> Vec<String> {
+    let mut ids = checkpoints
+        .iter()
+        .map(|checkpoint| checkpoint.id.clone())
+        .collect::<Vec<_>>();
+    ids.sort();
+    ids
+}
+
+fn append_history_warnings(mut message: String, warnings: &[CheckpointWarning]) -> String {
+    if let Some(warning) = warnings.first() {
+        let prefix = if message.is_empty() {
+            "Local History warning".to_owned()
+        } else {
+            format!("{message} · Local History warning")
+        };
+        message = format!(
+            "{prefix}: {}{}",
+            warning.message,
+            if warnings.len() > 1 {
+                format!(" (+{} more)", warnings.len() - 1)
+            } else {
+                String::new()
+            }
+        );
+    }
+    message
+}
+
+fn append_history_note(message: String, note: &str) -> String {
+    if note.is_empty() {
+        message
+    } else {
+        format!("{message} · {note}")
+    }
+}
+
+fn append_optional_history_note(message: String, note: Option<&str>) -> String {
+    match note {
+        Some(note) => append_history_note(message, note),
+        None => message,
     }
 }
 
@@ -6112,6 +7075,14 @@ const fn line_ending_name(line_ending: LineEnding) -> &'static str {
         LineEnding::Cr => "CR",
         LineEnding::None | LineEnding::Lf | LineEnding::Mixed => "LF",
     }
+}
+
+fn created_entry_path(value: &str, folder: bool) -> PathBuf {
+    let mut path = PathBuf::from(value);
+    if !folder && path.extension().is_none_or(std::ffi::OsStr::is_empty) {
+        path.set_extension("md");
+    }
+    path
 }
 
 fn conflict_copy_path(workspace: &Workspace, source: &Path) -> String {
@@ -6938,6 +7909,11 @@ mod tests {
         app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     }
 
+    fn app_with_history(workspace: Workspace, store: CheckpointStore) -> App {
+        App::with_state_services_and_history(workspace, Config::default(), None, None, Some(store))
+            .unwrap()
+    }
+
     fn finish_workspace_search(app: &mut App) {
         for _ in 0..200 {
             let _ = app.poll_workspace_search_results();
@@ -6999,6 +7975,18 @@ mod tests {
             ("MODE", "Command mode", "Esc", CommandAction::CommandMode),
             ("EDIT", "Undo", "u", CommandAction::Undo),
             ("EDIT", "Redo", "U", CommandAction::Redo),
+            (
+                "EDIT",
+                "Create checkpoint",
+                "",
+                CommandAction::CreateCheckpoint,
+            ),
+            (
+                "EDIT",
+                "Open Local History",
+                "",
+                CommandAction::LocalHistory,
+            ),
             ("EDIT", "Reload config", "R", CommandAction::ReloadConfig),
             (
                 "EDIT",
@@ -7424,6 +8412,72 @@ command_manage_recovery = "Z"
         app.handle_overlay_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         app.execute_command(CommandAction::Undo);
         assert_eq!(app.active_tab().unwrap().document.text, "one ONE one");
+    }
+
+    #[test]
+    fn replace_all_preserves_conflict_buffer_editing() {
+        for recovery_conflict in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("note.md");
+            fs::write(&path, "one one").unwrap();
+            let workspace = Workspace::from_target(&path).unwrap();
+            let mut app =
+                App::with_state_services(workspace, Config::default(), None, None).unwrap();
+            let document = &mut app.active_tab_mut().unwrap().document;
+            document.conflict = !recovery_conflict;
+            document.recovery_conflict = recovery_conflict;
+
+            let source = app.active_tab().unwrap().document.text.clone();
+            let matches = find_document_matches(&source, "one", false);
+            let (updated, _) = app.replace_all_document_matches(&source, &matches, "x");
+
+            assert_eq!(updated, "x x");
+            assert_eq!(app.active_tab().unwrap().document.text, "x x");
+            assert_eq!(app.status_message.as_deref(), Some("Replaced 2 matches"));
+            assert_eq!(
+                app.active_tab().unwrap().document.conflict,
+                !recovery_conflict
+            );
+            assert_eq!(
+                app.active_tab().unwrap().document.recovery_conflict,
+                recovery_conflict
+            );
+
+            app.execute_command(CommandAction::Undo);
+            assert_eq!(app.active_tab().unwrap().document.text, "one one");
+        }
+    }
+
+    #[test]
+    fn whole_source_transaction_groups_empty_boundaries_exactly() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "prior").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::with_state_services(workspace, Config::default(), None, None).unwrap();
+
+        app.active_tab_mut().unwrap().replace_all("").unwrap();
+        app.active_tab_mut()
+            .unwrap()
+            .replace_all("restored")
+            .unwrap();
+        app.execute_command(CommandAction::Undo);
+        assert_eq!(app.active_tab().unwrap().document.text, "");
+        app.execute_command(CommandAction::Undo);
+        assert_eq!(app.active_tab().unwrap().document.text, "prior");
+
+        let empty_path = directory.path().join("empty.md");
+        fs::write(&empty_path, "").unwrap();
+        app.open_document(&empty_path).unwrap();
+        app.active_tab_mut()
+            .unwrap()
+            .replace_all("current")
+            .unwrap();
+        app.active_tab_mut().unwrap().replace_all("").unwrap();
+        app.execute_command(CommandAction::Undo);
+        assert_eq!(app.active_tab().unwrap().document.text, "current");
+        app.execute_command(CommandAction::Undo);
+        assert_eq!(app.active_tab().unwrap().document.text, "");
     }
 
     #[test]
@@ -8614,6 +9668,34 @@ command_manage_recovery = "Z"
         assert_eq!(tab.editor.cursor(), (1, 1));
         assert_eq!(source_from_textarea(&tab.editor), "alpha\nbeta\ncharlie");
         assert!(!tab.document.is_dirty());
+    }
+
+    #[test]
+    fn extensionless_file_creation_defaults_to_markdown_and_is_indexed() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let root = workspace.root.clone();
+        let mut app = App::new(workspace).unwrap();
+
+        assert!(app.apply_workspace_input(WorkspaceInputAction::Create, &root, "daily-note"));
+
+        let markdown = root.join("daily-note.md");
+        assert!(markdown.is_file());
+        assert!(!root.join("daily-note").exists());
+        assert_eq!(app.active_tab().unwrap().document.path, markdown);
+        assert!(app.entries.iter().any(|entry| entry.path == markdown));
+        assert_eq!(app.status_message.as_deref(), Some("Created daily-note.md"));
+
+        assert!(app.apply_workspace_input(WorkspaceInputAction::Create, &root, "plain.txt"));
+        assert!(root.join("plain.txt").is_file());
+        assert_eq!(
+            app.active_tab().unwrap().document.path,
+            root.join("plain.txt")
+        );
+
+        assert!(app.apply_workspace_input(WorkspaceInputAction::Create, &root, "archive/"));
+        assert!(root.join("archive").is_dir());
+        assert!(!root.join("archive.md").exists());
     }
 
     #[test]
@@ -10027,6 +11109,470 @@ command_manage_recovery = "Z"
                 .revision,
             app.active_tab().unwrap().document.source_revision
         );
+    }
+
+    #[test]
+    fn local_history_opt_in_restore_keeps_disk_and_is_one_undo_group() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "saved\n").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let path = workspace.initial_file.clone().unwrap();
+        let store = CheckpointStore::new(state.path().to_path_buf());
+        let mut app = app_with_history(workspace, store.clone());
+
+        execute_palette_action(&mut app, CommandAction::LocalHistory);
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::LocalHistory { enabled: false, .. })
+        ));
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert!(store.is_enabled(&app.workspace.root).unwrap());
+
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.active_tab_mut()
+            .unwrap()
+            .replace_all("checkpoint\n")
+            .unwrap();
+        execute_palette_action(&mut app, CommandAction::CreateCheckpoint);
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::LocalHistory {
+                ref checkpoints,
+                ..
+            }) if checkpoints.len() == 1
+                && checkpoints[0].reason == CheckpointReason::Manual
+        ));
+
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.active_tab_mut()
+            .unwrap()
+            .replace_all("current\n")
+            .unwrap();
+        execute_palette_action(&mut app, CommandAction::LocalHistory);
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+
+        let document = &app.active_tab().unwrap().document;
+        assert_eq!(document.text, "checkpoint\n");
+        assert_eq!(document.saved_text, "saved\n");
+        assert!(document.is_dirty());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "saved\n");
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Restored checkpoint to buffer · disk unchanged until Save")
+        );
+
+        app.execute_command(CommandAction::Undo);
+        assert_eq!(app.active_tab().unwrap().document.text, "current\n");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "saved\n");
+        app.execute_command(CommandAction::Redo);
+        assert_eq!(app.active_tab().unwrap().document.text, "checkpoint\n");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "saved\n");
+
+        let checkpoints = store.list(&app.workspace.root, &path).unwrap().checkpoints;
+        assert_eq!(checkpoints.len(), 2);
+        assert_eq!(checkpoints[0].reason, CheckpointReason::BeforeRestore);
+        assert_eq!(checkpoints[0].source, "current\n");
+    }
+
+    #[test]
+    fn local_history_restore_uses_the_consented_mixed_ending_target() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mixed.md");
+        let original = b"one\r\ntwo\n";
+        fs::write(&path, original).unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let path = workspace.initial_file.clone().unwrap();
+        let store = CheckpointStore::new(state.path().to_path_buf());
+        store.set_enabled(&workspace.root, true).unwrap();
+        store
+            .capture(
+                &workspace.root,
+                &path,
+                "checkpoint\n",
+                CheckpointReason::Manual,
+            )
+            .unwrap();
+        let mut app = app_with_history(workspace, store.clone());
+
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            app.active_tab().unwrap().document.line_ending,
+            LineEnding::Mixed
+        );
+        assert_eq!(
+            app.active_tab()
+                .unwrap()
+                .document
+                .mixed_line_ending_target(),
+            Some(LineEnding::Crlf)
+        );
+
+        execute_palette_action(&mut app, CommandAction::LocalHistory);
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+
+        let document = &app.active_tab().unwrap().document;
+        assert_eq!(document.text, "checkpoint\n");
+        assert_eq!(document.line_ending, LineEnding::Crlf);
+        assert_eq!(document.mixed_line_ending_target(), Some(LineEnding::Crlf));
+        assert_eq!(fs::read(&path).unwrap(), original);
+
+        app.execute_command(CommandAction::Undo);
+        assert_eq!(app.active_tab().unwrap().document.text, "one\r\ntwo\n");
+        assert_eq!(
+            app.active_tab().unwrap().document.line_ending,
+            LineEnding::Mixed
+        );
+        app.execute_command(CommandAction::Redo);
+        assert_eq!(app.active_tab().unwrap().document.text, "checkpoint\n");
+        assert_eq!(
+            app.active_tab().unwrap().document.line_ending,
+            LineEnding::Crlf
+        );
+        assert_eq!(fs::read(&path).unwrap(), original);
+
+        let checkpoints = store.list(&app.workspace.root, &path).unwrap().checkpoints;
+        assert_eq!(checkpoints[0].reason, CheckpointReason::BeforeRestore);
+        assert_eq!(checkpoints[0].source.as_bytes(), original);
+    }
+
+    #[test]
+    fn local_history_captures_successful_save_and_clean_external_reload() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "one\n").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let path = workspace.initial_file.clone().unwrap();
+        let store = CheckpointStore::new(state.path().to_path_buf());
+        store.set_enabled(&workspace.root, true).unwrap();
+        let mut app = app_with_history(workspace, store.clone());
+
+        app.active_tab_mut().unwrap().replace_all("two\n").unwrap();
+        app.save_active();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "two\n");
+        let saved = store.list(&app.workspace.root, &path).unwrap().checkpoints;
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].reason, CheckpointReason::PreviousSavedVersion);
+        assert_eq!(saved[0].source, "one\n");
+
+        app.save_active();
+        assert_eq!(
+            store
+                .list(&app.workspace.root, &path)
+                .unwrap()
+                .checkpoints
+                .len(),
+            1
+        );
+
+        fs::write(&path, "external\n").unwrap();
+        assert!(app.poll_document(0, true));
+        assert_eq!(app.active_tab().unwrap().document.text, "external\n");
+        let reloaded = store.list(&app.workspace.root, &path).unwrap().checkpoints;
+        assert_eq!(reloaded.len(), 2);
+        assert_eq!(reloaded[0].reason, CheckpointReason::BeforeExternalReload);
+        assert_eq!(reloaded[0].source, "two\n");
+        assert_eq!(reloaded[1].reason, CheckpointReason::PreviousSavedVersion);
+    }
+
+    #[test]
+    fn local_history_rename_retargets_lineage_but_save_as_starts_fresh() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let original = directory.path().join("note.md");
+        fs::write(&original, "source\n").unwrap();
+        let workspace = Workspace::from_target(&original).unwrap();
+        let original = workspace.initial_file.clone().unwrap();
+        let store = CheckpointStore::new(state.path().to_path_buf());
+        store.set_enabled(&workspace.root, true).unwrap();
+        let mut app = app_with_history(workspace, store.clone());
+
+        execute_palette_action(&mut app, CommandAction::CreateCheckpoint);
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.apply_workspace_input(WorkspaceInputAction::Rename, &original, "renamed.md",));
+        let renamed = app.workspace.root.join("renamed.md");
+        let renamed_history = store
+            .list(&app.workspace.root, &renamed)
+            .unwrap()
+            .checkpoints;
+        assert_eq!(renamed_history.len(), 1);
+        assert_eq!(
+            renamed_history[0].document_path,
+            PathBuf::from("renamed.md")
+        );
+        assert_eq!(renamed_history[0].captured_path, PathBuf::from("note.md"));
+        assert!(
+            store
+                .list(&app.workspace.root, &original)
+                .unwrap()
+                .checkpoints
+                .is_empty()
+        );
+
+        assert!(app.apply_path_action(PathAction::SaveAs, "copy.md"));
+        let copy = app.workspace.root.join("copy.md");
+        assert_eq!(app.active_tab().unwrap().document.path, copy);
+        assert!(
+            store
+                .list(&app.workspace.root, &copy)
+                .unwrap()
+                .checkpoints
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .list(&app.workspace.root, &renamed)
+                .unwrap()
+                .checkpoints
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn local_history_clear_defaults_to_cancel_and_revalidates_exact_ids() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "one\n").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let path = workspace.initial_file.clone().unwrap();
+        let store = CheckpointStore::new(state.path().to_path_buf());
+        store.set_enabled(&workspace.root, true).unwrap();
+        store
+            .capture(&workspace.root, &path, "one\n", CheckpointReason::Manual)
+            .unwrap();
+        let mut app = app_with_history(workspace, store.clone());
+
+        app.request_history_clear(HistoryClearScope::Document, &path);
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            store
+                .list(&app.workspace.root, &path)
+                .unwrap()
+                .checkpoints
+                .len(),
+            1
+        );
+
+        app.request_history_clear(HistoryClearScope::Document, &path);
+        store
+            .capture(
+                &app.workspace.root,
+                &path,
+                "two\n",
+                CheckpointReason::Manual,
+            )
+            .unwrap();
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let unchanged = store.list(&app.workspace.root, &path).unwrap().checkpoints;
+        assert_eq!(unchanged.len(), 2);
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::LocalHistory { ref status, .. })
+                if status.contains("Clear canceled · Local History changed")
+        ));
+
+        app.request_history_clear(HistoryClearScope::Document, &path);
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(
+            store
+                .list(&app.workspace.root, &path)
+                .unwrap()
+                .checkpoints
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn local_history_pointer_uses_visible_panes_and_exact_clear_actions() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "current\n").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let path = workspace.initial_file.clone().unwrap();
+        let store = CheckpointStore::new(state.path().to_path_buf());
+        store.set_enabled(&workspace.root, true).unwrap();
+        store
+            .capture(&workspace.root, &path, "first\n", CheckpointReason::Manual)
+            .unwrap();
+        store
+            .capture(&workspace.root, &path, "second\n", CheckpointReason::Manual)
+            .unwrap();
+        let mut app = app_with_history(workspace, store.clone());
+
+        execute_palette_action(&mut app, CommandAction::LocalHistory);
+        let frame = Rect::new(0, 0, 120, 40);
+        let area = ui::overlay_area(frame, app.overlay.as_ref().unwrap());
+        let list = ui::history_list_area(area);
+        app.handle_overlay_click(area, list.x, list.y.saturating_add(1));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::LocalHistory { selected: 1, .. })
+        ));
+
+        let diff = ui::history_diff_area(area);
+        app.ui_regions.overlay = Some(area);
+        app.handle_overlay_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: diff.x,
+            row: diff.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::LocalHistory {
+                focus: HistoryFocus::Diff,
+                diff_scroll: 1,
+                ..
+            })
+        ));
+
+        app.request_history_clear(HistoryClearScope::Document, &path);
+        let confirm_area = ui::overlay_area(frame, app.overlay.as_ref().unwrap());
+        let inner = ui::overlay_inner_area(confirm_area);
+        app.handle_overlay_click(confirm_area, inner.x, inner.bottom().saturating_sub(2));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::HistoryClearConfirm { .. })
+        ));
+
+        app.handle_overlay_click(
+            confirm_area,
+            inner.x.saturating_add(30),
+            inner.bottom().saturating_sub(3),
+        );
+        assert_eq!(
+            store
+                .list(&app.workspace.root, &path)
+                .unwrap()
+                .checkpoints
+                .len(),
+            2
+        );
+        assert!(matches!(app.overlay, Some(Overlay::LocalHistory { .. })));
+
+        app.request_history_clear(HistoryClearScope::Document, &path);
+        let confirm_area = ui::overlay_area(frame, app.overlay.as_ref().unwrap());
+        let inner = ui::overlay_inner_area(confirm_area);
+        app.handle_overlay_click(confirm_area, inner.x, inner.bottom().saturating_sub(3));
+        assert!(
+            store
+                .list(&app.workspace.root, &path)
+                .unwrap()
+                .checkpoints
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn local_history_restore_rechecks_revision_and_document_protection() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "saved\n").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let path = workspace.initial_file.clone().unwrap();
+        let store = CheckpointStore::new(state.path().to_path_buf());
+        store.set_enabled(&workspace.root, true).unwrap();
+        store
+            .capture(
+                &workspace.root,
+                &path,
+                "checkpoint\n",
+                CheckpointReason::Manual,
+            )
+            .unwrap();
+        let mut app = app_with_history(workspace, store.clone());
+
+        execute_palette_action(&mut app, CommandAction::LocalHistory);
+        app.active_tab_mut()
+            .unwrap()
+            .replace_all("newer\n")
+            .unwrap();
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        assert_eq!(app.active_tab().unwrap().document.text, "newer\n");
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::LocalHistory { ref status, .. })
+                if status.contains("source changed while history was open")
+        ));
+
+        app.active_tab_mut().unwrap().document.conflict = true;
+        execute_palette_action(&mut app, CommandAction::LocalHistory);
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        assert_eq!(app.active_tab().unwrap().document.text, "newer\n");
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::LocalHistory { ref status, .. })
+                if status.contains("file changed outside TermDraft")
+        ));
+        assert_eq!(
+            store
+                .list(&app.workspace.root, &path)
+                .unwrap()
+                .checkpoints
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn local_history_diff_is_checkpoint_to_current_and_bounded() {
+        let (diff, truncated) = build_history_diff("old α\n", "new β\n");
+        assert!(!truncated);
+        assert_eq!(
+            diff,
+            vec![
+                HistoryDiffLine {
+                    kind: HistoryDiffKind::Removed,
+                    text: "old α".to_owned(),
+                },
+                HistoryDiffLine {
+                    kind: HistoryDiffKind::Added,
+                    text: "new β".to_owned(),
+                },
+                HistoryDiffLine {
+                    kind: HistoryDiffKind::Context,
+                    text: String::new(),
+                },
+            ]
+        );
+
+        let common = (0..500)
+            .map(|line| format!("same {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (diff, truncated) = build_history_diff(
+            &format!("{common}\nold tail"),
+            &format!("{common}\nnew tail"),
+        );
+        assert!(!truncated);
+        assert!(
+            diff.iter()
+                .any(|line| { line.kind == HistoryDiffKind::Removed && line.text == "old tail" })
+        );
+        assert!(
+            diff.iter()
+                .any(|line| { line.kind == HistoryDiffKind::Added && line.text == "new tail" })
+        );
+        assert!(diff.iter().any(|line| line.kind == HistoryDiffKind::Notice));
+
+        let checkpoint = (0..500)
+            .map(|line| format!("old {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let current = (0..500)
+            .map(|line| format!("new {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (diff, truncated) = build_history_diff(&checkpoint, &current);
+        assert!(truncated);
+        assert_eq!(diff.len(), HISTORY_DIFF_MAX_OUTPUT_LINES);
     }
 
     #[test]
