@@ -41,12 +41,13 @@ const COLLAPSED_FOLDER: &str = "▸";
 const EXPANDED_FOLDER: &str = "▾";
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    app.update_viewport_width(frame.area().width);
-    update_help_scroll_bounds(frame.area(), &mut app.overlay);
-    frame.render_widget(
-        Block::new().style(Style::new().bg(BACKGROUND)),
-        frame.area(),
-    );
+    let frame_area = frame.area();
+    app.update_viewport_width(frame_area.width);
+    frame.render_widget(Block::new().style(Style::new().bg(BACKGROUND)), frame_area);
+    let debug_height = if app.debug_trace.is_some() { 3 } else { 0 };
+    let [app_area, debug_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(debug_height)]).areas(frame_area);
+    update_help_scroll_bounds(app_area, &mut app.overlay);
     let tab_height = u16::from(app.tabs.len() > 1);
     let [title_area, tabs_area, main_area, status_area] = Layout::vertical([
         Constraint::Length(1),
@@ -54,7 +55,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Constraint::Min(1),
         Constraint::Length(1),
     ])
-    .areas(frame.area());
+    .areas(app_area);
 
     draw_title(frame, app, title_area);
     if tab_height > 0 {
@@ -63,12 +64,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_workspace(frame, app, main_area);
     app.ui_regions.tabs = (tab_height > 0).then_some(tabs_area);
     draw_status(frame, app, status_area);
+    if app.debug_trace.is_some() {
+        draw_debug(frame, app, debug_area);
+    }
     app.ui_regions.overlay = app
         .overlay
         .as_ref()
-        .map(|overlay| overlay_area(frame.area(), overlay));
+        .map(|overlay| overlay_area(app_area, overlay));
     if let Some(overlay) = &app.overlay {
-        draw_overlay(frame, app, overlay);
+        draw_overlay(frame, app, overlay, app_area);
     }
     app.theme.apply(frame.buffer_mut());
 }
@@ -557,6 +561,37 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+fn draw_debug(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(trace) = &app.debug_trace else {
+        return;
+    };
+    let [log_area, event_area, command_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+    let row = |label: &str, value: String| {
+        Line::from(vec![
+            Span::styled(format!(" {label:<8}"), Style::new().fg(BRIGHT).bold()),
+            Span::styled(value, Style::new().fg(TEXT)),
+        ])
+    };
+    let style = Style::new().bg(SURFACE);
+    frame.render_widget(
+        Paragraph::new(row("DEBUG", trace.path().display().to_string())).style(style),
+        log_area,
+    );
+    frame.render_widget(
+        Paragraph::new(row("EVENT", trace.last_event().to_owned())).style(style),
+        event_area,
+    );
+    frame.render_widget(
+        Paragraph::new(row("COMMAND", trace.last_command().to_owned())).style(style),
+        command_area,
+    );
+}
+
 fn update_help_scroll_bounds(frame_area: Rect, overlay: &mut Option<Overlay>) {
     let Some(Overlay::Help { scroll, max_scroll }) = overlay else {
         return;
@@ -602,8 +637,8 @@ pub(crate) fn overlay_inner_area(area: Rect) -> Rect {
 }
 
 #[allow(clippy::too_many_lines)]
-fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay) {
-    let area = overlay_area(frame.area(), overlay);
+fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay, frame_area: Rect) {
+    let area = overlay_area(frame_area, overlay);
     frame.render_widget(Clear, area);
     let block = Block::new()
         .borders(Borders::ALL)
@@ -2523,6 +2558,38 @@ mod tests {
                 .rendered_cursor_position()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn debug_mode_renders_log_event_and_command_rows() {
+        let directory = tempfile::tempdir().unwrap();
+        let document_path = directory.path().join("note.md");
+        let log_path = directory.path().join("debug.log");
+        fs::write(&document_path, "# Note\nbody").unwrap();
+        let workspace = Workspace::from_target(&document_path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.enable_debug(&log_path).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(140, 24)).unwrap();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let screen = rendered(&terminal);
+        assert!(screen.contains("DEBUG"));
+        assert!(screen.contains(log_path.to_string_lossy().as_ref()));
+        assert!(screen.contains("EVENT"));
+        assert!(screen.contains("waiting for input"));
+        assert!(screen.contains("COMMAND"));
+        assert!(screen.contains("none"));
+
+        app.overlay = Some(Overlay::Help {
+            scroll: 0,
+            max_scroll: 0,
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let debug_rows = rendered_area(&terminal, Rect::new(0, 21, 140, 3));
+        assert!(debug_rows.contains(log_path.to_string_lossy().as_ref()));
+        assert!(debug_rows.contains("EVENT"));
+        assert!(debug_rows.contains("COMMAND"));
     }
 
     #[test]

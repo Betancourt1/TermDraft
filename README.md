@@ -12,7 +12,7 @@ A local-first, keyboard-first writing workbench for ordinary Markdown and text f
 [![MIT license](https://img.shields.io/github/license/Betancourt1/TermDraft?style=flat-square&color=6e6e6e)](LICENSE)
 
 [Quick start](#quick-start) · [Workflow](#workflow) · [Install](#install) ·
-[Configuration](#configuration) · [Documentation](#documentation)
+[Configuration](#configuration) · [Debugging](#debugging) · [Documentation](#documentation)
 
 </div>
 
@@ -82,6 +82,10 @@ While Files is focused, `Shift+Left` and `Shift+Right` resize its pane; its divi
 dragged with the mouse. Global shortcuts include `Ctrl+S`, `Ctrl+Q`, `Ctrl+P`, `Ctrl+F`, `Ctrl+B`,
 `Ctrl+E`, and `Ctrl+PageUp` / `Ctrl+PageDown`.
 
+In WRITE mode, the system clipboard uses `Ctrl+C`, `Ctrl+X`, and `Ctrl+V` on Linux and
+`Command+C`, `Command+X`, and `Command+V` on macOS. Linux prefers `wl-copy`/`wl-paste` in Wayland
+and falls back to `xclip` in X11.
+
 In the focused preview, `Left`/`Right` or `h`/`l` scroll wide tables horizontally; `0` and `$` jump
 to their edges.
 
@@ -126,6 +130,7 @@ termdraft --version
 termdraft --help
 termdraft --commands
 termdraft --inspect ~/Documents/notes
+termdraft --debug ~/Documents/notes
 ```
 
 When running without `cargo install`, replace `termdraft` with
@@ -204,6 +209,19 @@ on the next launch. Use `--config-dir PATH` for an isolated configuration.
 
 For a fully isolated comparison, set `XDG_STATE_HOME=/tmp/termdraft-test-state` and pass
 `--config-dir /tmp/termdraft-test-config`.
+
+## Debugging
+
+Run an ordinary editing session with the live diagnostic strip enabled:
+
+```bash
+termdraft --debug ~/Documents/notes
+```
+
+The bottom three rows show the trace path, the last terminal event, and the last resolved TermDraft
+command. The complete sequence is flushed to the shown temporary log as it happens, so it remains
+available after an error; the same path is printed after a normal exit. Ordinary WRITE-mode
+characters are recorded as `<text>`, and paste events record only byte and character counts.
 
 ## Terminal typography
 

@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, stdout};
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -32,6 +32,7 @@ use crate::bindings::{Action as BindingAction, BindingScope};
 use crate::config::{self, Config, EditorConfig, StartupMode, StartupView};
 use crate::continuation::{EnterAction, action_for};
 use crate::coordinate_diagnostic::{CoordinateDiagnostic, diagnose_coordinate};
+use crate::debug_trace::DebugTrace;
 use crate::document::{Document, Encoding, LineEnding, MixedSource, SourceRevision};
 use crate::editor::{
     apply_editor_config, cursor_at_screen_position, inline_preview_editor, source_from_textarea,
@@ -74,6 +75,13 @@ pub const EXPLORER_MAX_WIDTH: u16 = 48;
 pub enum Mode {
     Command,
     Write,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EditorClipboardAction {
+    Copy,
+    Cut,
+    Paste,
 }
 
 impl Mode {
@@ -1075,6 +1083,7 @@ pub struct App {
     preview_stale_completions: u64,
     pending_transition: Option<PendingTransition>,
     should_quit: bool,
+    pub(crate) debug_trace: Option<DebugTrace>,
 }
 
 impl App {
@@ -1096,6 +1105,42 @@ impl App {
         let session_store = SessionStore::platform_default().ok();
         let recovery_journal = RecoveryJournal::platform_default().ok();
         Self::with_state_services(workspace, config, session_store, recovery_journal)
+    }
+
+    pub(crate) fn enable_debug(&mut self, path: &Path) -> io::Result<()> {
+        self.debug_trace = Some(DebugTrace::create(path, &self.workspace.root)?);
+        Ok(())
+    }
+
+    fn debug_context(&self) -> String {
+        format!(
+            "mode={} focus={:?} overlay={}",
+            self.mode.label(),
+            self.focus,
+            self.overlay.is_some()
+        )
+    }
+
+    fn trace_event(&mut self, event: &Event) {
+        let context = self.debug_context();
+        let redact_text = self.mode == Mode::Write || self.overlay.is_some();
+        if let Some(trace) = &mut self.debug_trace {
+            trace.record_event(event, redact_text, &context);
+        }
+    }
+
+    fn trace_command(&mut self, command: &str) {
+        let context = self.debug_context();
+        if let Some(trace) = &mut self.debug_trace {
+            trace.record_command(command, &context);
+        }
+    }
+
+    fn trace_runtime_error(&mut self, error: &str) {
+        let context = self.debug_context();
+        if let Some(trace) = &mut self.debug_trace {
+            trace.record_error(error, &context);
+        }
     }
 
     fn with_state_services(
@@ -1183,6 +1228,7 @@ impl App {
             preview_stale_completions: 0,
             pending_transition: None,
             should_quit: false,
+            debug_trace: None,
         };
         if let Some(path) = initial_file {
             app.open_document(&path)?;
@@ -2729,12 +2775,19 @@ impl App {
             BindingAction::SearchText => self.execute_command(CommandAction::WorkspaceSearch),
             BindingAction::DocumentOutline => self.execute_command(CommandAction::Outline),
             BindingAction::TogglePreview => self.execute_command(CommandAction::TogglePreview),
-            BindingAction::PreviewNextHeading => self.focus_preview_heading(1),
-            BindingAction::PreviewPreviousHeading => self.focus_preview_heading(-1),
+            BindingAction::PreviewNextHeading => {
+                self.trace_command("PreviewNextHeading");
+                self.focus_preview_heading(1);
+            }
+            BindingAction::PreviewPreviousHeading => {
+                self.trace_command("PreviewPreviousHeading");
+                self.focus_preview_heading(-1);
+            }
             BindingAction::Undo => self.execute_command(CommandAction::Undo),
             BindingAction::Redo => self.execute_command(CommandAction::Redo),
             BindingAction::ShowHelp => self.execute_command(CommandAction::Help),
             BindingAction::CommandPalette => {
+                self.trace_command("CommandPalette");
                 self.overlay = Some(Overlay::Palette {
                     input: TextInput::default(),
                     selected: 0,
@@ -2755,14 +2808,38 @@ impl App {
             BindingAction::InspectCursorCoordinates => {
                 self.execute_command(CommandAction::InspectCursorCoordinates);
             }
-            BindingAction::CursorLeft => self.move_editor(CursorMove::Back),
-            BindingAction::CursorDown => self.move_editor(CursorMove::Down),
-            BindingAction::CursorUp => self.move_editor(CursorMove::Up),
-            BindingAction::CursorRight => self.move_editor(CursorMove::Forward),
-            BindingAction::LineStart => self.move_editor(CursorMove::Head),
-            BindingAction::LineEnd => self.move_editor(CursorMove::End),
-            BindingAction::DocumentStart => self.move_editor(CursorMove::Top),
-            BindingAction::DocumentEnd => self.move_editor(CursorMove::Bottom),
+            BindingAction::CursorLeft => {
+                self.trace_command("CursorLeft");
+                self.move_editor(CursorMove::Back);
+            }
+            BindingAction::CursorDown => {
+                self.trace_command("CursorDown");
+                self.move_editor(CursorMove::Down);
+            }
+            BindingAction::CursorUp => {
+                self.trace_command("CursorUp");
+                self.move_editor(CursorMove::Up);
+            }
+            BindingAction::CursorRight => {
+                self.trace_command("CursorRight");
+                self.move_editor(CursorMove::Forward);
+            }
+            BindingAction::LineStart => {
+                self.trace_command("LineStart");
+                self.move_editor(CursorMove::Head);
+            }
+            BindingAction::LineEnd => {
+                self.trace_command("LineEnd");
+                self.move_editor(CursorMove::End);
+            }
+            BindingAction::DocumentStart => {
+                self.trace_command("DocumentStart");
+                self.move_editor(CursorMove::Top);
+            }
+            BindingAction::DocumentEnd => {
+                self.trace_command("DocumentEnd");
+                self.move_editor(CursorMove::Bottom);
+            }
         }
     }
 
@@ -2830,6 +2907,7 @@ impl App {
     }
 
     fn execute_command(&mut self, action: CommandAction) {
+        self.trace_command(&format!("{action:?}"));
         self.overlay = None;
         match action {
             CommandAction::Save => self.save_active(),
@@ -3226,25 +3304,58 @@ impl App {
             return false;
         }
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => self.scroll_preview_by(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.scroll_preview_by(1),
-            KeyCode::PageUp => self.scroll_preview_by(-i32::from(self.preview_page)),
-            KeyCode::PageDown => self.scroll_preview_by(i32::from(self.preview_page)),
-            KeyCode::Home | KeyCode::Char('g') => self.preview_scroll = 0,
-            KeyCode::End | KeyCode::Char('G') => self.preview_scroll = self.preview_max_scroll,
-            KeyCode::Left | KeyCode::Char('h') => self.scroll_preview_horizontally_by(-1),
-            KeyCode::Right | KeyCode::Char('l') => self.scroll_preview_horizontally_by(1),
-            KeyCode::Char('0') => self.preview_horizontal_scroll = 0,
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.trace_command("PreviewUp");
+                self.scroll_preview_by(-1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.trace_command("PreviewDown");
+                self.scroll_preview_by(1);
+            }
+            KeyCode::PageUp => {
+                self.trace_command("PreviewPageUp");
+                self.scroll_preview_by(-i32::from(self.preview_page));
+            }
+            KeyCode::PageDown => {
+                self.trace_command("PreviewPageDown");
+                self.scroll_preview_by(i32::from(self.preview_page));
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                self.trace_command("PreviewStart");
+                self.preview_scroll = 0;
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                self.trace_command("PreviewEnd");
+                self.preview_scroll = self.preview_max_scroll;
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                self.trace_command("PreviewLeft");
+                self.scroll_preview_horizontally_by(-1);
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                self.trace_command("PreviewRight");
+                self.scroll_preview_horizontally_by(1);
+            }
+            KeyCode::Char('0') => {
+                self.trace_command("PreviewLeftEdge");
+                self.preview_horizontal_scroll = 0;
+            }
             KeyCode::Char('$') => {
+                self.trace_command("PreviewRightEdge");
                 self.preview_horizontal_scroll = self.preview_horizontal_max_scroll;
             }
             KeyCode::Tab => {
+                self.trace_command("PreviewNextLink");
                 self.select_preview_link(1);
             }
             KeyCode::BackTab => {
+                self.trace_command("PreviewPreviousLink");
                 self.select_preview_link(-1);
             }
-            KeyCode::Enter => self.activate_preview_link(),
+            KeyCode::Enter => {
+                self.trace_command("ActivatePreviewLink");
+                self.activate_preview_link();
+            }
             _ => return false,
         }
         true
@@ -3971,7 +4082,7 @@ impl App {
             return;
         }
         if key.code == KeyCode::Esc {
-            self.set_mode(Mode::Command);
+            self.execute_command(CommandAction::CommandMode);
             return;
         }
         if self.handle_global_key(key) {
@@ -4014,22 +4125,24 @@ impl App {
     }
 
     fn handle_write_key(&mut self, key: KeyEvent) {
-        if self.focus == Focus::Editor && key.modifiers == KeyModifiers::SUPER {
-            match key.code {
-                KeyCode::Char('c' | 'C') => {
+        if self.focus == Focus::Editor
+            && let Some(action) = editor_clipboard_action(key)
+        {
+            match action {
+                EditorClipboardAction::Copy => {
+                    self.trace_command("CopySelection");
                     self.copy_editor_selection();
-                    return;
                 }
-                KeyCode::Char('x' | 'X') => {
+                EditorClipboardAction::Cut => {
+                    self.trace_command("CutSelection");
                     self.cut_editor_selection();
-                    return;
                 }
-                KeyCode::Char('v' | 'V') => {
+                EditorClipboardAction::Paste => {
+                    self.trace_command("PasteClipboard");
                     self.paste_system_clipboard();
-                    return;
                 }
-                _ => {}
             }
+            return;
         }
         if self.focus == Focus::Editor
             && let Some(action) = self
@@ -4170,24 +4283,29 @@ impl App {
                 KeyCode::Left
                     if self.focus == Focus::Editor && key.modifiers == KeyModifiers::NONE =>
                 {
+                    self.trace_command("CursorLeft");
                     self.move_editor(CursorMove::Back);
                 }
                 KeyCode::Down
                     if self.focus == Focus::Editor && key.modifiers == KeyModifiers::NONE =>
                 {
+                    self.trace_command("CursorDown");
                     self.move_editor(CursorMove::Down);
                 }
                 KeyCode::Up
                     if self.focus == Focus::Editor && key.modifiers == KeyModifiers::NONE =>
                 {
+                    self.trace_command("CursorUp");
                     self.move_editor(CursorMove::Up);
                 }
                 KeyCode::Right
                     if self.focus == Focus::Editor && key.modifiers == KeyModifiers::NONE =>
                 {
+                    self.trace_command("CursorRight");
                     self.move_editor(CursorMove::Forward);
                 }
                 KeyCode::Tab if self.show_explorer => {
+                    self.trace_command("ToggleFocus");
                     self.focus = if self.focus == Focus::Explorer {
                         Focus::Editor
                     } else {
@@ -4203,10 +4321,12 @@ impl App {
         if key.modifiers == KeyModifiers::SHIFT {
             match key.code {
                 KeyCode::Left => {
+                    self.trace_command("NarrowExplorer");
                     self.resize_explorer_by(-2);
                     return true;
                 }
                 KeyCode::Right => {
+                    self.trace_command("WidenExplorer");
                     self.resize_explorer_by(2);
                     return true;
                 }
@@ -4214,18 +4334,33 @@ impl App {
             }
         }
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => self.move_explorer(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.move_explorer(1),
-            KeyCode::Enter => self.open_selected_entry(),
-            KeyCode::Right | KeyCode::Char('l') => self.expand_or_open_selected_entry(),
-            KeyCode::Left | KeyCode::Char('h') => self.collapse_selected_entry(),
-            KeyCode::Char('a') => self.open_workspace_input(WorkspaceInputAction::Create),
-            KeyCode::Char('c') => self.set_workspace_clipboard(false),
-            KeyCode::Char('x') => self.set_workspace_clipboard(true),
-            KeyCode::Char('p') => self.paste_workspace_entry(),
-            KeyCode::Char('r') => self.open_workspace_input(WorkspaceInputAction::Rename),
-            KeyCode::Char('m') => self.open_workspace_input(WorkspaceInputAction::Move),
-            KeyCode::Char('d') => self.request_trash_entry(),
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.trace_command("ExplorerUp");
+                self.move_explorer(-1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.trace_command("ExplorerDown");
+                self.move_explorer(1);
+            }
+            KeyCode::Enter => {
+                self.trace_command("OpenSelectedEntry");
+                self.open_selected_entry();
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                self.trace_command("ExpandOrOpenSelectedEntry");
+                self.expand_or_open_selected_entry();
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                self.trace_command("CollapseSelectedEntry");
+                self.collapse_selected_entry();
+            }
+            KeyCode::Char('a') => self.execute_command(CommandAction::Create),
+            KeyCode::Char('c') => self.execute_command(CommandAction::CopyEntry),
+            KeyCode::Char('x') => self.execute_command(CommandAction::CutEntry),
+            KeyCode::Char('p') => self.execute_command(CommandAction::PasteEntry),
+            KeyCode::Char('r') => self.execute_command(CommandAction::RenameEntry),
+            KeyCode::Char('m') => self.execute_command(CommandAction::MoveEntry),
+            KeyCode::Char('d') => self.execute_command(CommandAction::TrashEntry),
             _ => return false,
         }
         true
@@ -6219,6 +6354,34 @@ fn filter_outline_items(
         .collect()
 }
 
+fn editor_clipboard_action(key: KeyEvent) -> Option<EditorClipboardAction> {
+    if !editor_clipboard_modifier(key.modifiers) {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char('c' | 'C') => Some(EditorClipboardAction::Copy),
+        KeyCode::Char('x' | 'X') => Some(EditorClipboardAction::Cut),
+        KeyCode::Char('v' | 'V') => Some(EditorClipboardAction::Paste),
+        _ => None,
+    }
+}
+
+fn editor_clipboard_modifier(modifiers: KeyModifiers) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        modifiers == KeyModifiers::SUPER
+    }
+    #[cfg(target_os = "linux")]
+    {
+        modifiers == KeyModifiers::CONTROL
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = modifiers;
+        false
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn write_system_clipboard(text: &str) -> io::Result<()> {
     let mut child = ProcessCommand::new("pbcopy")
@@ -6238,12 +6401,27 @@ fn write_system_clipboard(text: &str) -> io::Result<()> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-fn write_system_clipboard(_text: &str) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "system clipboard integration is available on macOS",
-    ))
+#[cfg(target_os = "linux")]
+fn write_system_clipboard(text: &str) -> io::Result<()> {
+    let mut last_error = None;
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        match write_linux_clipboard("wl-copy", &[], text) {
+            Ok(()) => return Ok(()),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    if std::env::var_os("DISPLAY").is_some() {
+        match write_linux_clipboard("xclip", &["-selection", "clipboard", "-in"], text) {
+            Ok(()) => return Ok(()),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Linux clipboard requires a Wayland or X11 session",
+        )
+    }))
 }
 
 #[cfg(target_os = "macos")]
@@ -6255,11 +6433,77 @@ fn read_system_clipboard() -> io::Result<String> {
     String::from_utf8(output.stdout).map_err(io::Error::other)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn read_system_clipboard() -> io::Result<String> {
+    let mut last_error = None;
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        match read_linux_clipboard("wl-paste", &["--no-newline"]) {
+            Ok(text) => return Ok(text),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    if std::env::var_os("DISPLAY").is_some() {
+        match read_linux_clipboard("xclip", &["-selection", "clipboard", "-out"]) {
+            Ok(text) => return Ok(text),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Linux clipboard requires a Wayland or X11 session",
+        )
+    }))
+}
+
+#[cfg(target_os = "linux")]
+fn write_linux_clipboard(program: &str, arguments: &[&str], text: &str) -> io::Result<()> {
+    let mut child = ProcessCommand::new(program)
+        .args(arguments)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other(format!("{program} stdin is unavailable")))?;
+    std::io::Write::write_all(&mut stdin, text.as_bytes())?;
+    drop(stdin);
+    let status = child.wait()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("{program} exited unsuccessfully")))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn read_linux_clipboard(program: &str, arguments: &[&str]) -> io::Result<String> {
+    let output = ProcessCommand::new(program)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!("{program} exited unsuccessfully")));
+    }
+    String::from_utf8(output.stdout).map_err(io::Error::other)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn write_system_clipboard(_text: &str) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "system clipboard integration is available on Linux and macOS",
+    ))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn read_system_clipboard() -> io::Result<String> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "system clipboard integration is available on macOS",
+        "system clipboard integration is available on Linux and macOS",
     ))
 }
 
@@ -6428,10 +6672,41 @@ pub fn run(workspace: Workspace) -> anyhow::Result<()> {
 ///
 /// Returns an error when initial loading, terminal drawing, or event input fails.
 pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<()> {
+    run_with_options(workspace, config, None)
+}
+
+/// Run the application with a visible input/command trace and return its log path.
+///
+/// # Errors
+///
+/// Returns an error when the trace cannot be created or the application cannot run.
+pub fn run_with_debug(workspace: Workspace, config: Config) -> anyhow::Result<PathBuf> {
+    let path = DebugTrace::default_path();
+    run_with_options(workspace, config, Some(&path))
+        .with_context(|| format!("debug log: {}", path.display()))?;
+    Ok(path)
+}
+
+#[allow(clippy::too_many_lines)]
+fn run_with_options(
+    workspace: Workspace,
+    config: Config,
+    debug_path: Option<&Path>,
+) -> anyhow::Result<()> {
     let mut app = App::with_config(workspace, config)?;
+    if let Some(path) = debug_path {
+        app.enable_debug(path)
+            .with_context(|| format!("create debug log {}", path.display()))?;
+    }
     let shutdown_requested = install_shutdown_handlers()?;
     ratatui::run(|terminal| -> anyhow::Result<()> {
-        let mut terminal_extras = TerminalExtrasGuard::enable(app.theme)?;
+        let mut terminal_extras = match TerminalExtrasGuard::enable(app.theme) {
+            Ok(guard) => guard,
+            Err(error) => {
+                app.trace_runtime_error(&format!("enable terminal features: {error}"));
+                return Err(error.into());
+            }
+        };
         let result = (|| {
             let mut rendered_mode = app.mode;
             let mut rendered_theme = app.theme;
@@ -6445,12 +6720,16 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
                 app.schedule_preview_render();
                 app.start_due_preview_render();
                 if needs_draw {
-                    terminal.draw(|frame| ui::draw(frame, &mut app))?;
+                    if let Err(error) = terminal.draw(|frame| ui::draw(frame, &mut app)) {
+                        app.trace_runtime_error(&format!("draw terminal: {error}"));
+                        return Err(error.into());
+                    }
                     needs_draw = false;
                 }
                 let received_event = match event::poll(app.preview_poll_timeout()) {
                     Ok(true) => match event::read() {
                         Ok(event) => {
+                            app.trace_event(&event);
                             match event {
                                 Event::Key(key)
                                     if matches!(
@@ -6474,14 +6753,20 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
                             app.should_quit = true;
                             false
                         }
-                        Err(error) => return Err(error.into()),
+                        Err(error) => {
+                            app.trace_runtime_error(&format!("read terminal event: {error}"));
+                            return Err(error.into());
+                        }
                     },
                     Ok(false) => false,
                     Err(_error) if shutdown_requested.load(Ordering::Relaxed) => {
                         app.should_quit = true;
                         false
                     }
-                    Err(error) => return Err(error.into()),
+                    Err(error) => {
+                        app.trace_runtime_error(&format!("poll terminal event: {error}"));
+                        return Err(error.into());
+                    }
                 };
                 needs_draw |= received_event && !app.should_quit;
                 needs_draw |= app.poll_preview_results();
@@ -6514,9 +6799,10 @@ pub fn run_with_config(workspace: Workspace, config: Config) -> anyhow::Result<(
             app.flush_state();
             Ok(())
         })();
-        terminal_extras
-            .restore()
-            .context("restore mouse and cursor state")?;
+        if let Err(error) = terminal_extras.restore() {
+            app.trace_runtime_error(&format!("restore mouse and cursor state: {error}"));
+            return Err(error).context("restore mouse and cursor state");
+        }
         result
     })
 }
@@ -6525,6 +6811,7 @@ fn observe_shutdown_request(app: &mut App, requested: &AtomicBool) -> bool {
     if !requested.load(Ordering::Relaxed) {
         return false;
     }
+    app.trace_command("SignalShutdown");
     app.should_quit = true;
     true
 }
@@ -8078,6 +8365,31 @@ command_manage_recovery = "Z"
         app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::SUPER));
 
         assert_eq!(app.active_tab().unwrap().document.text, "alpha bravo");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn editor_clipboard_shortcuts_use_the_platform_modifier() {
+        #[cfg(target_os = "linux")]
+        let (expected, rejected) = (KeyModifiers::CONTROL, KeyModifiers::SUPER);
+        #[cfg(target_os = "macos")]
+        let (expected, rejected) = (KeyModifiers::SUPER, KeyModifiers::CONTROL);
+
+        for (code, action) in [
+            (KeyCode::Char('c'), EditorClipboardAction::Copy),
+            (KeyCode::Char('x'), EditorClipboardAction::Cut),
+            (KeyCode::Char('v'), EditorClipboardAction::Paste),
+        ] {
+            assert_eq!(
+                editor_clipboard_action(KeyEvent::new(code, expected)),
+                Some(action)
+            );
+            assert_eq!(editor_clipboard_action(KeyEvent::new(code, rejected)), None);
+            assert_eq!(
+                editor_clipboard_action(KeyEvent::new(code, expected | KeyModifiers::SHIFT)),
+                None
+            );
+        }
     }
 
     #[test]

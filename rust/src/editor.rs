@@ -247,7 +247,7 @@ fn cursor_in_rendered_area(
             break;
         }
         let next = render_cursor(probe, area)?;
-        if next.y != target_row || position.x.abs_diff(column) < next.x.abs_diff(column) {
+        if next.y != target_row || position.x.abs_diff(column) <= next.x.abs_diff(column) {
             probe.move_cursor(CursorMove::Jump(
                 u16::try_from(before.0).unwrap_or(u16::MAX),
                 u16::try_from(before.1).unwrap_or(u16::MAX),
@@ -957,6 +957,17 @@ mod tests {
 
         assert_eq!(restored.cursor(), saved_cursor);
         assert_eq!(editor_scroll_offset(&restored, area), saved_scroll);
+    }
+
+    #[test]
+    fn cursor_mapping_uses_nearest_side_of_a_wide_character() {
+        let mut editor = textarea_from_source("界");
+        editor.remove_line_number();
+
+        assert_eq!(
+            cursor_at_screen_position(&editor, Rect::new(0, 0, 10, 1), 1, 0),
+            Some((0, 0))
+        );
     }
 
     #[test]

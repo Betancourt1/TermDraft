@@ -9,6 +9,18 @@ supported releases.
 
 ## [Unreleased]
 
+### Added
+
+- Added `--debug` sessions with an in-app input/command strip and a flushed temporary event log;
+  typed and pasted document content is not copied into the trace.
+
+### Fixed
+
+- Mapped Linux `Ctrl+C`, `Ctrl+X`, and `Ctrl+V` to the system clipboard through Wayland or X11
+  without changing the existing macOS `Super+C`, `Super+X`, and `Super+V` path.
+- Stopped mouse cursor mapping from looping between both sides of a wide character when a selection
+  passes through its middle terminal cell.
+
 ## [0.7.0] - 2026-07-27
 
 ### Added

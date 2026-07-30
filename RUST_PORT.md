@@ -46,7 +46,7 @@ This inventory was recounted from the Python source and the current Rust impleme
   **21 overlay types are currently user-reachable**;
 - shared dialog types serve several workflows, so the operation-by-operation popup matrix below is
   the authoritative interface comparison;
-- the Rust suite passes **217 library tests plus 4 binary tests**; the Python suite passes
+- the Rust suite passes **222 library tests plus 5 binary tests**; the Python suite passes
   **681 tests with 2 platform skips**.
 
 Neither frontend has a native menu bar. In both, the searchable command palette is the application
@@ -284,14 +284,13 @@ wrapped-page positioning even when the command intent matches.
 | --- | --- | --- |
 | Modified `Enter` | Only exact Enter has an editor action | Shift/Super/Ctrl/Alt+Enter inserts a plain newline without continuation |
 | `Ctrl+U` | Delete to line start; at column zero join the previous line | Extra raw-engine undo alias |
-| `Ctrl+V` | Paste Textual's application clipboard | Scroll down one editor page |
-| `Ctrl+C` | Copy to the application clipboard and retain selection | Copy to `tui-textarea`'s private yank buffer and clear selection |
-| `Ctrl+X` | Cut to the application clipboard; without selection, cut the line | Cut to the private yank buffer; without selection, do nothing |
+| `Ctrl+V` | Paste Textual's application clipboard | Paste the system clipboard on Linux; scroll down one editor page on macOS |
+| `Ctrl+C` | Copy to the application clipboard and retain selection | Copy to the system clipboard on Linux; use the private yank buffer on macOS |
+| `Ctrl+X` | Cut to the application clipboard; without selection, cut the line | Cut to the system clipboard on Linux; use the private yank buffer on macOS |
 | `Ctrl+K` with a selection | Delete from the active cursor to line end | Delete the selected range |
 
-Bracketed terminal paste still inserts source in Rust, but it is an `Event::Paste`, not a Ctrl+V
-editor command. Rust's private yank buffer has no reachable default paste key because TermDraft's
-configured redo owns Ctrl+Y before `tui-textarea` can treat it as yank.
+On Linux, `Ctrl+C`, `Ctrl+X`, and `Ctrl+V` use `wl-copy`/`wl-paste` under Wayland and fall back to
+`xclip` under X11. Bracketed terminal paste remains available as a separate `Event::Paste`.
 
 On macOS, `Super+C` copies the editor selection without clearing it, `Super+X` cuts it to the
 system clipboard, `Super+V` uses Ghostty's bracketed-paste event (with a direct clipboard fallback),
@@ -324,7 +323,7 @@ and `Super+Z` reaches TermDraft's grouped undo through the Kitty keyboard protoc
 | Move to line end | `Ctrl+Alt+F`, `Ctrl+Alt+→`; `End` also accepts otherwise unused Ctrl/Alt modifiers |
 | Move to document start | `Alt+<`, `Ctrl+Alt+P`, `Ctrl+Alt+↑` |
 | Move to document end | `Alt+>`, `Ctrl+Alt+N`, `Ctrl+Alt+↓` |
-| Scroll down / up one page | `Ctrl+V` / `Alt+V` |
+| Scroll down / up one page | `Ctrl+V` / `Alt+V` on macOS; `Alt+V` remains available on Linux |
 | Extend a Rust movement/page selection | Add `Shift` to any reachable movement above |
 
 `PageUp` and `PageDown` also accept otherwise unused Ctrl/Alt modifiers. Exact Ctrl+PageUp and
@@ -405,7 +404,7 @@ cargo test --locked --release
 
 Results at this checkpoint:
 
-- 217 Rust library tests and 4 Rust binary tests pass;
+- 222 Rust library tests and 5 Rust binary tests pass;
 - the current responsiveness gates and real-PTY journey are documented in
   [docs/responsiveness.md](docs/responsiveness.md);
 - strict Clippy and rustfmt pass;

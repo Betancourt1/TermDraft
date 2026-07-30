@@ -31,6 +31,8 @@ App state ───────────────────────�
 `rust/src/main.rs` parses the CLI, resolves configuration, validates the target, and either runs a
 non-interactive command or starts the full-screen application. `rust/src/app.rs` owns the event loop,
 tabs, transitions, overlays, search completion channel, session state, and recovery coordination.
+An explicit `--debug` launch adds a three-row live event/command strip and flushes the same trace to
+a temporary per-process log. Plain text input and paste contents are redacted from that trace.
 
 There is no async runtime or general worker pool. Recursive workspace indexing and text search run
 on cancellable revisioned threads; file reads/saves, mutations, session I/O, recovery operations,
@@ -131,6 +133,9 @@ Mouse regions support tab activation, source click positioning/selection, previe
 Files and overlay row selection/double-click, field/control focus, wheel scrolling, and dragging the
 Files and Split dividers. Destructive overlay actions still require a click on their explicit action
 label; clicks outside the popup remain inert.
+
+WRITE mode routes Linux `Ctrl+C`/`Ctrl+X`/`Ctrl+V` through `wl-copy`/`wl-paste`, with `xclip` as the
+X11 fallback. The separate macOS branch keeps `Super+C`/`Super+X`/`Super+V` and `pbcopy`/`pbpaste`.
 
 Markdown continuation runs only for an unmodified Enter in editable WRITE mode without a
 selection. The pure continuation service either continues a supported marker, ends an empty marker,
@@ -287,6 +292,8 @@ reference. Neither substitutes for the underlying editor-key inventory in
 The runtime enters raw mode and the alternate screen, enables mouse capture, and changes cursor
 shape with the interaction mode. Ratatui and `TerminalExtrasGuard` restore alternate screen, raw
 mode, mouse reporting, and cursor shape on normal return, partial startup failure, and Rust panic.
+Debug sessions record every terminal event before dispatch, including ignored focus, resize, and
+key-release events, then record the resolved application command before it executes.
 
 On Unix, `SIGTERM` and `SIGHUP` set a cooperative shutdown flag. The event loop then publishes the
 latest dirty recovery source and content-free session before Ratatui and `TerminalExtrasGuard`
@@ -307,6 +314,6 @@ cargo test --locked --all-targets
 cargo test --locked --release
 ```
 
-At this checkpoint, 217 Rust library tests and 4 Rust binary tests pass. The Python reference suite
+At this checkpoint, 222 Rust library tests and 5 Rust binary tests pass. The Python reference suite
 passes 681 tests with 2 expected platform skips. The exhaustive interface and gap inventory, plus
 the explicitly historical benchmark, live in [RUST_PORT.md](../RUST_PORT.md).

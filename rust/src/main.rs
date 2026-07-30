@@ -135,6 +135,13 @@ struct Arguments {
     /// Show the effective frontend settings and shortcuts, then exit.
     #[arg(long, conflicts_with_all = ["init_config", "config_path"])]
     commands: bool,
+
+    /// Show input events and resolved commands, and save the complete trace to a temporary log.
+    #[arg(
+        long,
+        conflicts_with_all = ["inspect", "init_config", "config_path", "commands"]
+    )]
+    debug: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -167,7 +174,13 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    app::run_with_config(workspace, config)
+    if arguments.debug {
+        let path = app::run_with_debug(workspace, config)?;
+        println!("Debug log: {}", path.display());
+        Ok(())
+    } else {
+        app::run_with_config(workspace, config)
+    }
 }
 
 fn print_commands(config: &Config) {
@@ -337,6 +350,15 @@ mod tests {
 
         assert_eq!(command.get_name(), "termdraft");
         assert_eq!(command.get_version(), Some(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn debug_mode_is_explicit_and_excludes_non_interactive_commands() {
+        let arguments = Arguments::try_parse_from(["termdraft", "--debug"]).unwrap();
+        assert!(arguments.debug);
+
+        assert!(Arguments::try_parse_from(["termdraft", "--debug", "--inspect"]).is_err());
+        assert!(Arguments::try_parse_from(["termdraft", "--debug", "--commands"]).is_err());
     }
 
     #[test]

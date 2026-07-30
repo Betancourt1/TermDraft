@@ -5,6 +5,7 @@ pub mod bindings;
 pub mod config;
 pub mod continuation;
 pub mod coordinate_diagnostic;
+mod debug_trace;
 pub mod document;
 pub mod editor;
 pub mod markdown;
