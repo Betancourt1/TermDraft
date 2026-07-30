@@ -9,6 +9,8 @@ supported releases.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-30
+
 ### Added
 
 - Added `--debug` sessions with an in-app input/command strip and a flushed temporary event log;
@@ -235,7 +237,8 @@ supported releases.
 - Established the local-first terminal writing loop with a file explorer, Markdown source editor,
   rendered preview, protected saves, and crash-recovery journals.
 
-[Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.8.0
 [0.7.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.7.0
 [0.6.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.6.0
 [0.5.1]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.5.1
