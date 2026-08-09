@@ -9,7 +9,8 @@ implementation remains a compatibility reference; native releases do not publish
 - Stable `vMAJOR.MINOR.PATCH` tags trigger `.github/workflows/release.yml`.
 - The release workflow verifies Rust formatting, Clippy, debug tests, and release tests before
   building native archives for Linux and macOS on x86_64 and arm64.
-- A successful workflow creates a draft GitHub release with four archives and `SHA256SUMS`.
+- A successful workflow creates a draft GitHub release with four archives and `SHA256SUMS`; every
+  archive contains both `termdraft` and `termdraft-agent`.
 - `Betancourt1/homebrew-tap` is updated only after the GitHub release is verified.
 - The Python package under `src/termdraft` remains a compatibility oracle, not a release artifact.
 
@@ -46,6 +47,8 @@ cargo build --locked --release
 ./target/release/termdraft --help
 ./target/release/termdraft --commands
 ./target/release/termdraft --inspect .
+./target/release/termdraft-agent --version
+./target/release/termdraft-agent --help
 .venv/bin/pytest -q
 ```
 
@@ -86,7 +89,7 @@ draft and tag, fix the release commit, and choose a new patch version if the tag
 
 Publish the verified draft as the latest GitHub release. Then update
 `Betancourt1/homebrew-tap/Formula/termdraft.rb` to the tagged source archive and its exact SHA-256.
-The formula must build with Rust and install the `termdraft` executable.
+The formula must build with Rust and install both `termdraft` and `termdraft-agent`.
 
 Before pushing the tap change, run:
 

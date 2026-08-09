@@ -69,6 +69,12 @@ Search the command palette for **Create checkpoint** or **Open Local History**. 
 direct shortcut: it is opt-in for each workspace, and restoring a checkpoint changes only the
 buffer until you explicitly Save.
 
+Search the same palette for **Agent sharing** to explicitly expose the active draft through a
+private local session. The companion `termdraft-agent` client can read the exact unsaved source and
+submit a revision-bound proposal. TermDraft shows the source diff and requires **Accept** or
+**Reject**; acceptance changes the buffer, remains one Undo step, and never saves automatically.
+See [Agent editing](docs/agent-editing.md) for the complete local protocol and safety boundary.
+
 <details>
 <summary><strong>More workspace and navigation shortcuts</strong></summary>
 
@@ -127,6 +133,8 @@ cargo install --path . --locked
 termdraft ~/Documents/notes
 ```
 
+This installs both `termdraft` and its optional `termdraft-agent` local client.
+
 Useful non-interactive commands:
 
 ```bash
@@ -135,6 +143,7 @@ termdraft --help
 termdraft --commands
 termdraft --inspect ~/Documents/notes
 termdraft --debug ~/Documents/notes
+termdraft-agent --help
 ```
 
 When running without `cargo install`, replace `termdraft` with
@@ -153,6 +162,8 @@ When running without `cargo install`, replace `termdraft` with
 - UTF-8 and UTF-8 BOM support with LF, CRLF, or CR preservation
 - Opt-in, per-workspace Local History with full-source checkpoints, bounded checkpoint-to-current
   diffs, and one-step-undo buffer restores
+- Explicit active-draft Agent sharing with a private revocable local session, revision-bound source
+  proposals, in-editor diffs, and accept/reject review
 - Mouse focus, clickable tabs and preview links, Files and overlay row selection/activation,
   hybrid-editor text selection, wheel scrolling, draggable dividers, and keyboard Files-pane resizing
 - Three light themes (Paper, Linen, and Mist) and three dark themes (Midnight, Void, and Carbon)
@@ -171,7 +182,7 @@ When running without `cargo install`, replace `termdraft` with
   journals, and a recovery inventory/open/retarget/archive/restore/export/delete/retention manager;
   missing and orphan drafts open only into a protected Save As workflow
 - All 52 compatible application binding IDs plus the native `command_change_theme` binding,
-  effective remapping, live `R` reload, and a 35-action command palette
+  effective remapping, live `R` reload, and a 36-action command palette
 - Private Local History state remains separate from content-free sessions and crash-recovery
   journals; disabling it keeps existing checkpoints until an exact, cancel-default clear
 - Markdown syntax, semantic-block, experimental reader, and coordinate-diagnostic overlays
@@ -262,6 +273,7 @@ parent-directory save hardening, and Windows state/lock compatibility. See
 - [Rust comparison](RUST_PORT.md) — parity, omissions, safety differences, and benchmarks
 - [Architecture](docs/architecture.md) — Rust modules, state flow, persistence, and recovery
 - [Local History](docs/local-history.md) — checkpoints, restore safety, retention, and privacy
+- [Agent editing](docs/agent-editing.md) — explicit sharing, local client, proposal review, and revocation
 - [Responsiveness](docs/responsiveness.md) — 0.7 performance gates and real-PTY journey
 - [Markdown gallery](docs/markdown-gallery.md) — exercise the inline and split renderers
 - [Semantic editing](docs/semantic-editing.md) — future block-aware editing boundary
@@ -281,7 +293,7 @@ cargo test --locked --release
 ```
 
 The Python reference suite can still be run from the prepared development environment with
-`.venv/bin/pytest -q`. Public releases package only the Rust application.
+`.venv/bin/pytest -q`. Public releases package the Rust editor and optional local agent client.
 
 ## License
 

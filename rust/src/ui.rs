@@ -10,10 +10,10 @@ use time::{Duration as TimeDuration, OffsetDateTime, UtcOffset};
 use tui_textarea::CursorRenderMode;
 
 use crate::app::{
-    App, CommandAction, CommandSpec, ConfirmAction, ConflictKind, EXPLORER_MAX_WIDTH,
-    EXPLORER_MIN_WIDTH, FileFinderFocus, FindFocus, Focus, HistoryClearScope, HistoryDiffKind,
-    HistoryDiffLine, HistoryFocus, MixedLineEndingContext, Mode, Overlay, RecoveryManagerFocus,
-    TextInput, UiRegions, ViewMode, WorkspaceSearchFocus, command_candidates,
+    AgentProposal, App, CommandAction, CommandSpec, ConfirmAction, ConflictKind,
+    EXPLORER_MAX_WIDTH, EXPLORER_MIN_WIDTH, FileFinderFocus, FindFocus, Focus, HistoryClearScope,
+    HistoryDiffKind, HistoryDiffLine, HistoryFocus, MixedLineEndingContext, Mode, Overlay,
+    RecoveryManagerFocus, TextInput, UiRegions, ViewMode, WorkspaceSearchFocus, command_candidates,
     text_search_mode_label,
 };
 use crate::checkpoint::{Checkpoint, CheckpointReason};
@@ -109,12 +109,20 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
             .to_string_lossy();
         let dirty = if tab.document.is_dirty() { " ●" } else { "" };
         let conflict = if tab.document.conflict { " !" } else { "" };
+        let shared = if app.agent_shared_path() == Some(tab.document.path.as_path()) {
+            " ↔"
+        } else {
+            ""
+        };
         let style = if Some(index) == app.active_tab {
             Style::new().fg(BRIGHT).bold()
         } else {
             Style::new().fg(MUTED)
         };
-        spans.push(Span::styled(format!(" {name}{dirty}{conflict} "), style));
+        spans.push(Span::styled(
+            format!(" {name}{dirty}{conflict}{shared} "),
+            style,
+        ));
     }
     frame.render_widget(
         Paragraph::new(Line::from(spans)).style(Style::new().bg(SURFACE)),
@@ -551,6 +559,12 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 Style::new().fg(MUTED),
             ),
         ]);
+        if app.active_document_is_shared() {
+            spans.push(Span::styled(
+                " │ AGENT SHARED",
+                Style::new().fg(BRIGHT).bold(),
+            ));
+        }
     }
     if let Some(message) = &app.status_message {
         spans.push(Span::styled(
@@ -610,7 +624,7 @@ pub(crate) fn overlay_area(frame_area: Rect, overlay: &Overlay) -> Rect {
     match overlay {
         Overlay::Help { .. } => popup(frame_area, 78, 30),
         Overlay::MarkdownHelp { .. } => popup(frame_area, 76, 30),
-        Overlay::Palette { .. } => popup(frame_area, 76, 31),
+        Overlay::Palette { .. } => popup(frame_area, 76, 32),
         Overlay::SemanticInspector { .. } => popup(frame_area, 82, 34),
         Overlay::SemanticReader { .. } => popup(frame_area, 82, 36),
         Overlay::CoordinateInspector { .. } => popup(frame_area, 76, 16),
@@ -623,7 +637,8 @@ pub(crate) fn overlay_area(frame_area: Rect, overlay: &Overlay) -> Rect {
         Overlay::PathInput { .. } | Overlay::WorkspaceInput { .. } => popup(frame_area, 66, 7),
         Overlay::Recovery { .. } | Overlay::MixedLineEndings { .. } => popup(frame_area, 70, 9),
         Overlay::RecoveryManager { .. } => popup(frame_area, 88, 34),
-        Overlay::LocalHistory { .. } => popup(frame_area, 96, 34),
+        Overlay::LocalHistory { .. } | Overlay::AgentProposal { .. } => popup(frame_area, 96, 34),
+        Overlay::AgentSharing { .. } => popup(frame_area, 96, 18),
         Overlay::RecoveryDeleteConfirm { .. } => popup(frame_area, 74, 9),
         Overlay::RecoveryCleanupConfirm { .. } => popup(frame_area, 82, 30),
         Overlay::HistoryClearConfirm { .. } => popup(frame_area, 78, 9),
@@ -935,6 +950,14 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay, frame_area: Rec
             *diff_truncated,
             status,
         ),
+        Overlay::AgentSharing {
+            path,
+            socket_path,
+            token,
+        } => draw_agent_sharing(frame, app, area, block, path, socket_path, token),
+        Overlay::AgentProposal { proposal, scroll } => {
+            draw_agent_proposal(frame, app, area, block, proposal, *scroll);
+        }
         Overlay::RecoveryDeleteConfirm { record } => {
             let description = record.entry.as_ref().map_or_else(
                 || {
@@ -1113,6 +1136,134 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay, frame_area: Rec
             area,
         ),
     }
+}
+
+fn draw_agent_sharing(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    block: Block<'_>,
+    path: &std::path::Path,
+    socket_path: &std::path::Path,
+    token: &str,
+) {
+    let inner = block.inner(area);
+    frame.render_widget(block.title(" Agent sharing "), area);
+    let [content, footer] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+    let relative = app.workspace.relative(path);
+    let text = Text::from(vec![
+        Line::from("This active draft is explicitly shared with one local token holder.")
+            .style(Style::new().fg(TEXT)),
+        Line::from("The endpoint exposes the exact live buffer, including unsaved text.")
+            .style(Style::new().fg(MUTED)),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Document  ", Style::new().fg(MUTED).bold()),
+            Span::styled(relative.display().to_string(), Style::new().fg(TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("Socket    ", Style::new().fg(MUTED).bold()),
+            Span::styled(socket_path.display().to_string(), Style::new().fg(TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("Token     ", Style::new().fg(MUTED).bold()),
+            Span::styled(token.to_owned(), Style::new().fg(BRIGHT)),
+        ]),
+        Line::from(""),
+        Line::from("termdraft-agent read --socket <socket> --token <token>")
+            .style(Style::new().fg(TEXT)),
+        Line::from(
+            "termdraft-agent propose --socket <socket> --token <token> --revision <revision> SOURCE",
+        )
+        .style(Style::new().fg(TEXT)),
+        Line::from(""),
+        Line::from("Proposals require review and acceptance; TermDraft never saves them automatically.")
+            .style(Style::new().fg(MUTED)),
+    ]);
+    frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), content);
+    frame.render_widget(
+        Paragraph::new("r  Revoke now     Esc  Keep sharing and close")
+            .style(Style::new().fg(BRIGHT)),
+        footer,
+    );
+}
+
+fn draw_agent_proposal(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    block: Block<'_>,
+    proposal: &AgentProposal,
+    scroll: u16,
+) {
+    let inner = block.inner(area);
+    frame.render_widget(block.title(" Agent proposal review "), area);
+    let [header, diff_area, footer] = Layout::vertical([
+        Constraint::Length(4),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    let relative = app.workspace.relative(&proposal.path);
+    let current = app.active_tab().is_some_and(|tab| {
+        tab.document.path == proposal.path
+            && tab.document.source_revision == proposal.expected_revision
+            && tab.document.is_editable()
+            && !tab.document.conflict
+            && !tab.document.recovery_conflict
+    });
+    let state = if current {
+        "CURRENT · safe to accept"
+    } else {
+        "STALE OR PROTECTED · acceptance will be blocked"
+    };
+    let header_text = Text::from(vec![
+        Line::from(vec![
+            Span::styled(
+                format!("{}  ", proposal.origin),
+                Style::new().fg(BRIGHT).bold(),
+            ),
+            Span::styled(relative.display().to_string(), Style::new().fg(TEXT)),
+        ]),
+        Line::from(format!(
+            "Proposal {} · revision generation {}",
+            proposal.id, proposal.expected_revision.generation
+        ))
+        .style(Style::new().fg(MUTED)),
+        Line::from(state).style(if current {
+            Style::new().fg(Color::Green).bold()
+        } else {
+            Style::new().fg(Color::Red).bold()
+        }),
+        Line::from(
+            "Review the source diff below. Acceptance changes the buffer but does not save.",
+        )
+        .style(Style::new().fg(MUTED)),
+    ]);
+    frame.render_widget(Paragraph::new(header_text), header);
+
+    let visible = usize::from(diff_area.height);
+    let shown = visible.saturating_sub(usize::from(proposal.diff_truncated));
+    let mut lines = proposal
+        .diff
+        .iter()
+        .skip(usize::from(scroll))
+        .take(shown)
+        .map(history_diff_line)
+        .collect::<Vec<_>>();
+    if proposal.diff_truncated && visible > 0 {
+        lines.push(
+            Line::from("… Diff truncated for review; the complete proposed source is retained.")
+                .style(Style::new().fg(BRIGHT).bold()),
+        );
+    }
+    frame.render_widget(Paragraph::new(lines), diff_area);
+    frame.render_widget(
+        Paragraph::new("a  Accept into buffer     r  Reject     ↑/↓ scroll     Esc  Review later")
+            .style(Style::new().fg(BRIGHT)),
+        footer,
+    );
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -1359,6 +1510,8 @@ const fn history_reason_label(reason: CheckpointReason) -> &'static str {
         CheckpointReason::PreviousSavedVersion => "Previous saved version",
         CheckpointReason::BeforeRestore => "Before restore",
         CheckpointReason::BeforeExternalReload => "Before external reload",
+        CheckpointReason::BeforeAgentEdit => "Before agent edit",
+        CheckpointReason::AfterAgentEdit => "After agent edit",
     }
 }
 
@@ -2507,6 +2660,7 @@ fn command_shortcut(app: &App, action: crate::app::CommandAction) -> String {
         CommandAction::CreateCheckpoint | CommandAction::LocalHistory => {
             return "menu".to_owned();
         }
+        CommandAction::AgentSharing => return "menu".to_owned(),
         CommandAction::ReloadConfig => &["command_reload_config"],
         CommandAction::ChangeTheme => &["command_change_theme"],
         CommandAction::ManageRecovery => &["command_manage_recovery"],
@@ -2594,7 +2748,7 @@ fn draw_command_grid(
         Constraint::Length(1),
         Constraint::Length(8),
         Constraint::Length(1),
-        Constraint::Min(8),
+        Constraint::Min(9),
     ])
     .areas(area);
     for (row_area, groups) in [first, second, third].into_iter().zip(COMMAND_GROUP_ROWS) {
@@ -2706,6 +2860,9 @@ const fn command_description(action: CommandAction) -> &'static str {
             "Capture the current source in this workspace's Local History"
         }
         CommandAction::LocalHistory => "Compare, restore, or clear Local History checkpoints",
+        CommandAction::AgentSharing => {
+            "Explicitly share the active draft and review local agent proposals"
+        }
         CommandAction::ReloadConfig => "Reload keybindings, editor, and retention options",
         CommandAction::ChangeTheme => {
             "Cycle through Paper, Linen, Mist, Midnight, Void, and Carbon"
@@ -3247,6 +3404,62 @@ mod tests {
         assert_eq!(history_list_start(20, 0, 4), 0);
         assert_eq!(history_list_start(20, 8, 4), 5);
         assert_eq!(history_list_start(3, 2, 4), 0);
+    }
+
+    #[test]
+    fn agent_sharing_and_proposal_review_render_explicit_safety_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "saved\n").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        let path = app.active_tab().unwrap().document.path.clone();
+        app.overlay = Some(Overlay::AgentSharing {
+            path: path.clone(),
+            socket_path: "/tmp/termdraft-agent/session.sock".into(),
+            token: "a".repeat(64),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let sharing = rendered(&terminal);
+        assert!(sharing.contains("Agent sharing"));
+        assert!(sharing.contains("exact live buffer, including unsaved text"));
+        assert!(sharing.contains("termdraft-agent read"));
+        assert!(sharing.contains("never saves them automatically"));
+        assert!(sharing.contains("Revoke now"));
+
+        let expected_revision = app.active_tab().unwrap().document.source_revision;
+        app.overlay = Some(Overlay::AgentProposal {
+            proposal: AgentProposal {
+                id: "proposal-1".to_owned(),
+                path,
+                expected_revision,
+                origin: "test-agent".to_owned(),
+                proposed_source: "agent draft\n".to_owned(),
+                diff: vec![
+                    HistoryDiffLine {
+                        kind: HistoryDiffKind::Removed,
+                        text: "saved".to_owned(),
+                    },
+                    HistoryDiffLine {
+                        kind: HistoryDiffKind::Added,
+                        text: "agent draft".to_owned(),
+                    },
+                ],
+                diff_truncated: false,
+            },
+            scroll: 0,
+        });
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let proposal = rendered(&terminal);
+        assert!(proposal.contains("Agent proposal review"));
+        assert!(proposal.contains("CURRENT · safe to accept"));
+        assert!(proposal.contains("- saved"));
+        assert!(proposal.contains("+ agent draft"));
+        assert!(proposal.contains("Accept into buffer"));
+        assert!(proposal.contains("does not save"));
     }
 
     #[test]

@@ -40,6 +40,8 @@ pub enum CheckpointReason {
     PreviousSavedVersion,
     BeforeRestore,
     BeforeExternalReload,
+    BeforeAgentEdit,
+    AfterAgentEdit,
 }
 
 /// One trusted Local History full snapshot.
@@ -894,6 +896,8 @@ const fn reason_name(reason: CheckpointReason) -> &'static str {
         CheckpointReason::PreviousSavedVersion => "previous_saved_version",
         CheckpointReason::BeforeRestore => "before_restore",
         CheckpointReason::BeforeExternalReload => "before_external_reload",
+        CheckpointReason::BeforeAgentEdit => "before_agent_edit",
+        CheckpointReason::AfterAgentEdit => "after_agent_edit",
     }
 }
 

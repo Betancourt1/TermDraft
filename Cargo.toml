@@ -1,8 +1,9 @@
 [package]
 name = "termdraft"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 rust-version = "1.88"
+default-run = "termdraft"
 description = "A local-first Markdown editor for the terminal"
 license = "MIT"
 repository = "https://github.com/Betancourt1/TermDraft"
@@ -15,6 +16,10 @@ path = "rust/src/lib.rs"
 [[bin]]
 name = "termdraft"
 path = "rust/src/main.rs"
+
+[[bin]]
+name = "termdraft-agent"
+path = "rust/src/agent_main.rs"
 
 [dependencies]
 anyhow = "1"

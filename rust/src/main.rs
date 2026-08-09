@@ -104,6 +104,10 @@ const CONFIGURED_ROWS: &[(&str, &str)] = &[
 const MENU_ROWS: &[(&str, &str)] = &[
     ("menu", "Create a Local History checkpoint"),
     ("menu", "Open Local History"),
+    (
+        "menu",
+        "Share or review the active draft with a local agent",
+    ),
 ];
 
 #[derive(Debug, Parser)]
@@ -261,7 +265,7 @@ fn format_command_help(config: &Config) -> String {
     let global_palette = display_keys(binding_text(config, "command_palette"));
 
     format!(
-        "TermDraft commands\n\nModes and COMMAND keys\n{}\n\nFocused Files keys\n{}\n\nConfigured shortcuts (available in both modes)\n{}\n\nMenu-only actions (no direct shortcut)\n{}\n\nEditor and preview controls\n{}\n\nPress {command_palette} in COMMAND mode or {global_palette} in either mode to search all commands, including:\n  Save, find file, open recent,\n  next/previous/close tab, search workspace text,\n  toggle files, toggle preview,\n  undo, redo, create a checkpoint, open Local History,\n  reload configuration, manage recovery drafts, inspect semantic blocks,\n  read semantic blocks experimentally, inspect cursor coordinates,\n  shortcut help,\n  Markdown syntax help, and safe quit.\n\nFocus Files to create, copy, cut, paste, rename, move, or trash workspace entries.\n",
+        "TermDraft commands\n\nModes and COMMAND keys\n{}\n\nFocused Files keys\n{}\n\nConfigured shortcuts (available in both modes)\n{}\n\nMenu-only actions (no direct shortcut)\n{}\n\nEditor and preview controls\n{}\n\nPress {command_palette} in COMMAND mode or {global_palette} in either mode to search all commands, including:\n  Save, find file, open recent,\n  next/previous/close tab, search workspace text,\n  toggle files, toggle preview,\n  undo, redo, create a checkpoint, open Local History, agent sharing,\n  reload configuration, manage recovery drafts, inspect semantic blocks,\n  read semantic blocks experimentally, inspect cursor coordinates,\n  shortcut help,\n  Markdown syntax help, and safe quit.\n\nFocus Files to create, copy, cut, paste, rename, move, or trash workspace entries.\n",
         format_rows(&command_rows, width),
         format_rows(&file_rows, width),
         format_rows(&configured_rows, width),
@@ -398,6 +402,7 @@ mod tests {
             "Enter in a list",
             "menu                              Create a Local History checkpoint",
             "menu                              Open Local History",
+            "menu                              Share or review the active draft with a local agent",
             "Press : in COMMAND mode or Ctrl+\\ in either mode",
         ] {
             assert!(

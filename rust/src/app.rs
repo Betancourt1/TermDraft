@@ -28,6 +28,10 @@ use signal_hook::consts::{SIGHUP, SIGTERM};
 use tui_textarea::{CursorMove, TextArea};
 use unicode_width::UnicodeWidthStr;
 
+use crate::agent_bridge::{
+    AgentAction, AgentCall, AgentResponse, AgentSession, MAX_AGENT_SOURCE_BYTES, ProposalChange,
+    RangeEdit,
+};
 use crate::bindings::{Action as BindingAction, BindingScope};
 use crate::checkpoint::{
     CaptureOutcome, Checkpoint, CheckpointError, CheckpointList, CheckpointReason, CheckpointStore,
@@ -79,6 +83,7 @@ pub const EXPLORER_MAX_WIDTH: u16 = 48;
 const HISTORY_DIFF_MAX_BYTES: usize = 512 * 1024;
 const HISTORY_DIFF_MAX_SOURCE_LINES: usize = 2_000;
 const HISTORY_DIFF_MAX_OUTPUT_LINES: usize = 400;
+static NEXT_AGENT_PROPOSAL_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode {
@@ -216,6 +221,17 @@ pub enum HistoryDiffKind {
 pub struct HistoryDiffLine {
     pub kind: HistoryDiffKind,
     pub text: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct AgentProposal {
+    pub id: String,
+    pub path: PathBuf,
+    pub expected_revision: SourceRevision,
+    pub origin: String,
+    pub proposed_source: String,
+    pub diff: Vec<HistoryDiffLine>,
+    pub diff_truncated: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -361,6 +377,15 @@ pub enum Overlay {
         scope: HistoryClearScope,
         path: PathBuf,
         checkpoint_ids: Vec<String>,
+    },
+    AgentSharing {
+        path: PathBuf,
+        socket_path: PathBuf,
+        token: String,
+    },
+    AgentProposal {
+        proposal: AgentProposal,
+        scroll: u16,
     },
     MixedLineEndings {
         tab_index: usize,
@@ -603,6 +628,7 @@ pub enum CommandAction {
     Redo,
     CreateCheckpoint,
     LocalHistory,
+    AgentSharing,
     ReloadConfig,
     ChangeTheme,
     ManageRecovery,
@@ -771,6 +797,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         label: "Open Local History",
         shortcut: "",
         action: CommandAction::LocalHistory,
+    },
+    CommandSpec {
+        group: "EDIT",
+        label: "Agent sharing",
+        shortcut: "",
+        action: CommandAction::AgentSharing,
     },
     CommandSpec {
         group: "EDIT",
@@ -1164,6 +1196,8 @@ pub struct App {
     last_session_state: Option<SessionState>,
     recovery_journal: Option<RecoveryJournal>,
     checkpoint_store: Option<CheckpointStore>,
+    agent_session: Option<AgentSession>,
+    pending_agent_proposal: Option<AgentProposal>,
     published_recovery: HashMap<PathBuf, (String, String)>,
     recent_paths: Vec<PathBuf>,
     session_views: HashMap<PathBuf, DocumentViewState>,
@@ -1334,6 +1368,8 @@ impl App {
             last_session_state: None,
             recovery_journal,
             checkpoint_store,
+            agent_session: None,
+            pending_agent_proposal: None,
             published_recovery: HashMap::new(),
             recent_paths: Vec::new(),
             session_views: HashMap::new(),
@@ -2064,6 +2100,8 @@ impl App {
     fn flush_state(&mut self) {
         self.persist_recovery();
         self.persist_session_if_changed();
+        self.agent_session = None;
+        self.pending_agent_proposal = None;
     }
 
     #[must_use]
@@ -2511,6 +2549,327 @@ impl App {
         }
     }
 
+    fn open_agent_sharing(&mut self) {
+        if let Some(proposal) = self.pending_agent_proposal.clone() {
+            self.overlay = Some(Overlay::AgentProposal {
+                proposal,
+                scroll: 0,
+            });
+            return;
+        }
+        self.sync_active_document();
+        if let Some(session) = &self.agent_session {
+            self.overlay = Some(Overlay::AgentSharing {
+                path: session.shared_path().to_path_buf(),
+                socket_path: session.socket_path().to_path_buf(),
+                token: session.token().to_owned(),
+            });
+            return;
+        }
+        let Some(tab) = self.active_tab() else {
+            self.status_message =
+                Some("Open a document before sharing it with an agent".to_owned());
+            return;
+        };
+        if tab.document.conflict || tab.document.recovery_conflict {
+            self.status_message =
+                Some("Agent sharing blocked · resolve the document conflict first".to_owned());
+            return;
+        }
+        if !tab.document.is_editable() {
+            self.status_message =
+                Some("Agent sharing blocked · accept the line-ending target first".to_owned());
+            return;
+        }
+        let path = tab.document.path.clone();
+        match AgentSession::start(path.clone()) {
+            Ok(session) => {
+                let socket_path = session.socket_path().to_path_buf();
+                let token = session.token().to_owned();
+                self.agent_session = Some(session);
+                self.status_message = Some(
+                    "AGENT SHARED · exact active unsaved source is available to the token holder"
+                        .to_owned(),
+                );
+                self.overlay = Some(Overlay::AgentSharing {
+                    path,
+                    socket_path,
+                    token,
+                });
+            }
+            Err(error) => {
+                self.status_message = Some(format!("Agent sharing unavailable · {error}"));
+            }
+        }
+    }
+
+    fn revoke_agent_sharing(&mut self) {
+        self.agent_session = None;
+        self.pending_agent_proposal = None;
+        self.status_message = Some("Agent sharing revoked · local endpoint removed".to_owned());
+    }
+
+    fn revoke_agent_for_path(&mut self, path: &Path) {
+        if self
+            .agent_session
+            .as_ref()
+            .is_some_and(|session| session.shared_path() == path)
+        {
+            self.agent_session = None;
+            self.pending_agent_proposal = None;
+        }
+    }
+
+    fn revoke_agent_within(&mut self, path: &Path) {
+        if self
+            .agent_session
+            .as_ref()
+            .is_some_and(|session| path_is_within(session.shared_path(), path))
+        {
+            self.agent_session = None;
+            self.pending_agent_proposal = None;
+        }
+    }
+
+    fn poll_agent_requests(&mut self) -> bool {
+        let calls = self
+            .agent_session
+            .as_ref()
+            .map_or_else(Vec::new, AgentSession::drain_calls);
+        if calls.is_empty() {
+            return false;
+        }
+        for call in calls {
+            self.handle_agent_call(call);
+        }
+        true
+    }
+
+    fn handle_agent_call(&mut self, call: AgentCall) {
+        let Some(shared_path) = self
+            .agent_session
+            .as_ref()
+            .map(|session| session.shared_path().to_path_buf())
+        else {
+            call.respond(AgentResponse::error("agent sharing is no longer active"));
+            return;
+        };
+        self.sync_active_document();
+        let Some(index) = self.active_tab else {
+            call.respond(AgentResponse::error("the shared document is not active"));
+            return;
+        };
+        if self.tabs[index].document.path != shared_path {
+            call.respond(AgentResponse::error(
+                "the shared document is not the active tab",
+            ));
+            return;
+        }
+
+        match call.action.clone() {
+            AgentAction::Read => {
+                let document = &self.tabs[index].document;
+                call.respond(AgentResponse::Document {
+                    path: self
+                        .workspace
+                        .relative(&document.path)
+                        .display()
+                        .to_string(),
+                    source: document.text.clone(),
+                    revision: revision_label(document.source_revision),
+                    dirty: document.is_dirty(),
+                });
+            }
+            AgentAction::Propose {
+                expected_revision,
+                change,
+                origin,
+            } => {
+                let response = self.receive_agent_proposal(
+                    index,
+                    &shared_path,
+                    &expected_revision,
+                    change,
+                    origin.as_deref(),
+                );
+                call.respond(response);
+            }
+        }
+    }
+
+    fn receive_agent_proposal(
+        &mut self,
+        index: usize,
+        shared_path: &Path,
+        expected_revision: &str,
+        change: ProposalChange,
+        origin: Option<&str>,
+    ) -> AgentResponse {
+        let document = &self.tabs[index].document;
+        if document.conflict || document.recovery_conflict || !document.is_editable() {
+            return AgentResponse::error("the active document is protected by a conflict");
+        }
+        if expected_revision != revision_label(document.source_revision) {
+            return AgentResponse::error("the proposal targets a stale source revision");
+        }
+        if self.pending_agent_proposal.is_some() {
+            return AgentResponse::error("another agent proposal is awaiting review");
+        }
+        let proposed_source = match apply_proposal_change(&document.text, change) {
+            Ok(source) => source,
+            Err(error) => return AgentResponse::error(error),
+        };
+        if proposed_source.len() > MAX_AGENT_SOURCE_BYTES {
+            return AgentResponse::error("the proposed source exceeds the 16 MiB limit");
+        }
+        if proposed_source == document.text {
+            return AgentResponse::error("the proposal does not change the active source");
+        }
+        let (diff, diff_truncated) = build_history_diff(&document.text, &proposed_source);
+        let proposal = AgentProposal {
+            id: format!(
+                "proposal-{}",
+                NEXT_AGENT_PROPOSAL_ID.fetch_add(1, Ordering::Relaxed)
+            ),
+            path: shared_path.to_path_buf(),
+            expected_revision: document.source_revision,
+            origin: sanitized_agent_origin(origin),
+            proposed_source,
+            diff,
+            diff_truncated,
+        };
+        let proposal_id = proposal.id.clone();
+        self.pending_agent_proposal = Some(proposal.clone());
+        if self.overlay.is_none() {
+            self.overlay = Some(Overlay::AgentProposal {
+                proposal,
+                scroll: 0,
+            });
+        } else {
+            self.status_message =
+                Some("Agent proposal ready · open Agent sharing to review".to_owned());
+        }
+        AgentResponse::PendingReview { proposal_id }
+    }
+
+    fn accept_agent_proposal(&mut self, proposal: &AgentProposal) {
+        self.sync_active_document();
+        if self
+            .pending_agent_proposal
+            .as_ref()
+            .is_none_or(|pending| pending.id != proposal.id)
+        {
+            self.status_message = Some("Agent proposal is no longer pending".to_owned());
+            return;
+        }
+        let Some(index) = self.active_tab else {
+            self.status_message = Some("Agent proposal blocked · document is not open".to_owned());
+            return;
+        };
+        if self.tabs[index].document.path != proposal.path {
+            self.status_message =
+                Some("Agent proposal blocked · shared document is not active".to_owned());
+            return;
+        }
+        let document = &self.tabs[index].document;
+        if document.conflict || document.recovery_conflict || !document.is_editable() {
+            self.status_message = Some("Agent proposal blocked · document is protected".to_owned());
+            return;
+        }
+        if document.source_revision != proposal.expected_revision {
+            self.status_message =
+                Some("Agent proposal blocked · source changed during review".to_owned());
+            return;
+        }
+        let Some(recovery) = self.recovery_journal.clone() else {
+            self.status_message =
+                Some("Agent proposal blocked · Recovery storage is unavailable".to_owned());
+            return;
+        };
+        let recovery_entry = match recovery.publish(
+            &proposal.path,
+            &self.workspace.root,
+            &proposal.proposed_source,
+            document.encoding,
+            &document.snapshot,
+        ) {
+            Ok(entry) => entry,
+            Err(error) => {
+                self.status_message = Some(format!(
+                    "Agent proposal blocked · Recovery not saved · {error}"
+                ));
+                return;
+            }
+        };
+        self.published_recovery.insert(
+            proposal.path.clone(),
+            (
+                recovery_entry.fingerprint().to_owned(),
+                proposal.proposed_source.clone(),
+            ),
+        );
+        let current = self.tabs[index].document.text.clone();
+        let before_note =
+            self.capture_history_note(index, &current, CheckpointReason::BeforeAgentEdit);
+        match self.tabs[index].replace_source_transaction(
+            proposal.expected_revision,
+            &proposal.proposed_source,
+            false,
+        ) {
+            Ok(true) => {
+                let after_note = self.capture_history_note(
+                    index,
+                    &proposal.proposed_source,
+                    CheckpointReason::AfterAgentEdit,
+                );
+                self.pending_agent_proposal = None;
+                let mut status =
+                    format!("Applied {} · buffer modified · not saved", proposal.origin);
+                if let Some(note) = before_note.as_deref() {
+                    status = append_history_note(status, note);
+                }
+                if let Some(note) = after_note.as_deref() {
+                    status = append_history_note(status, note);
+                }
+                self.status_message = Some(status);
+            }
+            Ok(false) => {
+                self.pending_agent_proposal = None;
+                self.status_message = Some("Agent proposal made no changes".to_owned());
+            }
+            Err(SourceTransactionError::Protected) => {
+                self.status_message =
+                    Some("Agent proposal blocked · document is protected".to_owned());
+            }
+            Err(SourceTransactionError::Stale(_)) => {
+                self.status_message =
+                    Some("Agent proposal blocked · source changed during review".to_owned());
+            }
+        }
+    }
+
+    fn reject_agent_proposal(&mut self, proposal_id: &str) {
+        if self
+            .pending_agent_proposal
+            .as_ref()
+            .is_some_and(|proposal| proposal.id == proposal_id)
+        {
+            self.pending_agent_proposal = None;
+            self.status_message = Some("Agent proposal rejected · buffer unchanged".to_owned());
+        }
+    }
+
+    #[must_use]
+    pub fn agent_shared_path(&self) -> Option<&Path> {
+        self.agent_session.as_ref().map(AgentSession::shared_path)
+    }
+
+    #[must_use]
+    pub fn active_document_is_shared(&self) -> bool {
+        self.active_tab()
+            .is_some_and(|tab| self.agent_shared_path() == Some(tab.document.path.as_path()))
+    }
+
     fn current_preview_key(&self) -> Option<PreviewKey> {
         let tab = self.active_tab()?;
         Some(PreviewKey {
@@ -2606,7 +2965,11 @@ impl App {
     }
 
     fn preview_poll_timeout(&self) -> Duration {
-        let standard = Duration::from_millis(250);
+        let standard = if self.agent_session.is_some() {
+            Duration::from_millis(50)
+        } else {
+            Duration::from_millis(250)
+        };
         let worker_poll = if self.preview_inflight.is_empty() {
             standard
         } else {
@@ -3279,8 +3642,10 @@ impl App {
         let Some(index) = self.active_tab else {
             return;
         };
+        let closed_path = self.tabs[index].document.path.clone();
         self.cache_active_view();
         self.tabs.remove(index);
+        self.revoke_agent_for_path(&closed_path);
         self.active_tab = if self.tabs.is_empty() {
             None
         } else {
@@ -3482,6 +3847,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn execute_command(&mut self, action: CommandAction) {
         self.trace_command(&format!("{action:?}"));
         self.overlay = None;
@@ -3551,6 +3917,7 @@ impl App {
             }
             CommandAction::CreateCheckpoint => self.create_manual_checkpoint(),
             CommandAction::LocalHistory => self.open_local_history(),
+            CommandAction::AgentSharing => self.open_agent_sharing(),
             CommandAction::ReloadConfig => self.reload_config(),
             CommandAction::ChangeTheme => {
                 self.theme = self.theme.next();
@@ -4365,6 +4732,7 @@ impl App {
     }
 
     fn retarget_workspace_paths(&mut self, source: &Path, target: &Path) -> Option<String> {
+        self.revoke_agent_within(source);
         let previous_paths = self
             .tabs
             .iter()
@@ -4543,6 +4911,9 @@ impl App {
         match save_atomic(&target, &text, encoding, line_ending, None, true) {
             Ok(snapshot) if matches!(action, PathAction::SaveAs | PathAction::SaveConflictAs) => {
                 let previous = self.active_tab().map(|tab| tab.document.path.clone());
+                if let Some(previous) = previous.as_deref() {
+                    self.revoke_agent_for_path(previous);
+                }
                 if let Some(tab) = self.active_tab_mut() {
                     tab.document.path.clone_from(&target);
                     tab.document.mark_saved(snapshot);
@@ -5080,7 +5451,12 @@ impl App {
                 .to_string_lossy();
             let dirty = if tab.document.is_dirty() { " ●" } else { "" };
             let conflict = if tab.document.conflict { " !" } else { "" };
-            let label = format!(" {name}{dirty}{conflict} ");
+            let shared = if self.agent_shared_path() == Some(tab.document.path.as_path()) {
+                " ↔"
+            } else {
+                ""
+            };
+            let label = format!(" {name}{dirty}{conflict}{shared} ");
             let width = u16::try_from(UnicodeWidthStr::width(label.as_str())).unwrap_or(u16::MAX);
             if column >= x && column < x.saturating_add(width) {
                 return Some(index);
@@ -5399,6 +5775,29 @@ impl App {
                 activation = Some(KeyCode::Enter);
             }
             Overlay::Message(_) => activation = Some(KeyCode::Enter),
+            Overlay::AgentSharing { .. }
+                if row == inner.bottom().saturating_sub(1)
+                    && column >= inner.x
+                    && column < inner.right() =>
+            {
+                activation = match column.saturating_sub(inner.x) {
+                    0..=12 => Some(KeyCode::Char('r')),
+                    18..=44 => Some(KeyCode::Esc),
+                    _ => None,
+                };
+            }
+            Overlay::AgentProposal { .. }
+                if row == inner.bottom().saturating_sub(1)
+                    && column >= inner.x
+                    && column < inner.right() =>
+            {
+                activation = match column.saturating_sub(inner.x) {
+                    0..=20 => Some(KeyCode::Char('a')),
+                    26..=34 => Some(KeyCode::Char('r')),
+                    55..=71 => Some(KeyCode::Esc),
+                    _ => None,
+                };
+            }
             Overlay::TrashConfirm { .. } if row >= inner.y.saturating_add(3) => {
                 activation = (column < inner.x.saturating_add(22)).then_some(KeyCode::Char('y'));
             }
@@ -5704,6 +6103,28 @@ impl App {
                 }
             },
             Overlay::CoordinateInspector { .. } | Overlay::Message(_) => key.code != KeyCode::Enter,
+            Overlay::AgentSharing { .. } => {
+                if key.code == KeyCode::Char('r') {
+                    self.revoke_agent_sharing();
+                    false
+                } else {
+                    true
+                }
+            }
+            Overlay::AgentProposal { proposal, scroll } => match key.code {
+                KeyCode::Char('a') => {
+                    self.accept_agent_proposal(proposal);
+                    false
+                }
+                KeyCode::Char('r') => {
+                    self.reject_agent_proposal(&proposal.id);
+                    false
+                }
+                code => {
+                    update_scroll(scroll, code, proposal.diff.len());
+                    true
+                }
+            },
             Overlay::MarkdownHelp { scroll } => match key.code {
                 KeyCode::Enter | KeyCode::F(1) => false,
                 code => {
@@ -6967,6 +7388,64 @@ fn build_history_diff(checkpoint: &str, current: &str) -> (Vec<HistoryDiffLine>,
     (lines, truncated)
 }
 
+fn revision_label(revision: SourceRevision) -> String {
+    let mut digest = String::with_capacity(revision.sha256.len() * 2);
+    for byte in revision.sha256 {
+        let _ = write!(digest, "{byte:02x}");
+    }
+    format!("{}:{digest}", revision.generation)
+}
+
+fn sanitized_agent_origin(origin: Option<&str>) -> String {
+    let origin = origin
+        .unwrap_or("local agent")
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(80)
+        .collect::<String>();
+    let origin = origin.trim();
+    if origin.is_empty() {
+        "local agent".to_owned()
+    } else {
+        origin.to_owned()
+    }
+}
+
+fn apply_proposal_change(source: &str, change: ProposalChange) -> Result<String, String> {
+    match change {
+        ProposalChange::ReplaceSource { source } => Ok(source),
+        ProposalChange::ReplaceRanges { mut edits } => {
+            if edits.len() > 10_000 {
+                return Err("the proposal contains too many range edits".to_owned());
+            }
+            edits.sort_by_key(|edit| (edit.start, edit.end));
+            validate_range_edits(source, &edits)?;
+            let mut proposed = source.to_owned();
+            for edit in edits.into_iter().rev() {
+                proposed.replace_range(edit.start..edit.end, &edit.replacement);
+            }
+            Ok(proposed)
+        }
+    }
+}
+
+fn validate_range_edits(source: &str, edits: &[RangeEdit]) -> Result<(), String> {
+    let mut previous_end = 0;
+    for edit in edits {
+        if edit.start > edit.end || edit.end > source.len() {
+            return Err("an agent range is outside the active source".to_owned());
+        }
+        if !source.is_char_boundary(edit.start) || !source.is_char_boundary(edit.end) {
+            return Err("agent ranges must use UTF-8 byte boundaries".to_owned());
+        }
+        if edit.start < previous_end {
+            return Err("agent ranges must not overlap".to_owned());
+        }
+        previous_end = edit.end;
+    }
+    Ok(())
+}
+
 fn bounded_history_diff_source(source: &str) -> (String, bool) {
     let mut output = String::new();
     for (index, line) in source.split('\n').enumerate() {
@@ -7740,6 +8219,7 @@ fn run_with_options(
                     }
                 };
                 needs_draw |= received_event && !app.should_quit;
+                needs_draw |= app.poll_agent_requests();
                 needs_draw |= app.poll_preview_results();
                 needs_draw |= app.poll_workspace_search_results();
                 needs_draw |= app.poll_workspace_scan_results();
@@ -7987,6 +8467,7 @@ mod tests {
                 "",
                 CommandAction::LocalHistory,
             ),
+            ("EDIT", "Agent sharing", "", CommandAction::AgentSharing),
             ("EDIT", "Reload config", "R", CommandAction::ReloadConfig),
             (
                 "EDIT",
@@ -9131,6 +9612,32 @@ command_manage_recovery = "Z"
             app.active_tab().unwrap().document.path.file_name(),
             first.file_name()
         );
+
+        app.agent_session = Some(AgentSession::start(first.clone()).unwrap());
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let tabs = app.ui_regions.tabs.unwrap();
+        let first_label = format!(
+            " {} ↔ ",
+            first.file_name().unwrap_or_default().to_string_lossy()
+        );
+        let second_label = format!(
+            " {} ",
+            second.file_name().unwrap_or_default().to_string_lossy()
+        );
+        let second_right_edge = tabs
+            .x
+            .saturating_add(u16::try_from(UnicodeWidthStr::width(first_label.as_str())).unwrap())
+            .saturating_add(3)
+            .saturating_add(u16::try_from(UnicodeWidthStr::width(second_label.as_str())).unwrap())
+            .saturating_sub(1);
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: second_right_edge,
+            row: tabs.y,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(app.active_tab, Some(1));
     }
 
     #[test]
@@ -11174,6 +11681,308 @@ command_manage_recovery = "Z"
         assert_eq!(checkpoints.len(), 2);
         assert_eq!(checkpoints[0].reason, CheckpointReason::BeforeRestore);
         assert_eq!(checkpoints[0].source, "current\n");
+    }
+
+    #[test]
+    fn agent_proposal_acceptance_is_reviewed_dirty_recoverable_and_one_undo_group() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("note.md");
+        fs::write(&path, "saved\n").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let path = workspace.initial_file.clone().unwrap();
+        let history = CheckpointStore::new(state.path().join("history"));
+        history.set_enabled(&root, true).unwrap();
+        let recovery = RecoveryJournal::new(state.path().join("recovery"));
+        let mut app = App::with_state_services_and_history(
+            workspace,
+            Config::default(),
+            None,
+            Some(recovery.clone()),
+            Some(history.clone()),
+        )
+        .unwrap();
+        let revision = revision_label(app.active_tab().unwrap().document.source_revision);
+
+        let response = app.receive_agent_proposal(
+            0,
+            &path,
+            &revision,
+            ProposalChange::ReplaceSource {
+                source: "agent draft\n".to_owned(),
+            },
+            Some("test-agent"),
+        );
+
+        assert!(matches!(response, AgentResponse::PendingReview { .. }));
+        assert!(matches!(app.overlay, Some(Overlay::AgentProposal { .. })));
+        assert_eq!(app.active_tab().unwrap().document.text, "saved\n");
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+
+        let document = &app.active_tab().unwrap().document;
+        assert_eq!(document.text, "agent draft\n");
+        assert!(document.is_dirty());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "saved\n");
+        assert_eq!(recovery.load(&path).unwrap().unwrap().text, "agent draft\n");
+        assert!(app.pending_agent_proposal.is_none());
+        assert!(app.status_message.as_deref().unwrap().contains("not saved"));
+
+        let checkpoints = history.list(&root, &path).unwrap().checkpoints;
+        assert_eq!(checkpoints.len(), 2);
+        assert_eq!(checkpoints[0].reason, CheckpointReason::AfterAgentEdit);
+        assert_eq!(checkpoints[1].reason, CheckpointReason::BeforeAgentEdit);
+
+        app.execute_command(CommandAction::Undo);
+        assert_eq!(app.active_tab().unwrap().document.text, "saved\n");
+        app.execute_command(CommandAction::Redo);
+        assert_eq!(app.active_tab().unwrap().document.text, "agent draft\n");
+        assert_eq!(fs::read_to_string(path).unwrap(), "saved\n");
+    }
+
+    #[test]
+    fn agent_proposal_acceptance_blocks_when_recovery_cannot_store_the_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("note.md");
+        fs::write(&path, "saved\n").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let path = workspace.initial_file.clone().unwrap();
+        let recovery = RecoveryJournal::new(state.path().join("recovery"));
+        let mut app =
+            App::with_state_services(workspace, Config::default(), None, Some(recovery.clone()))
+                .unwrap();
+        let revision = revision_label(app.active_tab().unwrap().document.source_revision);
+        let source = "\"".repeat(8 * 1024 * 1024);
+
+        let response = app.receive_agent_proposal(
+            0,
+            &path,
+            &revision,
+            ProposalChange::ReplaceSource { source },
+            Some("test-agent"),
+        );
+
+        assert!(matches!(response, AgentResponse::PendingReview { .. }));
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+
+        assert_eq!(app.active_tab().unwrap().document.text, "saved\n");
+        assert!(!app.active_tab().unwrap().document.is_dirty());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "saved\n");
+        assert!(recovery.load(&path).unwrap().is_none());
+        assert!(app.pending_agent_proposal.is_some());
+        assert!(
+            app.status_message
+                .as_deref()
+                .unwrap()
+                .contains("Recovery not saved")
+        );
+        assert!(!app.status_message.as_deref().unwrap().contains("Applied"));
+    }
+
+    #[test]
+    fn agent_overlay_pointer_actions_match_the_visible_labels() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("note.md");
+        fs::write(&path, "saved\n").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let path = workspace.initial_file.clone().unwrap();
+        let recovery = RecoveryJournal::new(state.path().join("recovery"));
+        let mut app =
+            App::with_state_services(workspace, Config::default(), None, Some(recovery)).unwrap();
+        let frame = Rect::new(0, 0, 120, 40);
+
+        app.open_agent_sharing();
+        let sharing_area = ui::overlay_area(frame, app.overlay.as_ref().unwrap());
+        let sharing_inner = ui::overlay_inner_area(sharing_area);
+        let footer_row = sharing_inner.bottom().saturating_sub(1);
+        app.handle_overlay_click(sharing_area, sharing_inner.x.saturating_sub(1), footer_row);
+        assert!(matches!(app.overlay, Some(Overlay::AgentSharing { .. })));
+        assert!(app.agent_session.is_some());
+        app.handle_overlay_click(sharing_area, sharing_inner.x.saturating_add(13), footer_row);
+        assert!(matches!(app.overlay, Some(Overlay::AgentSharing { .. })));
+        assert!(app.agent_session.is_some());
+
+        app.handle_overlay_click(sharing_area, sharing_inner.x.saturating_add(12), footer_row);
+        assert!(app.overlay.is_none());
+        assert!(app.agent_session.is_none());
+
+        app.open_agent_sharing();
+        let sharing_area = ui::overlay_area(frame, app.overlay.as_ref().unwrap());
+        let sharing_inner = ui::overlay_inner_area(sharing_area);
+        let footer_row = sharing_inner.bottom().saturating_sub(1);
+        app.handle_overlay_click(sharing_area, sharing_inner.x.saturating_add(17), footer_row);
+        assert!(matches!(app.overlay, Some(Overlay::AgentSharing { .. })));
+        app.handle_overlay_click(sharing_area, sharing_inner.x.saturating_add(44), footer_row);
+        assert!(app.overlay.is_none());
+        assert!(app.agent_session.is_some());
+        app.revoke_agent_sharing();
+
+        let revision = revision_label(app.active_tab().unwrap().document.source_revision);
+        let response = app.receive_agent_proposal(
+            0,
+            &path,
+            &revision,
+            ProposalChange::ReplaceSource {
+                source: "rejected\n".to_owned(),
+            },
+            Some("test-agent"),
+        );
+        assert!(matches!(response, AgentResponse::PendingReview { .. }));
+        let proposal_area = ui::overlay_area(frame, app.overlay.as_ref().unwrap());
+        let proposal_inner = ui::overlay_inner_area(proposal_area);
+        let footer_row = proposal_inner.bottom().saturating_sub(1);
+        app.handle_overlay_click(
+            proposal_area,
+            proposal_inner.x.saturating_sub(1),
+            footer_row,
+        );
+        assert!(matches!(app.overlay, Some(Overlay::AgentProposal { .. })));
+        assert!(app.pending_agent_proposal.is_some());
+        app.handle_overlay_click(
+            proposal_area,
+            proposal_inner.x.saturating_add(21),
+            footer_row,
+        );
+        assert!(matches!(app.overlay, Some(Overlay::AgentProposal { .. })));
+        assert!(app.pending_agent_proposal.is_some());
+
+        app.handle_overlay_click(
+            proposal_area,
+            proposal_inner.x.saturating_add(34),
+            footer_row,
+        );
+        assert!(app.overlay.is_none());
+        assert!(app.pending_agent_proposal.is_none());
+        assert_eq!(app.active_tab().unwrap().document.text, "saved\n");
+
+        let response = app.receive_agent_proposal(
+            0,
+            &path,
+            &revision,
+            ProposalChange::ReplaceSource {
+                source: "accepted\n".to_owned(),
+            },
+            Some("test-agent"),
+        );
+        assert!(matches!(response, AgentResponse::PendingReview { .. }));
+        let proposal_area = ui::overlay_area(frame, app.overlay.as_ref().unwrap());
+        let proposal_inner = ui::overlay_inner_area(proposal_area);
+        app.handle_overlay_click(
+            proposal_area,
+            proposal_inner.x.saturating_add(20),
+            proposal_inner.bottom().saturating_sub(1),
+        );
+        assert!(app.overlay.is_none());
+        assert!(app.pending_agent_proposal.is_none());
+        assert_eq!(app.active_tab().unwrap().document.text, "accepted\n");
+    }
+
+    #[test]
+    fn agent_proposals_reject_stale_revisions_and_invalid_unicode_ranges() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "café\n").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let path = workspace.initial_file.clone().unwrap();
+        let mut app = App::new(workspace).unwrap();
+        let stale_revision = revision_label(app.active_tab().unwrap().document.source_revision);
+        app.active_tab_mut().unwrap().editor.insert_str("new ");
+        app.sync_active_document();
+
+        let response = app.receive_agent_proposal(
+            0,
+            &path,
+            &stale_revision,
+            ProposalChange::ReplaceSource {
+                source: "stale\n".to_owned(),
+            },
+            None,
+        );
+        assert!(matches!(
+            response,
+            AgentResponse::Error { ref message } if message.contains("stale")
+        ));
+        assert!(app.pending_agent_proposal.is_none());
+
+        assert_eq!(
+            apply_proposal_change(
+                "café",
+                ProposalChange::ReplaceRanges {
+                    edits: vec![RangeEdit {
+                        start: 4,
+                        end: 5,
+                        replacement: "e".to_owned(),
+                    }],
+                },
+            ),
+            Err("agent ranges must use UTF-8 byte boundaries".to_owned())
+        );
+        assert_eq!(
+            apply_proposal_change(
+                "abcdef",
+                ProposalChange::ReplaceRanges {
+                    edits: vec![
+                        RangeEdit {
+                            start: 2,
+                            end: 4,
+                            replacement: "X".to_owned(),
+                        },
+                        RangeEdit {
+                            start: 3,
+                            end: 5,
+                            replacement: "Y".to_owned(),
+                        },
+                    ],
+                },
+            ),
+            Err("agent ranges must not overlap".to_owned())
+        );
+    }
+
+    #[test]
+    fn agent_session_reads_the_exact_unsaved_buffer_and_close_revokes_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, "saved\n").unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.active_tab_mut().unwrap().editor.insert_str("draft ");
+        app.open_agent_sharing();
+        let session = app.agent_session.as_ref().unwrap();
+        let socket = session.socket_path().to_path_buf();
+        let token = session.token().to_owned();
+        let client_socket = socket.clone();
+        let client = thread::spawn(move || {
+            crate::agent_bridge::request(&client_socket, &token, AgentAction::Read).unwrap()
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if app.poll_agent_requests() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "agent read was not delivered");
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let response = client.join().unwrap();
+        assert!(matches!(
+            response,
+            AgentResponse::Document {
+                ref source,
+                dirty: true,
+                ..
+            } if source == "draft saved\n"
+        ));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "saved\n");
+
+        app.overlay = None;
+        app.close_active_discarding();
+        assert!(!socket.exists());
+        assert!(app.agent_session.is_none());
     }
 
     #[test]

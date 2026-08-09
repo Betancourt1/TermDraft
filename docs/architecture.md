@@ -22,6 +22,7 @@ App state ───────────────────────�
    │                                                        ▲
    ├── keyboard / paste / mouse event ──────────────────────┤
    ├── background fresh-scan workspace-text search ─────────┤
+   ├── private active-draft agent request / proposal ────────┤
    ├── 2 s active/inactive-file and workspace poll ─────────┤
    ├── 500 ms recovery flush ────────────────────────────────┤
    ├── SIGTERM / SIGHUP state drain ─────────────────────────┤
@@ -35,16 +36,20 @@ An explicit `--debug` launch adds a three-row live event/command strip and flush
 a temporary per-process log. Plain text input and paste contents are redacted from that trace.
 
 There is no async runtime or general worker pool. Recursive workspace indexing and text search run
-on cancellable revisioned threads; file reads/saves, mutations, session I/O, recovery operations,
-and diagnostics otherwise run synchronously. Startup only scans the workspace root before the first
-frame. This keeps ordering explicit and avoids blocking launch on a recursive walk, although another
-slow filesystem operation can still delay a frame. Python performs most I/O through Textual workers.
+on cancellable revisioned threads. An explicitly opened agent session has one private Unix-listener
+thread that validates bounded requests and forwards them to the application event loop; it never
+edits source itself. File reads/saves, mutations, session I/O, recovery operations, and diagnostics
+otherwise run synchronously. Startup only scans the workspace root before the first frame. This
+keeps ordering explicit and avoids blocking launch on a recursive walk, although another slow
+filesystem operation can still delay a frame. Python performs most I/O through Textual workers.
 
 ## Module map
 
 | Module | Responsibility |
 | --- | --- |
 | `main.rs` | CLI arguments, effective command reference, and `--inspect` |
+| `agent_main.rs` | thin `termdraft-agent` CLI for authenticated reads and proposals |
+| `agent_bridge.rs` | private Unix session, bounded line-framed protocol, authentication, and request channel |
 | `app.rs` | modes, tabs, focus, overlays, events, polling, search worker, transitions, sessions, recovery UI |
 | `ui.rs` | responsive Ratatui layout, workbench regions, popup rendering, inline status |
 | `theme.rs` | six built-in palettes and final-frame semantic color mapping |
@@ -164,6 +169,27 @@ concerns and preserve the previous interface.
 
 The repeatable workloads, thresholds, current measurements, and normal-interface PTY journey are
 documented in [responsiveness.md](responsiveness.md).
+
+## Active-draft agent proposals
+
+Agent sharing is inactive by default and can be opened only from the command palette for the
+current editable, conflict-free document. `AgentSession` creates a mode-0700 temporary directory, a
+mode-0600 Unix socket, and a random 256-bit token. The listener accepts only protocol-versioned,
+size-bounded JSON requests carrying that token. It forwards authenticated reads and proposals to
+the event loop, which checks that the shared path is still the active document.
+
+Read returns the authoritative live source, including unsaved text, plus its generation-and-digest
+revision. A proposal supplies that exact revision and either a complete replacement or
+non-overlapping UTF-8 byte ranges. The application rejects stale, protected, inactive, invalid, and
+oversized proposals before creating a review. Accept rechecks document identity and revision, then
+uses the same whole-source transaction as Local History restore so Undo/Redo stays grouped. It also
+publishes recovery immediately and captures before/after Local History checkpoints when that
+workspace has opted in. The saved baseline and disk remain unchanged.
+
+Only one document can be shared at a time. Switching tabs makes requests unavailable without
+silently changing the shared identity. Explicit revocation, close, Save As, rename/move, or shutdown
+drops the session, removes the endpoint, and clears pending review. See
+[agent-editing.md](agent-editing.md) for the user-facing flow.
 
 ## Search and navigation
 
@@ -300,7 +326,7 @@ sections/fields, invalid editor values, zero or unrepresentable retention ages, 
 empty/malformed keys, reserved preview controls, duplicate tokens, and cross-action collisions.
 
 The generated `config.toml` template documents all 53 binding IDs. Rust applies every global,
-editor, preview, and COMMAND override; effective mappings drive runtime dispatch, the 35-action
+editor, preview, and COMMAND override; effective mappings drive runtime dispatch, the 36-action
 palette, `?`, and `--commands`. `R` validates and applies editor, view, retention, and binding changes
 as one replacement; a failed reload leaves the previous configuration untouched. Startup mode
 remains startup-only.
@@ -311,8 +337,9 @@ themes. `t` cycles them and atomically stores the selected built-in theme in `th
 `config.toml`, so the next launch restores it; `--safe-mode` remains behaviorally redundant.
 
 The command palette preserves Python's 32 actions and adds native Change theme, Create checkpoint,
-and Open Local History actions, rendered as a searchable grouped two-column grid with descriptions
-and a compact fallback for narrow terminals. The two history actions are intentionally menu-only.
+Open Local History, and Agent sharing actions, rendered as a searchable grouped two-column grid with
+descriptions and a compact fallback for narrow terminals. The history and agent actions are
+intentionally menu-only.
 Rust's `?` screen is a scrollable 29-row action summary; `--commands` is the fuller action reference.
 Neither substitutes for the underlying editor-key inventory in
 [RUST_PORT.md](../RUST_PORT.md).
@@ -335,6 +362,7 @@ and machine-level termination remain outside any process's cooperative cleanup b
 The Rust suite covers bindings/config generation and reload, encoding and exact mixed-source
 behavior, stable conflict rejection, workspace mutations, search/replace, inline fidelity, main
 mouse regions, sessions, recovery core/manager, Local History storage and restore transactions,
+private agent transport and proposal transactions,
 semantic diagnostics, UI rendering, and dirty transitions. The standard local gates are:
 
 ```bash
@@ -344,6 +372,6 @@ cargo test --locked --all-targets
 cargo test --locked --release
 ```
 
-At this checkpoint, 250 Rust library tests and 5 Rust binary tests pass. The Python reference suite
+At this checkpoint, 259 Rust library tests and 7 Rust binary tests pass. The Python reference suite
 passes 681 tests with 2 expected platform skips. The exhaustive interface and gap inventory, plus
 the explicitly historical benchmark, live in [RUST_PORT.md](../RUST_PORT.md).

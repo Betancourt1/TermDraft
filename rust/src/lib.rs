@@ -1,5 +1,6 @@
 //! Rust implementation of `TermDraft`'s portable core.
 
+pub mod agent_bridge;
 pub mod app;
 pub mod bindings;
 pub mod checkpoint;

@@ -41,14 +41,16 @@ jobs:
           manifest = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))
           package = manifest["package"]
           binaries = [target["name"] for target in manifest.get("bin", [])]
-          if package["name"] != "termdraft" or binaries != ["termdraft"]:
-              raise SystemExit("Cargo package and executable must both be named 'termdraft'")
+          if package["name"] != "termdraft" or binaries != ["termdraft", "termdraft-agent"]:
+              raise SystemExit(
+                  "Cargo package must be 'termdraft' with termdraft and termdraft-agent binaries"
+              )
           if package["version"] != expected:
               raise SystemExit(
                   f"Tag {tag!r} expects Cargo version {expected!r}, got {package['version']!r}"
               )
 
-          print(f"Validated {tag}: package and executable are termdraft {expected}")
+          print(f"Validated {tag}: TermDraft editor and agent client are {expected}")
           PY
       - name: Run quality gates
         run: |
@@ -93,6 +95,9 @@ jobs:
           "$binary" --help
           "$binary" --commands
           "$binary" --inspect .
+          agent="target/${{ matrix.target }}/release/termdraft-agent"
+          "$agent" --version | grep -F "termdraft-agent $version"
+          "$agent" --help
       - name: Package executable
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -101,6 +106,7 @@ jobs:
           archive="termdraft-${version}-${{ matrix.target }}"
           mkdir -p "dist/$archive"
           cp "target/${{ matrix.target }}/release/termdraft" "dist/$archive/"
+          cp "target/${{ matrix.target }}/release/termdraft-agent" "dist/$archive/"
           cp README.md LICENSE "dist/$archive/"
           tar -C dist -czf "dist/$archive.tar.gz" "$archive"
       - name: Upload release archive
