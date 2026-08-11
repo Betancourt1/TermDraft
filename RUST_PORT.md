@@ -198,7 +198,7 @@ and fuzzy-filters its complete 36-action set.
 | Retention cleanup | Exact listed inventory, configured age, cancel-default confirmation | Exact listed inventory, configured age, only `d` deletes, per-record errors | Parity |
 | Local History | Not available | Responsive checkpoint/diff overlay with opt-in, manual capture, restore, and disable controls | Rust-only; wide panes stack when narrow |
 | Local History clear | Not available | Separate document/workspace confirmations over exact checkpoint IDs | Rust-only; Enter/Esc cancel and destructive pointer spans are explicit |
-| Agent sharing | Not available | Explicit document, private socket/token, client commands, and revocation action | Rust-only; exact unsaved source is disclosed only after this visible opt-in |
+| Agent sharing | Not available | Explicit document, private same-user session discovery, client commands, and revocation action | Rust-only; exact unsaved source is disclosed only after this visible opt-in |
 | Agent proposal review | Not available | Bounded source diff with current/stale state plus Accept, Reject, and defer | Rust-only; acceptance is revision-checked, undoable, recoverable, and never auto-saves |
 | Semantic inspector | Read-only segments and source jump | Read-only segments and source jump | Parity |
 | Experimental semantic reader | Render headings/paragraphs; exact source fallback | Same block policy in a scrollable overlay | Parity |
@@ -391,7 +391,7 @@ configurable `h`/`j`/`k`/`l`, `0`/`$`, and `g`/`G` commands provide its Yazi/Vim
 | `--commands` | Effective TermDraft command, Files, global, editor-action, and preview-action reference | Same section structure and effective mappings, plus explicit menu-only Local History and Agent sharing actions |
 | `--version` / `--help` | Python package identity/help | Rust package identity/help |
 | `--inspect TARGET` | Not available | Rust-only validation/index count without opening the TUI |
-| `termdraft-agent` | Not available | Rust-only authenticated `read`, `propose`, and `propose-ranges` client for an explicitly shared draft |
+| `termdraft-agent` | Not available | Rust-only authenticated `read`, `propose`, and `propose-ranges` client with automatic discovery for an explicitly shared draft |
 | `termdraft-benchmark` | Installed Python-only CLI: `--semantic-kib`, `--tab-kib`, `--tabs`, `--watch-kib`, `--iterations`, `--warmup`, `--help` | Not available | Developer measurement surface, not an editor command |
 
 The three utility flags `--init-config`, `--config-path`, and `--commands` are mutually exclusive in
@@ -400,7 +400,7 @@ feature.
 
 ## Verification
 
-Current code state: the primary Rust implementation at 0.9.0.
+Current code state: the primary Rust implementation at 0.9.1.
 
 ```bash
 cargo fmt --all -- --check

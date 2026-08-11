@@ -638,7 +638,7 @@ pub(crate) fn overlay_area(frame_area: Rect, overlay: &Overlay) -> Rect {
         Overlay::Recovery { .. } | Overlay::MixedLineEndings { .. } => popup(frame_area, 70, 9),
         Overlay::RecoveryManager { .. } => popup(frame_area, 88, 34),
         Overlay::LocalHistory { .. } | Overlay::AgentProposal { .. } => popup(frame_area, 96, 34),
-        Overlay::AgentSharing { .. } => popup(frame_area, 96, 18),
+        Overlay::AgentSharing { .. } => popup(frame_area, 88, 15),
         Overlay::RecoveryDeleteConfirm { .. } => popup(frame_area, 74, 9),
         Overlay::RecoveryCleanupConfirm { .. } => popup(frame_area, 82, 30),
         Overlay::HistoryClearConfirm { .. } => popup(frame_area, 78, 9),
@@ -950,11 +950,7 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay, frame_area: Rec
             *diff_truncated,
             status,
         ),
-        Overlay::AgentSharing {
-            path,
-            socket_path,
-            token,
-        } => draw_agent_sharing(frame, app, area, block, path, socket_path, token),
+        Overlay::AgentSharing { path } => draw_agent_sharing(frame, app, area, block, path),
         Overlay::AgentProposal { proposal, scroll } => {
             draw_agent_proposal(frame, app, area, block, proposal, *scroll);
         }
@@ -1144,8 +1140,6 @@ fn draw_agent_sharing(
     area: Rect,
     block: Block<'_>,
     path: &std::path::Path,
-    socket_path: &std::path::Path,
-    token: &str,
 ) {
     let inner = block.inner(area);
     frame.render_widget(block.title(" Agent sharing "), area);
@@ -1153,7 +1147,7 @@ fn draw_agent_sharing(
         Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
     let relative = app.workspace.relative(path);
     let text = Text::from(vec![
-        Line::from("This active draft is explicitly shared with one local token holder.")
+        Line::from("This active draft is explicitly shared with local agents for your user.")
             .style(Style::new().fg(TEXT)),
         Line::from("The endpoint exposes the exact live buffer, including unsaved text.")
             .style(Style::new().fg(MUTED)),
@@ -1162,24 +1156,16 @@ fn draw_agent_sharing(
             Span::styled("Document  ", Style::new().fg(MUTED).bold()),
             Span::styled(relative.display().to_string(), Style::new().fg(TEXT)),
         ]),
-        Line::from(vec![
-            Span::styled("Socket    ", Style::new().fg(MUTED).bold()),
-            Span::styled(socket_path.display().to_string(), Style::new().fg(TEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled("Token     ", Style::new().fg(MUTED).bold()),
-            Span::styled(token.to_owned(), Style::new().fg(BRIGHT)),
-        ]),
         Line::from(""),
-        Line::from("termdraft-agent read --socket <socket> --token <token>")
+        Line::from("termdraft-agent read").style(Style::new().fg(TEXT)),
+        Line::from("termdraft-agent propose --revision <revision> SOURCE")
             .style(Style::new().fg(TEXT)),
-        Line::from(
-            "termdraft-agent propose --socket <socket> --token <token> --revision <revision> SOURCE",
-        )
-        .style(Style::new().fg(TEXT)),
+        Line::from("No socket path or token needs to be copied.").style(Style::new().fg(MUTED)),
         Line::from(""),
-        Line::from("Proposals require review and acceptance; TermDraft never saves them automatically.")
-            .style(Style::new().fg(MUTED)),
+        Line::from(
+            "Proposals require review and acceptance; TermDraft never saves them automatically.",
+        )
+        .style(Style::new().fg(MUTED)),
     ]);
     frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), content);
     frame.render_widget(
@@ -3414,11 +3400,7 @@ mod tests {
         let workspace = Workspace::from_target(&path).unwrap();
         let mut app = App::new(workspace).unwrap();
         let path = app.active_tab().unwrap().document.path.clone();
-        app.overlay = Some(Overlay::AgentSharing {
-            path: path.clone(),
-            socket_path: "/tmp/termdraft-agent/session.sock".into(),
-            token: "a".repeat(64),
-        });
+        app.overlay = Some(Overlay::AgentSharing { path: path.clone() });
         let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -3426,6 +3408,8 @@ mod tests {
         assert!(sharing.contains("Agent sharing"));
         assert!(sharing.contains("exact live buffer, including unsaved text"));
         assert!(sharing.contains("termdraft-agent read"));
+        assert!(sharing.contains("No socket path or token needs to be copied"));
+        assert!(!sharing.contains("--token"));
         assert!(sharing.contains("never saves them automatically"));
         assert!(sharing.contains("Revoke now"));
 

@@ -9,6 +9,21 @@ supported releases.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-08-10
+
+### Changed
+
+- Let `termdraft-agent` discover the one explicitly shared local session, so normal read and
+  proposal commands no longer require users to copy a socket path or token.
+- Replaced connection secrets in the Agent sharing panel with credential-free command examples.
+
+### Security
+
+- Store automatic connection details only inside the existing mode-0700 temporary session
+  directory in a mode-0600 descriptor, and remove them when sharing is revoked.
+- Refuse automatic discovery when more than one live Agent sharing session exists instead of
+  guessing which draft the agent should access.
+
 ## [0.9.0] - 2026-08-09
 
 ### Added
@@ -257,7 +272,8 @@ supported releases.
 - Established the local-first terminal writing loop with a file explorer, Markdown source editor,
   rendered preview, protected saves, and crash-recovery journals.
 
-[Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.9.1
 [0.9.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.9.0
 [0.8.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.8.0
 [0.7.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.7.0

@@ -48,8 +48,8 @@ filesystem operation can still delay a frame. Python performs most I/O through T
 | Module | Responsibility |
 | --- | --- |
 | `main.rs` | CLI arguments, effective command reference, and `--inspect` |
-| `agent_main.rs` | thin `termdraft-agent` CLI for authenticated reads and proposals |
-| `agent_bridge.rs` | private Unix session, bounded line-framed protocol, authentication, and request channel |
+| `agent_main.rs` | thin `termdraft-agent` CLI with automatic local-session discovery |
+| `agent_bridge.rs` | private Unix session, connection descriptor, authentication, and bounded request channel |
 | `app.rs` | modes, tabs, focus, overlays, events, polling, search worker, transitions, sessions, recovery UI |
 | `ui.rs` | responsive Ratatui layout, workbench regions, popup rendering, inline status |
 | `theme.rs` | six built-in palettes and final-frame semantic color mapping |
@@ -174,9 +174,11 @@ documented in [responsiveness.md](responsiveness.md).
 
 Agent sharing is inactive by default and can be opened only from the command palette for the
 current editable, conflict-free document. `AgentSession` creates a mode-0700 temporary directory, a
-mode-0600 Unix socket, and a random 256-bit token. The listener accepts only protocol-versioned,
-size-bounded JSON requests carrying that token. It forwards authenticated reads and proposals to
-the event loop, which checks that the shared path is still the active document.
+mode-0600 Unix socket, a mode-0600 connection descriptor, and a random 256-bit token. The client
+discovers exactly one live private descriptor, while the listener accepts only protocol-versioned,
+size-bounded JSON requests carrying its internal token. Multiple live sessions produce an ambiguity
+error instead of an inferred document choice. Authenticated reads and proposals reach the event
+loop only after it confirms that the shared path is still the active document.
 
 Read returns the authoritative live source, including unsaved text, plus its generation-and-digest
 revision. A proposal supplies that exact revision and either a complete replacement or

@@ -380,8 +380,6 @@ pub enum Overlay {
     },
     AgentSharing {
         path: PathBuf,
-        socket_path: PathBuf,
-        token: String,
     },
     AgentProposal {
         proposal: AgentProposal,
@@ -2561,8 +2559,6 @@ impl App {
         if let Some(session) = &self.agent_session {
             self.overlay = Some(Overlay::AgentSharing {
                 path: session.shared_path().to_path_buf(),
-                socket_path: session.socket_path().to_path_buf(),
-                token: session.token().to_owned(),
             });
             return;
         }
@@ -2584,18 +2580,12 @@ impl App {
         let path = tab.document.path.clone();
         match AgentSession::start(path.clone()) {
             Ok(session) => {
-                let socket_path = session.socket_path().to_path_buf();
-                let token = session.token().to_owned();
                 self.agent_session = Some(session);
                 self.status_message = Some(
-                    "AGENT SHARED · exact active unsaved source is available to the token holder"
+                    "AGENT SHARED · exact active unsaved source is available to local agents"
                         .to_owned(),
                 );
-                self.overlay = Some(Overlay::AgentSharing {
-                    path,
-                    socket_path,
-                    token,
-                });
+                self.overlay = Some(Overlay::AgentSharing { path });
             }
             Err(error) => {
                 self.status_message = Some(format!("Agent sharing unavailable · {error}"));

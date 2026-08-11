@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 use termdraft::agent_bridge::{
-    AgentAction, MAX_AGENT_SOURCE_BYTES, ProposalChange, RangeEdit, request,
+    AgentAction, AgentConnection, MAX_AGENT_SOURCE_BYTES, ProposalChange, RangeEdit,
+    discover_connection, request,
 };
 
 #[derive(Debug, Parser)]
@@ -54,12 +55,25 @@ enum AgentCommand {
 
 #[derive(Clone, Debug, Args)]
 struct Connection {
-    /// Socket path displayed by `TermDraft`'s Agent sharing overlay.
-    #[arg(long)]
-    socket: PathBuf,
-    /// Revocable session token displayed by `TermDraft`.
-    #[arg(long)]
-    token: String,
+    /// Override automatic discovery with a specific session socket.
+    #[arg(long, requires = "token")]
+    socket: Option<PathBuf>,
+    /// Token for an explicitly selected session socket.
+    #[arg(long, requires = "socket")]
+    token: Option<String>,
+}
+
+impl Connection {
+    fn resolve(&self) -> anyhow::Result<AgentConnection> {
+        match (&self.socket, &self.token) {
+            (Some(socket_path), Some(token)) => Ok(AgentConnection {
+                socket_path: socket_path.clone(),
+                token: token.clone(),
+            }),
+            (None, None) => Ok(discover_connection()?),
+            _ => unreachable!("clap requires socket and token together"),
+        }
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -102,7 +116,8 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn send(connection: &Connection, action: AgentAction) -> anyhow::Result<()> {
-    let response = request(&connection.socket, &connection.token, action)?;
+    let connection = connection.resolve()?;
+    let response = request(&connection.socket_path, &connection.token, action)?;
     serde_json::to_writer_pretty(io::stdout().lock(), &response)?;
     println!();
     if response.is_error() {
@@ -132,12 +147,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn client_cli_requires_connection_details() {
+    fn client_cli_uses_discovery_by_default_and_keeps_explicit_overrides_paired() {
         use clap::CommandFactory;
 
         let command = Arguments::command();
         assert_eq!(command.get_name(), "termdraft-agent");
-        assert!(Arguments::try_parse_from(["termdraft-agent", "read"]).is_err());
+        assert!(Arguments::try_parse_from(["termdraft-agent", "read"]).is_ok());
+        assert!(
+            Arguments::try_parse_from(["termdraft-agent", "read", "--socket", "/tmp/session.sock"])
+                .is_err()
+        );
+        assert!(
+            Arguments::try_parse_from([
+                "termdraft-agent",
+                "read",
+                "--socket",
+                "/tmp/session.sock",
+                "--token",
+                "secret"
+            ])
+            .is_ok()
+        );
     }
 
     #[test]

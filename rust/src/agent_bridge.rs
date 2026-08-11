@@ -1,9 +1,9 @@
 //! Explicit, same-user local bridge for active-draft agent proposals.
 
 use std::fmt::Write as _;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,7 +19,12 @@ pub const PROTOCOL_VERSION: u8 = 1;
 pub const MAX_AGENT_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_REQUEST_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_CONNECTION_BYTES: u64 = 4 * 1024;
 const APPLICATION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+const SESSION_ROOT: &str = "/tmp";
+const SESSION_PREFIX: &str = "termdraft-agent-";
+const CONNECTION_FILE: &str = "connection.json";
+const SOCKET_FILE: &str = "session.sock";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -86,6 +91,20 @@ impl AgentResponse {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentConnection {
+    pub socket_path: PathBuf,
+    pub token: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredConnection {
+    version: u8,
+    socket_path: PathBuf,
+    token: String,
+}
+
 pub struct AgentCall {
     pub action: AgentAction,
     response: Sender<AgentResponse>,
@@ -115,16 +134,31 @@ impl AgentSession {
     /// Returns an error when the private directory, socket, permissions, or random token cannot be
     /// created.
     pub fn start(shared_path: PathBuf) -> io::Result<Self> {
-        let directory = Builder::new()
-            .prefix("termdraft-agent-")
-            .tempdir_in("/tmp")?;
+        Self::start_in(Path::new(SESSION_ROOT), shared_path)
+    }
+
+    fn start_in(root: &Path, shared_path: PathBuf) -> io::Result<Self> {
+        let directory = Builder::new().prefix(SESSION_PREFIX).tempdir_in(root)?;
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))?;
-        let socket_path = directory.path().join("session.sock");
+        let socket_path = directory.path().join(SOCKET_FILE);
         let listener = UnixListener::bind(&socket_path)?;
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
         listener.set_nonblocking(true)?;
 
         let token = random_token()?;
+        write_connection(
+            directory.path(),
+            &AgentConnection {
+                socket_path: socket_path.clone(),
+                token: token.clone(),
+            },
+        )
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("cannot publish private agent connection: {error}"),
+            )
+        })?;
         let worker_token = token.clone();
         let shutdown = Arc::new(AtomicBool::new(false));
         let worker_shutdown = Arc::clone(&shutdown);
@@ -163,6 +197,114 @@ impl AgentSession {
     pub fn drain_calls(&self) -> Vec<AgentCall> {
         self.requests.try_iter().collect()
     }
+}
+
+/// Discover the one live Agent sharing session opened by the current local user.
+///
+/// # Errors
+///
+/// Returns an error when no live session exists, multiple sessions are active, or the temporary
+/// session root cannot be read.
+pub fn discover_connection() -> io::Result<AgentConnection> {
+    discover_connection_in(Path::new(SESSION_ROOT))
+}
+
+fn discover_connection_in(root: &Path) -> io::Result<AgentConnection> {
+    let mut connections = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(SESSION_PREFIX)
+        {
+            continue;
+        }
+        let Some(connection) = read_private_connection(&entry.path()) else {
+            continue;
+        };
+        if UnixStream::connect(&connection.socket_path).is_ok() {
+            connections.push(connection);
+        }
+    }
+    match connections.len() {
+        0 => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no active TermDraft Agent sharing session; open Agent sharing in TermDraft",
+        )),
+        1 => Ok(connections.pop().unwrap()),
+        count => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "found {count} active TermDraft Agent sharing sessions; revoke the sessions you do not want to use"
+            ),
+        )),
+    }
+}
+
+fn write_connection(directory: &Path, connection: &AgentConnection) -> io::Result<()> {
+    let path = directory.join(CONNECTION_FILE);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)?;
+    serde_json::to_writer(
+        &mut file,
+        &StoredConnection {
+            version: PROTOCOL_VERSION,
+            socket_path: connection.socket_path.clone(),
+            token: connection.token.clone(),
+        },
+    )
+    .map_err(io::Error::other)?;
+    file.write_all(b"\n")?;
+    file.flush()
+}
+
+fn read_private_connection(directory: &Path) -> Option<AgentConnection> {
+    let directory_metadata = fs::symlink_metadata(directory).ok()?;
+    if !directory_metadata.is_dir() || directory_metadata.permissions().mode() & 0o777 != 0o700 {
+        return None;
+    }
+
+    let path = directory.join(CONNECTION_FILE);
+    let metadata = fs::symlink_metadata(&path).ok()?;
+    if !metadata.is_file() || metadata.permissions().mode() & 0o777 != 0o600 {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    File::open(&path)
+        .ok()?
+        .take(MAX_CONNECTION_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if u64::try_from(bytes.len()).ok()? > MAX_CONNECTION_BYTES {
+        return None;
+    }
+    let stored: StoredConnection = serde_json::from_slice(&bytes).ok()?;
+    if stored.version != PROTOCOL_VERSION
+        || stored.socket_path != directory.join(SOCKET_FILE)
+        || stored.token.len() != 64
+        || !stored
+            .token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
+    let socket_metadata = fs::symlink_metadata(&stored.socket_path).ok()?;
+    if !socket_metadata.file_type().is_socket()
+        || socket_metadata.permissions().mode() & 0o777 != 0o600
+    {
+        return None;
+    }
+    Some(AgentConnection {
+        socket_path: stored.socket_path,
+        token: stored.token,
+    })
 }
 
 impl Drop for AgentSession {
@@ -360,6 +502,97 @@ mod tests {
 
         assert!(matches!(response, AgentResponse::Error { .. }));
         assert!(session.drain_calls().is_empty());
+    }
+
+    #[test]
+    fn private_connection_is_discovered_without_copying_credentials() {
+        let root = tempfile::tempdir().unwrap();
+        let session =
+            AgentSession::start_in(root.path(), PathBuf::from("/workspace/draft.md")).unwrap();
+
+        let connection = discover_connection_in(root.path()).unwrap();
+        assert_eq!(connection.socket_path, session.socket_path());
+        assert_eq!(connection.token, session.token());
+
+        let (result_tx, result_rx) = mpsc::channel();
+        let client = thread::spawn(move || {
+            let _ = result_tx.send(request(
+                &connection.socket_path,
+                &connection.token,
+                AgentAction::Read,
+            ));
+        });
+        let deadline = Instant::now() + APPLICATION_RESPONSE_TIMEOUT;
+        let call = loop {
+            if let Some(call) = session.drain_calls().into_iter().next() {
+                break call;
+            }
+            assert!(Instant::now() < deadline, "agent request was not delivered");
+            thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(call.action, AgentAction::Read);
+        call.respond(AgentResponse::Document {
+            path: "draft.md".to_owned(),
+            source: "unsaved".to_owned(),
+            revision: "1:abc".to_owned(),
+            dirty: true,
+        });
+        assert!(matches!(
+            result_rx.recv().unwrap().unwrap(),
+            AgentResponse::Document { dirty: true, .. }
+        ));
+        client.join().unwrap();
+
+        assert_eq!(
+            fs::metadata(
+                session
+                    .socket_path()
+                    .parent()
+                    .unwrap()
+                    .join(CONNECTION_FILE)
+            )
+            .unwrap()
+            .permissions()
+            .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn discovery_refuses_to_guess_between_live_sessions() {
+        let root = tempfile::tempdir().unwrap();
+        let _first =
+            AgentSession::start_in(root.path(), PathBuf::from("/workspace/first.md")).unwrap();
+        let _second =
+            AgentSession::start_in(root.path(), PathBuf::from("/workspace/second.md")).unwrap();
+
+        let error = discover_connection_in(root.path()).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("2 active"));
+    }
+
+    #[test]
+    fn discovery_ignores_stale_and_non_private_descriptors() {
+        let root = tempfile::tempdir().unwrap();
+        let stale = root.path().join(format!("{SESSION_PREFIX}stale"));
+        fs::create_dir(&stale).unwrap();
+        fs::set_permissions(&stale, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(stale.join(CONNECTION_FILE), b"{}\n").unwrap();
+        fs::set_permissions(
+            stale.join(CONNECTION_FILE),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+
+        let exposed = root.path().join(format!("{SESSION_PREFIX}exposed"));
+        fs::create_dir(&exposed).unwrap();
+        fs::set_permissions(&exposed, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let error = discover_connection_in(root.path()).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 
     #[test]
