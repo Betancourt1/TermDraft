@@ -9,6 +9,17 @@ supported releases.
 
 ## [Unreleased]
 
+### Added
+
+- Added `termdraft-agent workspace` to read every supported document in the explicitly shared
+  workspace, using exact unsaved buffers for open tabs and stable disk reads for unopened files.
+
+### Changed
+
+- Expanded Agent sharing from one fixed document to the current workspace while keeping proposals
+  revision-bound to the active document and preserving explicit review, Recovery, Undo, and no-save
+  behavior.
+
 ### Fixed
 
 - Report when a sandbox denies access to an existing Agent sharing socket instead of incorrectly

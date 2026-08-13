@@ -21,6 +21,7 @@ const MAX_REQUEST_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CONNECTION_BYTES: u64 = 4 * 1024;
 const APPLICATION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+const WORKSPACE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 const SESSION_ROOT: &str = "/tmp";
 const SESSION_PREFIX: &str = "termdraft-agent-";
 const CONNECTION_FILE: &str = "connection.json";
@@ -45,11 +46,23 @@ pub enum ProposalChange {
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentAction {
     Read,
+    ReadWorkspace,
     Propose {
         expected_revision: String,
         change: ProposalChange,
         origin: Option<String>,
     },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentWorkspaceDocument {
+    pub path: String,
+    pub source: String,
+    pub revision: String,
+    pub dirty: bool,
+    pub open: bool,
+    pub conflict: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -68,6 +81,10 @@ pub enum AgentResponse {
         source: String,
         revision: String,
         dirty: bool,
+    },
+    Workspace {
+        documents: Vec<AgentWorkspaceDocument>,
+        warnings: Vec<String>,
     },
     PendingReview {
         proposal_id: String,
@@ -117,7 +134,7 @@ impl AgentCall {
 }
 
 pub struct AgentSession {
-    shared_path: PathBuf,
+    shared_root: PathBuf,
     socket_path: PathBuf,
     token: String,
     requests: Receiver<AgentCall>,
@@ -127,17 +144,17 @@ pub struct AgentSession {
 }
 
 impl AgentSession {
-    /// Open a private, short-lived Unix socket for one explicitly shared document.
+    /// Open a private, short-lived Unix socket for one explicitly shared workspace.
     ///
     /// # Errors
     ///
     /// Returns an error when the private directory, socket, permissions, or random token cannot be
     /// created.
-    pub fn start(shared_path: PathBuf) -> io::Result<Self> {
-        Self::start_in(Path::new(SESSION_ROOT), shared_path)
+    pub fn start(shared_root: PathBuf) -> io::Result<Self> {
+        Self::start_in(Path::new(SESSION_ROOT), shared_root)
     }
 
-    fn start_in(root: &Path, shared_path: PathBuf) -> io::Result<Self> {
+    fn start_in(root: &Path, shared_root: PathBuf) -> io::Result<Self> {
         let directory = Builder::new().prefix(SESSION_PREFIX).tempdir_in(root)?;
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))?;
         let socket_path = directory.path().join(SOCKET_FILE);
@@ -168,7 +185,7 @@ impl AgentSession {
         });
 
         Ok(Self {
-            shared_path,
+            shared_root,
             socket_path,
             token,
             requests,
@@ -179,8 +196,8 @@ impl AgentSession {
     }
 
     #[must_use]
-    pub fn shared_path(&self) -> &Path {
-        &self.shared_path
+    pub fn shared_root(&self) -> &Path {
+        &self.shared_root
     }
 
     #[must_use]
@@ -345,7 +362,12 @@ impl Drop for AgentSession {
 /// transferred, or the response is not valid protocol JSON.
 pub fn request(socket_path: &Path, token: &str, action: AgentAction) -> io::Result<AgentResponse> {
     let mut stream = UnixStream::connect(socket_path)?;
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    let read_timeout = if matches!(action, AgentAction::ReadWorkspace) {
+        WORKSPACE_RESPONSE_TIMEOUT + Duration::from_secs(5)
+    } else {
+        Duration::from_secs(10)
+    };
+    stream.set_read_timeout(Some(read_timeout))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let request = ClientRequest {
         version: PROTOCOL_VERSION,
@@ -387,13 +409,17 @@ fn serve(
 fn handle_connection(mut stream: UnixStream, token: &str, request_tx: &Sender<AgentCall>) {
     if let Err(error) = stream.set_nonblocking(false) {
         let response = AgentResponse::error(format!("cannot configure agent connection: {error}"));
-        let _ = serde_json::to_writer(&mut stream, &response);
-        let _ = stream.write_all(b"\n");
+        let _ = write_response(&mut stream, &response);
         return;
     }
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(WORKSPACE_RESPONSE_TIMEOUT));
     let response = read_request(&mut stream, token).and_then(|action| {
+        let response_timeout = if matches!(action, AgentAction::ReadWorkspace) {
+            WORKSPACE_RESPONSE_TIMEOUT
+        } else {
+            APPLICATION_RESPONSE_TIMEOUT
+        };
         let (response_tx, response_rx) = mpsc::channel();
         request_tx
             .send(AgentCall {
@@ -402,13 +428,29 @@ fn handle_connection(mut stream: UnixStream, token: &str, request_tx: &Sender<Ag
             })
             .map_err(|_| "TermDraft closed the sharing session".to_owned())?;
         response_rx
-            .recv_timeout(APPLICATION_RESPONSE_TIMEOUT)
+            .recv_timeout(response_timeout)
             .map_err(|_| "TermDraft did not answer the request in time".to_owned())
     });
     let response = response.unwrap_or_else(AgentResponse::error);
-    let _ = serde_json::to_writer(&mut stream, &response);
-    let _ = stream.write_all(b"\n");
-    let _ = stream.flush();
+    let _ = write_response(&mut stream, &response);
+}
+
+fn write_response(stream: &mut UnixStream, response: &AgentResponse) -> io::Result<()> {
+    let bytes = response_bytes(response, MAX_RESPONSE_BYTES)?;
+    stream.write_all(&bytes)?;
+    stream.flush()
+}
+
+fn response_bytes(response: &AgentResponse, limit: u64) -> io::Result<Vec<u8>> {
+    let mut bytes = serde_json::to_vec(response).map_err(io::Error::other)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) >= limit {
+        bytes = serde_json::to_vec(&AgentResponse::error(
+            "agent workspace response exceeds the 64 MiB limit",
+        ))
+        .map_err(io::Error::other)?;
+    }
+    bytes.push(b'\n');
+    Ok(bytes)
 }
 
 fn read_request(stream: &mut UnixStream, token: &str) -> Result<AgentAction, String> {
@@ -609,6 +651,29 @@ mod tests {
 
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert!(error.to_string().contains("allow local socket access"));
+    }
+
+    #[test]
+    fn oversized_workspace_response_becomes_a_clear_protocol_error() {
+        let response = AgentResponse::Workspace {
+            documents: vec![AgentWorkspaceDocument {
+                path: "large.md".to_owned(),
+                source: "x".repeat(512),
+                revision: "0:abc".to_owned(),
+                dirty: false,
+                open: false,
+                conflict: false,
+            }],
+            warnings: Vec::new(),
+        };
+
+        let bytes = response_bytes(&response, 128).unwrap();
+        let bounded: AgentResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(matches!(
+            bounded,
+            AgentResponse::Error { ref message } if message.contains("64 MiB")
+        ));
     }
 
     #[test]

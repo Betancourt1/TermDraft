@@ -12,7 +12,7 @@ use termdraft::agent_bridge::{
 #[command(
     name = "termdraft-agent",
     version,
-    about = "Read one explicitly shared TermDraft buffer and submit reviewable proposals"
+    about = "Read an explicitly shared TermDraft workspace and submit reviewable proposals"
 )]
 struct Arguments {
     #[command(subcommand)]
@@ -21,6 +21,8 @@ struct Arguments {
 
 #[derive(Debug, Subcommand)]
 enum AgentCommand {
+    /// Read every supported document in the shared workspace.
+    Workspace(Connection),
     /// Read the exact live unsaved source and its revision.
     Read(Connection),
     /// Propose a complete replacement from a UTF-8 file or standard input.
@@ -78,6 +80,9 @@ impl Connection {
 
 fn main() -> anyhow::Result<()> {
     let action = match Arguments::parse().command {
+        AgentCommand::Workspace(connection) => {
+            return send(&connection, AgentAction::ReadWorkspace);
+        }
         AgentCommand::Read(connection) => return send(&connection, AgentAction::Read),
         AgentCommand::Propose {
             connection,
@@ -152,6 +157,7 @@ mod tests {
 
         let command = Arguments::command();
         assert_eq!(command.get_name(), "termdraft-agent");
+        assert!(Arguments::try_parse_from(["termdraft-agent", "workspace"]).is_ok());
         assert!(Arguments::try_parse_from(["termdraft-agent", "read"]).is_ok());
         assert!(
             Arguments::try_parse_from(["termdraft-agent", "read", "--socket", "/tmp/session.sock"])

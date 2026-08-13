@@ -22,7 +22,7 @@ App state ───────────────────────�
    │                                                        ▲
    ├── keyboard / paste / mouse event ──────────────────────┤
    ├── background fresh-scan workspace-text search ─────────┤
-   ├── private active-draft agent request / proposal ────────┤
+   ├── private workspace agent read / active proposal ───────┤
    ├── 2 s active/inactive-file and workspace poll ─────────┤
    ├── 500 ms recovery flush ────────────────────────────────┤
    ├── SIGTERM / SIGHUP state drain ─────────────────────────┤
@@ -170,28 +170,30 @@ concerns and preserve the previous interface.
 The repeatable workloads, thresholds, current measurements, and normal-interface PTY journey are
 documented in [responsiveness.md](responsiveness.md).
 
-## Active-draft agent proposals
+## Workspace agent reads and active-document proposals
 
 Agent sharing is inactive by default and can be opened only from the command palette for the
-current editable, conflict-free document. `AgentSession` creates a mode-0700 temporary directory, a
-mode-0600 Unix socket, a mode-0600 connection descriptor, and a random 256-bit token. The client
-discovers exactly one live private descriptor, while the listener accepts only protocol-versioned,
-size-bounded JSON requests carrying its internal token. Multiple live sessions produce an ambiguity
-error instead of an inferred document choice. Authenticated reads and proposals reach the event
-loop only after it confirms that the shared path is still the active document.
+current workspace. `AgentSession` creates a mode-0700 temporary directory, a mode-0600 Unix socket,
+a mode-0600 connection descriptor, and a random 256-bit token. The client discovers exactly one
+live private descriptor, while the listener accepts only protocol-versioned, size-bounded JSON
+requests carrying its internal token. Multiple live sessions produce an ambiguity error instead of
+an inferred workspace choice.
 
-Read returns the authoritative live source, including unsaved text, plus its generation-and-digest
-revision. A proposal supplies that exact revision and either a complete replacement or
+Workspace reads reuse `Workspace::scan_report`: supported documents are sorted by relative path,
+ignored directories and symlinks stay excluded, scan/read failures become warnings, open tabs use
+their exact live buffers, and unopened documents use stable disk reads. The serialized response is
+bounded by the bridge's 64 MiB response limit. Active-document reads return the authoritative live
+source plus its generation-and-digest revision.
+
+A proposal supplies the active document's exact revision and either a complete replacement or
 non-overlapping UTF-8 byte ranges. The application rejects stale, protected, inactive, invalid, and
 oversized proposals before creating a review. Accept rechecks document identity and revision, then
 uses the same whole-source transaction as Local History restore so Undo/Redo stays grouped. It also
 publishes recovery immediately and captures before/after Local History checkpoints when that
-workspace has opted in. The saved baseline and disk remain unchanged.
-
-Only one document can be shared at a time. Switching tabs makes requests unavailable without
-silently changing the shared identity. Explicit revocation, close, Save As, rename/move, or shutdown
-drops the session, removes the endpoint, and clears pending review. See
-[agent-editing.md](agent-editing.md) for the user-facing flow.
+workspace has opted in. The saved baseline and disk remain unchanged. Switching or closing tabs
+does not revoke workspace sharing; explicit revocation or shutdown removes the endpoint. A pending
+proposal remains tied to its exact document and is cleared if that target is closed or retargeted.
+See [agent-editing.md](agent-editing.md) for the user-facing flow.
 
 ## Search and navigation
 

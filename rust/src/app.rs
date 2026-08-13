@@ -29,8 +29,8 @@ use tui_textarea::{CursorMove, TextArea};
 use unicode_width::UnicodeWidthStr;
 
 use crate::agent_bridge::{
-    AgentAction, AgentCall, AgentResponse, AgentSession, MAX_AGENT_SOURCE_BYTES, ProposalChange,
-    RangeEdit,
+    AgentAction, AgentCall, AgentResponse, AgentSession, AgentWorkspaceDocument,
+    MAX_AGENT_SOURCE_BYTES, ProposalChange, RangeEdit,
 };
 use crate::bindings::{Action as BindingAction, BindingScope};
 use crate::checkpoint::{
@@ -379,7 +379,7 @@ pub enum Overlay {
         checkpoint_ids: Vec<String>,
     },
     AgentSharing {
-        path: PathBuf,
+        root: PathBuf,
     },
     AgentProposal {
         proposal: AgentProposal,
@@ -2558,34 +2558,18 @@ impl App {
         self.sync_active_document();
         if let Some(session) = &self.agent_session {
             self.overlay = Some(Overlay::AgentSharing {
-                path: session.shared_path().to_path_buf(),
+                root: session.shared_root().to_path_buf(),
             });
             return;
         }
-        let Some(tab) = self.active_tab() else {
-            self.status_message =
-                Some("Open a document before sharing it with an agent".to_owned());
-            return;
-        };
-        if tab.document.conflict || tab.document.recovery_conflict {
-            self.status_message =
-                Some("Agent sharing blocked · resolve the document conflict first".to_owned());
-            return;
-        }
-        if !tab.document.is_editable() {
-            self.status_message =
-                Some("Agent sharing blocked · accept the line-ending target first".to_owned());
-            return;
-        }
-        let path = tab.document.path.clone();
-        match AgentSession::start(path.clone()) {
+        let root = self.workspace.root.clone();
+        match AgentSession::start(root.clone()) {
             Ok(session) => {
                 self.agent_session = Some(session);
                 self.status_message = Some(
-                    "AGENT SHARED · exact active unsaved source is available to local agents"
-                        .to_owned(),
+                    "AGENT SHARED · current workspace is available to local agents".to_owned(),
                 );
-                self.overlay = Some(Overlay::AgentSharing { path });
+                self.overlay = Some(Overlay::AgentSharing { root });
             }
             Err(error) => {
                 self.status_message = Some(format!("Agent sharing unavailable · {error}"));
@@ -2599,24 +2583,22 @@ impl App {
         self.status_message = Some("Agent sharing revoked · local endpoint removed".to_owned());
     }
 
-    fn revoke_agent_for_path(&mut self, path: &Path) {
+    fn clear_agent_proposal_for_path(&mut self, path: &Path) {
         if self
-            .agent_session
+            .pending_agent_proposal
             .as_ref()
-            .is_some_and(|session| session.shared_path() == path)
+            .is_some_and(|proposal| proposal.path == path)
         {
-            self.agent_session = None;
             self.pending_agent_proposal = None;
         }
     }
 
-    fn revoke_agent_within(&mut self, path: &Path) {
+    fn clear_agent_proposal_within(&mut self, path: &Path) {
         if self
-            .agent_session
+            .pending_agent_proposal
             .as_ref()
-            .is_some_and(|session| path_is_within(session.shared_path(), path))
+            .is_some_and(|proposal| path_is_within(&proposal.path, path))
         {
-            self.agent_session = None;
             self.pending_agent_proposal = None;
         }
     }
@@ -2636,25 +2618,32 @@ impl App {
     }
 
     fn handle_agent_call(&mut self, call: AgentCall) {
-        let Some(shared_path) = self
+        let Some(shared_root) = self
             .agent_session
             .as_ref()
-            .map(|session| session.shared_path().to_path_buf())
+            .map(|session| session.shared_root().to_path_buf())
         else {
             call.respond(AgentResponse::error("agent sharing is no longer active"));
             return;
         };
-        self.sync_active_document();
-        let Some(index) = self.active_tab else {
-            call.respond(AgentResponse::error("the shared document is not active"));
-            return;
-        };
-        if self.tabs[index].document.path != shared_path {
+        if shared_root != self.workspace.root {
             call.respond(AgentResponse::error(
-                "the shared document is not the active tab",
+                "the shared workspace is no longer active",
             ));
             return;
         }
+        self.sync_active_document();
+        if matches!(call.action, AgentAction::ReadWorkspace) {
+            call.respond(self.agent_workspace_response());
+            return;
+        }
+        let Some(index) = self.active_tab else {
+            call.respond(AgentResponse::error(
+                "no document is active in the shared workspace",
+            ));
+            return;
+        };
+        let active_path = self.tabs[index].document.path.clone();
 
         match call.action.clone() {
             AgentAction::Read => {
@@ -2677,20 +2666,61 @@ impl App {
             } => {
                 let response = self.receive_agent_proposal(
                     index,
-                    &shared_path,
+                    &active_path,
                     &expected_revision,
                     change,
                     origin.as_deref(),
                 );
                 call.respond(response);
             }
+            AgentAction::ReadWorkspace => unreachable!("workspace reads return before this match"),
+        }
+    }
+
+    fn agent_workspace_response(&self) -> AgentResponse {
+        let scan = self.workspace.scan_report();
+        let mut warnings = scan.warnings;
+        let mut documents = Vec::new();
+        for entry in scan.entries.into_iter().filter(|entry| !entry.is_dir) {
+            if let Some(tab) = self.tabs.iter().find(|tab| tab.document.path == entry.path) {
+                let document = &tab.document;
+                documents.push(AgentWorkspaceDocument {
+                    path: entry.relative.display().to_string(),
+                    source: document.text.clone(),
+                    revision: revision_label(document.source_revision),
+                    dirty: document.is_dirty(),
+                    open: true,
+                    conflict: document.conflict || document.recovery_conflict,
+                });
+                continue;
+            }
+            match load_file(&entry.path) {
+                Ok(loaded) => {
+                    let document = loaded.into_document();
+                    documents.push(AgentWorkspaceDocument {
+                        path: entry.relative.display().to_string(),
+                        source: document.text,
+                        revision: revision_label(document.source_revision),
+                        dirty: false,
+                        open: false,
+                        conflict: false,
+                    });
+                }
+                Err(error) => {
+                    warnings.push(format!("Cannot read {}: {error}", entry.relative.display()));
+                }
+            }
+        }
+        AgentResponse::Workspace {
+            documents,
+            warnings,
         }
     }
 
     fn receive_agent_proposal(
         &mut self,
         index: usize,
-        shared_path: &Path,
+        target_path: &Path,
         expected_revision: &str,
         change: ProposalChange,
         origin: Option<&str>,
@@ -2721,7 +2751,7 @@ impl App {
                 "proposal-{}",
                 NEXT_AGENT_PROPOSAL_ID.fetch_add(1, Ordering::Relaxed)
             ),
-            path: shared_path.to_path_buf(),
+            path: target_path.to_path_buf(),
             expected_revision: document.source_revision,
             origin: sanitized_agent_origin(origin),
             proposed_source,
@@ -2850,14 +2880,8 @@ impl App {
     }
 
     #[must_use]
-    pub fn agent_shared_path(&self) -> Option<&Path> {
-        self.agent_session.as_ref().map(AgentSession::shared_path)
-    }
-
-    #[must_use]
-    pub fn active_document_is_shared(&self) -> bool {
-        self.active_tab()
-            .is_some_and(|tab| self.agent_shared_path() == Some(tab.document.path.as_path()))
+    pub const fn workspace_is_shared(&self) -> bool {
+        self.agent_session.is_some()
     }
 
     fn current_preview_key(&self) -> Option<PreviewKey> {
@@ -3635,7 +3659,7 @@ impl App {
         let closed_path = self.tabs[index].document.path.clone();
         self.cache_active_view();
         self.tabs.remove(index);
-        self.revoke_agent_for_path(&closed_path);
+        self.clear_agent_proposal_for_path(&closed_path);
         self.active_tab = if self.tabs.is_empty() {
             None
         } else {
@@ -4722,7 +4746,7 @@ impl App {
     }
 
     fn retarget_workspace_paths(&mut self, source: &Path, target: &Path) -> Option<String> {
-        self.revoke_agent_within(source);
+        self.clear_agent_proposal_within(source);
         let previous_paths = self
             .tabs
             .iter()
@@ -4902,7 +4926,7 @@ impl App {
             Ok(snapshot) if matches!(action, PathAction::SaveAs | PathAction::SaveConflictAs) => {
                 let previous = self.active_tab().map(|tab| tab.document.path.clone());
                 if let Some(previous) = previous.as_deref() {
-                    self.revoke_agent_for_path(previous);
+                    self.clear_agent_proposal_for_path(previous);
                 }
                 if let Some(tab) = self.active_tab_mut() {
                     tab.document.path.clone_from(&target);
@@ -5441,7 +5465,7 @@ impl App {
                 .to_string_lossy();
             let dirty = if tab.document.is_dirty() { " ●" } else { "" };
             let conflict = if tab.document.conflict { " !" } else { "" };
-            let shared = if self.agent_shared_path() == Some(tab.document.path.as_path()) {
+            let shared = if self.workspace_is_shared() {
                 " ↔"
             } else {
                 ""
@@ -9603,7 +9627,7 @@ command_manage_recovery = "Z"
             first.file_name()
         );
 
-        app.agent_session = Some(AgentSession::start(first.clone()).unwrap());
+        app.agent_session = Some(AgentSession::start(app.workspace.root.clone()).unwrap());
         terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
         let tabs = app.ui_regions.tabs.unwrap();
         let first_label = format!(
@@ -9611,7 +9635,7 @@ command_manage_recovery = "Z"
             first.file_name().unwrap_or_default().to_string_lossy()
         );
         let second_label = format!(
-            " {} ",
+            " {} ↔ ",
             second.file_name().unwrap_or_default().to_string_lossy()
         );
         let second_right_edge = tabs
@@ -11934,7 +11958,7 @@ command_manage_recovery = "Z"
     }
 
     #[test]
-    fn agent_session_reads_the_exact_unsaved_buffer_and_close_revokes_it() {
+    fn agent_session_reads_the_exact_unsaved_buffer_until_explicit_revocation() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("note.md");
         fs::write(&path, "saved\n").unwrap();
@@ -11971,8 +11995,76 @@ command_manage_recovery = "Z"
 
         app.overlay = None;
         app.close_active_discarding();
+        assert!(socket.exists());
+        assert!(app.agent_session.is_some());
+        app.revoke_agent_sharing();
         assert!(!socket.exists());
         assert!(app.agent_session.is_none());
+    }
+
+    #[test]
+    fn agent_workspace_uses_open_buffers_and_unopened_disk_documents() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::create_dir_all(root.join("notes")).unwrap();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join("active.md"), "saved\n").unwrap();
+        fs::write(root.join("notes/context.txt"), "disk context\n").unwrap();
+        fs::write(root.join(".git/hidden.md"), "hidden\n").unwrap();
+        fs::write(root.join("unreadable.md"), [0xff, 0xfe]).unwrap();
+        let workspace = Workspace::from_target(root).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.open_document(&root.join("active.md")).unwrap();
+        app.active_tab_mut().unwrap().editor.insert_str("draft ");
+        app.open_agent_sharing();
+
+        let session = app.agent_session.as_ref().unwrap();
+        let socket = session.socket_path().to_path_buf();
+        let token = session.token().to_owned();
+        let client = thread::spawn(move || {
+            crate::agent_bridge::request(&socket, &token, AgentAction::ReadWorkspace).unwrap()
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if app.poll_agent_requests() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "agent workspace read was not delivered"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        let response = client.join().unwrap();
+        let AgentResponse::Workspace {
+            documents,
+            warnings,
+        } = response
+        else {
+            panic!("expected a workspace response");
+        };
+
+        assert_eq!(documents.len(), 2);
+        assert_eq!(documents[0].path, "active.md");
+        assert_eq!(documents[0].source, "draft saved\n");
+        assert!(documents[0].dirty);
+        assert!(documents[0].open);
+        assert!(!documents[0].conflict);
+        assert_eq!(documents[1].path, "notes/context.txt");
+        assert_eq!(documents[1].source, "disk context\n");
+        assert!(!documents[1].dirty);
+        assert!(!documents[1].open);
+        assert!(!documents[1].conflict);
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("unreadable.md"))
+        );
+        assert!(
+            documents
+                .iter()
+                .all(|document| !document.path.contains(".git"))
+        );
     }
 
     #[test]

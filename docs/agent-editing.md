@@ -1,28 +1,24 @@
 # Agent editing preview
 
-TermDraft 0.9.1 provides an optional local bridge for tools that need the exact active draft instead
-of a possibly older file on disk. Sharing is off by default, scoped to one document, and never
-grants a tool permission to save.
+TermDraft provides an optional local bridge for tools that need the current workspace, including
+exact unsaved text. Sharing is off by default and never grants a tool permission to save.
 
 ## Start and stop sharing
 
 Open the command palette and choose **Agent sharing**. TermDraft displays:
 
-- the shared workspace-relative document;
-- credential-free read and proposal command shapes;
+- the shared workspace root;
+- credential-free workspace, active-document, and proposal command shapes;
 - the explicit **Revoke now** action.
 
-The tab and status bar show `↔` and `AGENT SHARED` while the active document is shared. Press `r` in
-the sharing panel to revoke it. TermDraft also revokes it when the shared document is closed,
-retargeted by Save As, renamed or moved inside TermDraft, or when the application exits.
+Open tabs and the status bar show `↔` and `AGENT SHARED` while the workspace is shared. Press `r` in
+the sharing panel to revoke it. TermDraft also revokes the session when the application exits.
 
 While sharing is active, TermDraft publishes an authenticated connection descriptor inside its
 mode-0700 temporary session directory. The descriptor and socket are mode 0600, are available only
 to local processes running as the same user, and disappear with the session. The token remains an
 internal protocol detail and is not shown or copied through chat.
 
-Only one document can be shared at a time. If another tab becomes active, the session retains its
-original identity but read and proposal requests are refused until that document is active again.
 If multiple TermDraft processes have sharing enabled, automatic discovery refuses to guess; revoke
 the sessions you do not intend to use and retry.
 
@@ -31,7 +27,23 @@ In that case, `termdraft-agent` reports that local socket access was denied inst
 sharing session exists. Allow that specific local connection and retry; do not copy or expose the
 internal token.
 
-## Read the live draft
+## Read the workspace
+
+Run:
+
+```bash
+termdraft-agent workspace
+```
+
+The `workspace` response contains ordered `documents` and `warnings`. Each supported `.md`,
+`.markdown`, or `.txt` document includes its workspace-relative `path`, `source`, `revision`,
+`dirty`, `open`, and `conflict` state. Open documents use their exact TermDraft buffers, including
+unsaved changes. Unopened documents use stable current disk reads. Ignored directories, symbolic
+links, unsupported files, and paths outside the workspace remain unavailable. Scan or source-read
+failures are returned as warnings. Responses exceeding 64 MiB fail without returning a partial
+workspace.
+
+## Read the active document
 
 With the intended sharing panel open, run:
 
@@ -39,9 +51,9 @@ With the intended sharing panel open, run:
 termdraft-agent read
 ```
 
-The JSON response contains `path`, `source`, `revision`, and `dirty`. `source` is the authoritative
-editor buffer, including unsaved changes. `revision` combines a monotonic generation with a SHA-256
-source digest and must be returned with a proposal.
+The `document` response contains `path`, `source`, `revision`, and `dirty`. `source` is the
+authoritative active editor buffer, including unsaved changes. `revision` combines a monotonic
+generation with a SHA-256 source digest and must be returned with a proposal.
 
 ## Submit a complete-source proposal
 
@@ -54,8 +66,10 @@ termdraft-agent propose \
   proposed.md
 ```
 
-Use `-` or omit the final path to read the proposed source from standard input. A valid response
-contains a `proposal_id` and reports `pending_review`; it does not mean the source was applied.
+Use `-` or omit the final path to read the proposed source from standard input. The proposal always
+targets the active document whose revision was returned by `read`; `workspace` is read-only. A valid
+response contains a `proposal_id` and reports `pending_review`; it does not mean the source was
+applied.
 
 For a bounded set of replacements, submit a JSON array instead:
 
@@ -102,4 +116,4 @@ An accepted proposal:
 The bridge is available on macOS and Linux through Unix domain sockets. Existing scripts may still
 provide `--socket` and `--token` together as an explicit connection override; normal interactive
 use does not need either value. The bridge does not open TCP, run a model, contact a cloud service,
-expose inactive workspace files, stream edits, or write files directly.
+follow paths outside the workspace, stream edits, or write files directly.

@@ -94,7 +94,7 @@ menu; the focused Files key layer is a second contextual menu.
 | Palette layout | Responsive grouped two-column cheatsheet that stacks when narrow; descriptions below | Searchable grouped two-column grid with descriptions and a compact narrow fallback | Actions, order, shortcuts, and explanatory copy match |
 | Shortcut help | Generated TermDraft-action reference | Scrollable 29-row action summary | Rust `--commands` is the fuller TermDraft-action reference; `?` is intentionally more compact |
 | Local History | Not available | Opt-in private checkpoints, bounded diffs, safe buffer-only restore, and exact clear | Rust-only; separate from compatible sessions and Recovery |
-| Agent editing | Not available | Explicit active-draft sharing, revision-bound proposals, diff review, and revocable private local session | Rust-only; tools cannot save or write the buffer without user acceptance |
+| Agent editing | Not available | Explicit workspace reading, revision-bound active-document proposals, diff review, and revocable private local session | Rust-only; tools cannot save or write a buffer without user acceptance |
 | Preview engine | `markdown-it-py`/Textual with tables, tasks, alerts, footnotes, definitions, link selection, and internal footnote navigation | Active-line source plus rendered inactive lines by default; semantic `pulldown-cmark` split preview with the same common families, selectable links, alerts, and internal footnote/backlink navigation | Source remains authoritative in both; Rust deliberately leaves external destinations inert rather than launching another process |
 | Explorer model | Lazy, collapsible Textual `DirectoryTree` plus asynchronous indexing | Shallow first-frame snapshot followed by a collapsible, recursively indexed tree from `ignore::WalkBuilder` | Rust starts promptly, preserves expansion state across background refreshes, and keeps scan warnings visible; the complete recursive index is still built in the worker |
 | Search regex engine | Python `regex`, full case folding, and a per-line timeout | Rust `regex`, a linear-time syntax subset, and the same 500-character input limit | Common regexes work; look-around/backreferences accepted by Python are not Rust syntax |
@@ -198,7 +198,7 @@ and fuzzy-filters its complete 36-action set.
 | Retention cleanup | Exact listed inventory, configured age, cancel-default confirmation | Exact listed inventory, configured age, only `d` deletes, per-record errors | Parity |
 | Local History | Not available | Responsive checkpoint/diff overlay with opt-in, manual capture, restore, and disable controls | Rust-only; wide panes stack when narrow |
 | Local History clear | Not available | Separate document/workspace confirmations over exact checkpoint IDs | Rust-only; Enter/Esc cancel and destructive pointer spans are explicit |
-| Agent sharing | Not available | Explicit document, private same-user session discovery, client commands, and revocation action | Rust-only; exact unsaved source is disclosed only after this visible opt-in |
+| Agent sharing | Not available | Explicit workspace, private same-user session discovery, bounded client commands, and revocation action | Rust-only; supported workspace text and exact open buffers are disclosed only after this visible opt-in |
 | Agent proposal review | Not available | Bounded source diff with current/stale state plus Accept, Reject, and defer | Rust-only; acceptance is revision-checked, undoable, recoverable, and never auto-saves |
 | Semantic inspector | Read-only segments and source jump | Read-only segments and source jump | Parity |
 | Experimental semantic reader | Render headings/paragraphs; exact source fallback | Same block policy in a scrollable overlay | Parity |
@@ -391,7 +391,7 @@ configurable `h`/`j`/`k`/`l`, `0`/`$`, and `g`/`G` commands provide its Yazi/Vim
 | `--commands` | Effective TermDraft command, Files, global, editor-action, and preview-action reference | Same section structure and effective mappings, plus explicit menu-only Local History and Agent sharing actions |
 | `--version` / `--help` | Python package identity/help | Rust package identity/help |
 | `--inspect TARGET` | Not available | Rust-only validation/index count without opening the TUI |
-| `termdraft-agent` | Not available | Rust-only authenticated `read`, `propose`, and `propose-ranges` client with automatic discovery for an explicitly shared draft |
+| `termdraft-agent` | Not available | Rust-only authenticated `workspace`, `read`, `propose`, and `propose-ranges` client with automatic discovery for an explicitly shared workspace |
 | `termdraft-benchmark` | Installed Python-only CLI: `--semantic-kib`, `--tab-kib`, `--tabs`, `--watch-kib`, `--iterations`, `--warmup`, `--help` | Not available | Developer measurement surface, not an editor command |
 
 The three utility flags `--init-config`, `--config-path`, and `--commands` are mutually exclusive in

@@ -19,7 +19,7 @@ changes practical, not to claim pixel parity with Textual.
 | Overlays | Square bordered panels, concise keyboard footer, visible focus, and cancel-default destructive prompts |
 | Recovery | Inventory/detail/target layout, active/quarantine state, protected records, explicit irreversible actions |
 | Local History | Responsive checkpoint/diff panes, explicit opt-in, buffer-only restore, and exact clear confirmation |
-| Agent editing | Visible active-draft sharing plus a bounded current/stale proposal diff with explicit accept/reject |
+| Agent editing | Visible workspace sharing plus a bounded current/stale active-document proposal diff with explicit accept/reject |
 | Mouse | Main-pane focus, Files/overlay selection and actions, wheel scroll, and draggable Files/Split dividers |
 | Exit | Alternate screen, raw mode, mouse capture, and cursor shape restore on the normal exit path |
 
@@ -101,8 +101,9 @@ Verify in order:
 12. Enable Local History, create a checkpoint, compare it in wide and narrow layouts, restore it,
    verify disk is unchanged, Undo back to the prior buffer, and exercise both cancel-default clear
    confirmations with keyboard and pointer.
-13. Open Agent sharing, read the exact unsaved source with `termdraft-agent`, submit a proposal,
-    verify the diff, accept it without changing disk, Undo it, then revoke the endpoint.
+13. Open Agent sharing, read the workspace and confirm open-unsaved plus unopened-disk sources, read
+    the active source, submit a proposal, verify the diff, accept it without changing disk, Undo it,
+    then revoke the endpoint.
 14. Files and overlay click/double-click, wheel scroll, explicit action labels, and both dividers
    work; blank destructive-confirmation space remains inert.
 15. A clean `q` restores the normal terminal screen, cursor, raw mode, and mouse reporting.

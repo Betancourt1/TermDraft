@@ -69,12 +69,13 @@ Search the command palette for **Create checkpoint** or **Open Local History**. 
 direct shortcut: it is opt-in for each workspace, and restoring a checkpoint changes only the
 buffer until you explicitly Save.
 
-Search the same palette for **Agent sharing** to explicitly expose the active draft through a
-private local session. The companion `termdraft-agent` client can read the exact unsaved source and
-submit a revision-bound proposal without copying connection credentials. TermDraft shows the source
-diff and requires **Accept** or **Reject**; acceptance changes the buffer, remains one Undo step, and
-never saves automatically. See [Agent editing](docs/agent-editing.md) for the complete local
-protocol and safety boundary.
+Search the same palette for **Agent sharing** to explicitly expose the current workspace through a
+private local session. The companion `termdraft-agent` client can read every supported document,
+using exact unsaved buffers for open tabs and disk text for unopened files, without copying
+connection credentials. Revision-bound proposals still target only the active document. TermDraft
+shows the source diff and requires **Accept** or **Reject**; acceptance changes the buffer, remains
+one Undo step, and never saves automatically. See [Agent editing](docs/agent-editing.md) for the
+complete local protocol and safety boundary.
 
 <details>
 <summary><strong>More workspace and navigation shortcuts</strong></summary>
@@ -163,8 +164,8 @@ When running without `cargo install`, replace `termdraft` with
 - UTF-8 and UTF-8 BOM support with LF, CRLF, or CR preservation
 - Opt-in, per-workspace Local History with full-source checkpoints, bounded checkpoint-to-current
   diffs, and one-step-undo buffer restores
-- Explicit active-draft Agent sharing with private same-user session discovery, revision-bound
-  source proposals, in-editor diffs, and accept/reject review
+- Explicit workspace Agent sharing with private same-user session discovery, exact open-buffer
+  overrides, revision-bound active-document proposals, in-editor diffs, and accept/reject review
 - Mouse focus, clickable tabs and preview links, Files and overlay row selection/activation,
   hybrid-editor text selection, wheel scrolling, draggable dividers, and keyboard Files-pane resizing
 - Three light themes (Paper, Linen, and Mist) and three dark themes (Midnight, Void, and Carbon)

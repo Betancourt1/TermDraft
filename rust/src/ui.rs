@@ -109,7 +109,7 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
             .to_string_lossy();
         let dirty = if tab.document.is_dirty() { " ●" } else { "" };
         let conflict = if tab.document.conflict { " !" } else { "" };
-        let shared = if app.agent_shared_path() == Some(tab.document.path.as_path()) {
+        let shared = if app.workspace_is_shared() {
             " ↔"
         } else {
             ""
@@ -559,7 +559,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 Style::new().fg(MUTED),
             ),
         ]);
-        if app.active_document_is_shared() {
+        if app.workspace_is_shared() {
             spans.push(Span::styled(
                 " │ AGENT SHARED",
                 Style::new().fg(BRIGHT).bold(),
@@ -950,7 +950,7 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay, frame_area: Rec
             *diff_truncated,
             status,
         ),
-        Overlay::AgentSharing { path } => draw_agent_sharing(frame, app, area, block, path),
+        Overlay::AgentSharing { root } => draw_agent_sharing(frame, area, block, root),
         Overlay::AgentProposal { proposal, scroll } => {
             draw_agent_proposal(frame, app, area, block, proposal, *scroll);
         }
@@ -1134,29 +1134,23 @@ fn draw_overlay(frame: &mut Frame, app: &App, overlay: &Overlay, frame_area: Rec
     }
 }
 
-fn draw_agent_sharing(
-    frame: &mut Frame,
-    app: &App,
-    area: Rect,
-    block: Block<'_>,
-    path: &std::path::Path,
-) {
+fn draw_agent_sharing(frame: &mut Frame, area: Rect, block: Block<'_>, root: &std::path::Path) {
     let inner = block.inner(area);
     frame.render_widget(block.title(" Agent sharing "), area);
     let [content, footer] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
-    let relative = app.workspace.relative(path);
     let text = Text::from(vec![
-        Line::from("This active draft is explicitly shared with local agents for your user.")
+        Line::from("This workspace is explicitly shared with local agents for your user.")
             .style(Style::new().fg(TEXT)),
-        Line::from("The endpoint exposes the exact live buffer, including unsaved text.")
+        Line::from("Open documents use exact live buffers; unopened documents use disk text.")
             .style(Style::new().fg(MUTED)),
         Line::from(""),
         Line::from(vec![
-            Span::styled("Document  ", Style::new().fg(MUTED).bold()),
-            Span::styled(relative.display().to_string(), Style::new().fg(TEXT)),
+            Span::styled("Workspace  ", Style::new().fg(MUTED).bold()),
+            Span::styled(root.display().to_string(), Style::new().fg(TEXT)),
         ]),
         Line::from(""),
+        Line::from("termdraft-agent workspace").style(Style::new().fg(TEXT)),
         Line::from("termdraft-agent read").style(Style::new().fg(TEXT)),
         Line::from("termdraft-agent propose --revision <revision> SOURCE")
             .style(Style::new().fg(TEXT)),
@@ -3400,13 +3394,16 @@ mod tests {
         let workspace = Workspace::from_target(&path).unwrap();
         let mut app = App::new(workspace).unwrap();
         let path = app.active_tab().unwrap().document.path.clone();
-        app.overlay = Some(Overlay::AgentSharing { path: path.clone() });
+        app.overlay = Some(Overlay::AgentSharing {
+            root: app.workspace.root.clone(),
+        });
         let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let sharing = rendered(&terminal);
         assert!(sharing.contains("Agent sharing"));
-        assert!(sharing.contains("exact live buffer, including unsaved text"));
+        assert!(sharing.contains("Open documents use exact live buffers"));
+        assert!(sharing.contains("termdraft-agent workspace"));
         assert!(sharing.contains("termdraft-agent read"));
         assert!(sharing.contains("No socket path or token needs to be copied"));
         assert!(!sharing.contains("--token"));
