@@ -210,7 +210,17 @@ pub fn discover_connection() -> io::Result<AgentConnection> {
 }
 
 fn discover_connection_in(root: &Path) -> io::Result<AgentConnection> {
+    discover_connection_with(root, |socket_path| {
+        UnixStream::connect(socket_path).map(drop)
+    })
+}
+
+fn discover_connection_with(
+    root: &Path,
+    mut connect: impl FnMut(&Path) -> io::Result<()>,
+) -> io::Result<AgentConnection> {
     let mut connections = Vec::new();
+    let mut permission_denied = false;
     for entry in fs::read_dir(root)? {
         let Ok(entry) = entry else {
             continue;
@@ -225,9 +235,19 @@ fn discover_connection_in(root: &Path) -> io::Result<AgentConnection> {
         let Some(connection) = read_private_connection(&entry.path()) else {
             continue;
         };
-        if UnixStream::connect(&connection.socket_path).is_ok() {
-            connections.push(connection);
+        match connect(&connection.socket_path) {
+            Ok(()) => connections.push(connection),
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                permission_denied = true;
+            }
+            Err(_) => {}
         }
+    }
+    if permission_denied {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "TermDraft Agent sharing session found, but access to its Unix socket was denied; allow local socket access and retry",
+        ));
     }
     match connections.len() {
         0 => Err(io::Error::new(
@@ -571,6 +591,24 @@ mod tests {
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         assert!(error.to_string().contains("2 active"));
+    }
+
+    #[test]
+    fn discovery_reports_permission_denied_for_a_valid_session() {
+        let root = tempfile::tempdir().unwrap();
+        let _session =
+            AgentSession::start_in(root.path(), PathBuf::from("/workspace/draft.md")).unwrap();
+
+        let error = discover_connection_with(root.path(), |_| {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "sandbox denied socket access",
+            ))
+        })
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("allow local socket access"));
     }
 
     #[test]

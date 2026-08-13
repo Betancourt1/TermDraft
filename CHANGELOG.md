@@ -9,6 +9,11 @@ supported releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- Report when a sandbox denies access to an existing Agent sharing socket instead of incorrectly
+  claiming that no sharing session is active.
+
 ## [0.9.1] - 2026-08-10
 
 ### Changed

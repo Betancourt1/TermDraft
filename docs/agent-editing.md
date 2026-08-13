@@ -26,6 +26,11 @@ original identity but read and proposal requests are refused until that document
 If multiple TermDraft processes have sharing enabled, automatic discovery refuses to guess; revoke
 the sessions you do not intend to use and retry.
 
+Some sandboxed tools can see the private session descriptor but cannot connect to its Unix socket.
+In that case, `termdraft-agent` reports that local socket access was denied instead of claiming no
+sharing session exists. Allow that specific local connection and retry; do not copy or expose the
+internal token.
+
 ## Read the live draft
 
 With the intended sharing panel open, run:
