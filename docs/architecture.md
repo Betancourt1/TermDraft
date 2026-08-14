@@ -383,6 +383,6 @@ cargo test --locked --all-targets
 cargo test --locked --release
 ```
 
-At this checkpoint, 259 Rust library tests and 7 Rust binary tests pass. The Python reference suite
+At this checkpoint, 272 Rust library tests and 7 Rust binary tests pass. The Python reference suite
 passes 681 tests with 2 expected platform skips. The exhaustive interface and gap inventory, plus
 the explicitly historical benchmark, live in [RUST_PORT.md](../RUST_PORT.md).

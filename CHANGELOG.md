@@ -9,6 +9,8 @@ supported releases.
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-08-13
+
 ### Added
 
 - Added `termdraft-agent workspace` to read every supported document in the explicitly shared
@@ -295,7 +297,8 @@ supported releases.
 - Established the local-first terminal writing loop with a file explorer, Markdown source editor,
   rendered preview, protected saves, and crash-recovery journals.
 
-[Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.9.2
 [0.9.1]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.9.1
 [0.9.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.9.0
 [0.8.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.8.0

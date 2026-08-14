@@ -47,7 +47,7 @@ This inventory was recounted from the Python source and the current Rust impleme
   **26 overlay types are currently user-reachable**;
 - shared dialog types serve several workflows, so the operation-by-operation popup matrix below is
   the authoritative interface comparison;
-- the Rust suite passes **259 library tests plus 7 binary tests**; the Python suite passes
+- the Rust suite passes **272 library tests plus 7 binary tests**; the Python suite passes
   **681 tests with 2 platform skips**.
 
 Neither frontend has a native menu bar. In both, the searchable command palette is the application
@@ -100,7 +100,7 @@ menu; the focused Files key layer is a second contextual menu.
 | Search regex engine | Python `regex`, full case folding, and a per-line timeout | Rust `regex`, a linear-time syntax subset, and the same 500-character input limit | Common regexes work; look-around/backreferences accepted by Python are not Rust syntax |
 | Workspace-search discovery | Fresh cancellable workspace scan for each submission, including scan warnings | Fresh cancellable workspace scan for each submission, including scan and source-read warnings | Newly created files are discoverable immediately in both |
 | Markdown continuation details | Preserves marker spacing, validates nested indentation with CommonMark, and intercepts only unmodified Enter | Normalizes supported marker spacing and conservatively rejects tab/four-space-leading lines; only unmodified Enter is intercepted | Common continuations match; unusual spacing and nested indentation can differ |
-| I/O scheduling | Most scans, reads, probes, saves, mutations, sessions, recovery, and semantic work run in Textual workers | Recursive workspace indexing and text search use cancellable revisioned threads; an explicit agent session uses one private listener thread; most other I/O runs in the event loop | Rust avoids blocking startup on a recursive scan, but another slow filesystem operation can still pause drawing |
+| I/O scheduling | Most scans, reads, probes, saves, mutations, sessions, recovery, and semantic work run in Textual workers | Recursive workspace indexing, text search, and Agent workspace snapshots use cancellable threads; an explicit agent session uses one private listener thread; most other I/O runs in the event loop | Rust avoids blocking startup and Agent workspace collection on recursive reads, but another slow filesystem operation can still pause drawing |
 | Preview updates | Revisioned/debounced render pipeline | Monotonic source identity plus cached, revision-checked, 50 ms-debounced background rendering | Rapid edits coalesce and stale preview work cannot replace newer source |
 | Session restoration | Deferred inactive tabs plus cursor and scroll restoration | Active document first, then one restored tab per event-loop turn, with cursor and editor/preview scroll restoration | Content-free open order, MRU, and viewport continuity match |
 | Session validation | Rejects duplicate paths and inconsistent active/open/view relationships | Same duplicate and active/open/view relationship checks, plus finite non-negative scroll validation | Malformed cross-field state is rejected in both |
@@ -121,9 +121,9 @@ These are current gaps, not items that were merely absent in the early port:
    disk document is already open; Python can Cancel opening before installing it.
 2. **`theme.tcss`.** Rust creates the compatibility template but never parses or watches Textual
    CSS. It provides six built-in runtime themes instead; `--safe-mode` has no additional effect.
-3. **Full background I/O.** Recursive workspace scans and text search are threaded, but file
-   reads/saves, mutations, session/recovery publication, and diagnostics still run in the event
-   loop.
+3. **Full background I/O.** Recursive workspace scans, text search, and Agent workspace snapshots
+   are threaded, but ordinary file reads/saves, mutations, session/recovery publication, and
+   diagnostics still run in the event loop.
 4. **The deepest Python persistence guarantees.** Rust does not bind publication to an open parent
     descriptor, retry a moving read, or verify the final published digest with Python's uncertainty
     reporting.
@@ -400,7 +400,7 @@ feature.
 
 ## Verification
 
-Current code state: the primary Rust implementation at 0.9.1.
+Current code state: the primary Rust implementation at 0.9.2.
 
 ```bash
 cargo fmt --all -- --check
@@ -412,7 +412,7 @@ cargo test --locked --release
 
 Results at this checkpoint:
 
-- 259 Rust library tests and 7 Rust binary tests pass;
+- 272 Rust library tests and 7 Rust binary tests pass;
 - the current responsiveness gates and real-PTY journey are documented in
   [docs/responsiveness.md](docs/responsiveness.md);
 - strict Clippy and rustfmt pass;

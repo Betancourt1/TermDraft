@@ -276,6 +276,7 @@ parent-directory save hardening, and Windows state/lock compatibility. See
 - [Architecture](docs/architecture.md) — Rust modules, state flow, persistence, and recovery
 - [Local History](docs/local-history.md) — checkpoints, restore safety, retention, and privacy
 - [Agent editing](docs/agent-editing.md) — explicit sharing, local client, proposal review, and revocation
+- [0.9.2 roadmap](docs/roadmap-0.9.2.md) — release scope, research decisions, acceptance, and deferred debt
 - [Responsiveness](docs/responsiveness.md) — 0.7 performance gates and real-PTY journey
 - [Markdown gallery](docs/markdown-gallery.md) — exercise the inline and split renderers
 - [Semantic editing](docs/semantic-editing.md) — future block-aware editing boundary
