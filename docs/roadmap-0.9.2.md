@@ -126,6 +126,6 @@ The 0.9.2 candidate is ready for publication review only when:
 3. formatting, strict Clippy, complete debug/release Rust tests, and Python compatibility tests pass;
 4. the real-PTY smoke journey exits cleanly with the disposable fixture unchanged;
 5. Plane contains the 0.9.2 module, every recent commit-backed change, deferred publication work,
-   and a roadmap page whose state matches the repository;
+   and a comprehensive roadmap in the module description whose state matches the repository;
 6. no push, tag, GitHub release, Homebrew update, or installed-app claim is made without observed
    evidence from that separate workflow.
