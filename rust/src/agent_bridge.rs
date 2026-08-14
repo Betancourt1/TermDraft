@@ -15,7 +15,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tempfile::{Builder, TempDir};
 
-pub const PROTOCOL_VERSION: u8 = 1;
+pub const PROTOCOL_VERSION: u8 = 2;
 pub const MAX_AGENT_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_REQUEST_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
@@ -48,6 +48,7 @@ pub enum AgentAction {
     Read,
     ReadWorkspace,
     Propose {
+        expected_path: String,
         expected_revision: String,
         change: ProposalChange,
         origin: Option<String>,

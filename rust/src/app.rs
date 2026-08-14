@@ -2660,6 +2660,7 @@ impl App {
                 });
             }
             AgentAction::Propose {
+                expected_path,
                 expected_revision,
                 change,
                 origin,
@@ -2667,6 +2668,7 @@ impl App {
                 let response = self.receive_agent_proposal(
                     index,
                     &active_path,
+                    &expected_path,
                     &expected_revision,
                     change,
                     origin.as_deref(),
@@ -2721,6 +2723,7 @@ impl App {
         &mut self,
         index: usize,
         target_path: &Path,
+        expected_path: &str,
         expected_revision: &str,
         change: ProposalChange,
         origin: Option<&str>,
@@ -2728,6 +2731,11 @@ impl App {
         let document = &self.tabs[index].document;
         if document.conflict || document.recovery_conflict || !document.is_editable() {
             return AgentResponse::error("the active document is protected by a conflict");
+        }
+        if Path::new(expected_path) != self.workspace.relative(target_path) {
+            return AgentResponse::error(
+                "the proposal target is not the active document; read the intended document again",
+            );
         }
         if expected_revision != revision_label(document.source_revision) {
             return AgentResponse::error("the proposal targets a stale source revision");
@@ -11722,6 +11730,7 @@ command_manage_recovery = "Z"
         let response = app.receive_agent_proposal(
             0,
             &path,
+            "note.md",
             &revision,
             ProposalChange::ReplaceSource {
                 source: "agent draft\n".to_owned(),
@@ -11773,6 +11782,7 @@ command_manage_recovery = "Z"
         let response = app.receive_agent_proposal(
             0,
             &path,
+            "note.md",
             &revision,
             ProposalChange::ReplaceSource { source },
             Some("test-agent"),
@@ -11839,6 +11849,7 @@ command_manage_recovery = "Z"
         let response = app.receive_agent_proposal(
             0,
             &path,
+            "note.md",
             &revision,
             ProposalChange::ReplaceSource {
                 source: "rejected\n".to_owned(),
@@ -11876,6 +11887,7 @@ command_manage_recovery = "Z"
         let response = app.receive_agent_proposal(
             0,
             &path,
+            "note.md",
             &revision,
             ProposalChange::ReplaceSource {
                 source: "accepted\n".to_owned(),
@@ -11910,6 +11922,7 @@ command_manage_recovery = "Z"
         let response = app.receive_agent_proposal(
             0,
             &path,
+            "note.md",
             &stale_revision,
             ProposalChange::ReplaceSource {
                 source: "stale\n".to_owned(),
@@ -11954,6 +11967,50 @@ command_manage_recovery = "Z"
                 },
             ),
             Err("agent ranges must not overlap".to_owned())
+        );
+    }
+
+    #[test]
+    fn agent_proposal_cannot_move_to_an_identical_active_document() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let first = root.join("first.md");
+        let second = root.join("second.md");
+        fs::write(&first, "same source\n").unwrap();
+        fs::write(&second, "same source\n").unwrap();
+        let workspace = Workspace::from_target(&root).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.open_document(&first).unwrap();
+        let first_revision = revision_label(app.active_tab().unwrap().document.source_revision);
+
+        app.open_document(&second).unwrap();
+        let second_index = app.active_tab.unwrap();
+        assert_eq!(
+            first_revision,
+            revision_label(app.active_tab().unwrap().document.source_revision)
+        );
+
+        let response = app.receive_agent_proposal(
+            second_index,
+            &second,
+            "first.md",
+            &first_revision,
+            ProposalChange::ReplaceSource {
+                source: "wrong target\n".to_owned(),
+            },
+            None,
+        );
+
+        assert!(matches!(
+            response,
+            AgentResponse::Error { ref message }
+                if message.contains("target is not the active document")
+        ));
+        assert!(app.pending_agent_proposal.is_none());
+        assert!(
+            app.tabs
+                .iter()
+                .all(|tab| tab.document.text == "same source\n")
         );
     }
 

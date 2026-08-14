@@ -185,9 +185,10 @@ their exact live buffers, and unopened documents use stable disk reads. The seri
 bounded by the bridge's 64 MiB response limit. Active-document reads return the authoritative live
 source plus its generation-and-digest revision.
 
-A proposal supplies the active document's exact revision and either a complete replacement or
-non-overlapping UTF-8 byte ranges. The application rejects stale, protected, inactive, invalid, and
-oversized proposals before creating a review. Accept rechecks document identity and revision, then
+A proposal supplies the active document's workspace-relative path, exact revision, and either a
+complete replacement or non-overlapping UTF-8 byte ranges. The application rejects stale,
+retargeted, protected, inactive, invalid, and oversized proposals before creating a review. Accept
+rechecks document identity and revision, then
 uses the same whole-source transaction as Local History restore so Undo/Redo stays grouped. It also
 publishes recovery immediately and captures before/after Local History checkpoints when that
 workspace has opted in. The saved baseline and disk remain unchanged. Switching or closing tabs

@@ -24,6 +24,8 @@ supported releases.
 
 - Report when a sandbox denies access to an existing Agent sharing socket instead of incorrectly
   claiming that no sharing session is active.
+- Bind every Agent proposal to the workspace-relative document path returned by `read`, preventing
+  an active-tab switch from retargeting a proposal when two documents have the same source revision.
 
 ## [0.9.1] - 2026-08-10
 

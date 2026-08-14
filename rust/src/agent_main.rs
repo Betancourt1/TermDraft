@@ -29,6 +29,9 @@ enum AgentCommand {
     Propose {
         #[command(flatten)]
         connection: Connection,
+        /// Workspace-relative path returned by `read`.
+        #[arg(long)]
+        path: String,
         /// Revision returned by `read`.
         #[arg(long)]
         revision: String,
@@ -43,6 +46,9 @@ enum AgentCommand {
     ProposeRanges {
         #[command(flatten)]
         connection: Connection,
+        /// Workspace-relative path returned by `read`.
+        #[arg(long)]
+        path: String,
         /// Revision returned by `read`.
         #[arg(long)]
         revision: String,
@@ -86,12 +92,14 @@ fn main() -> anyhow::Result<()> {
         AgentCommand::Read(connection) => return send(&connection, AgentAction::Read),
         AgentCommand::Propose {
             connection,
+            path,
             revision,
             origin,
             source,
         } => (
             connection,
             AgentAction::Propose {
+                expected_path: path,
                 expected_revision: revision,
                 change: ProposalChange::ReplaceSource {
                     source: read_bounded_utf8(&source)?,
@@ -101,6 +109,7 @@ fn main() -> anyhow::Result<()> {
         ),
         AgentCommand::ProposeRanges {
             connection,
+            path,
             revision,
             origin,
             edits,
@@ -110,6 +119,7 @@ fn main() -> anyhow::Result<()> {
             (
                 connection,
                 AgentAction::Propose {
+                    expected_path: path,
                     expected_revision: revision,
                     change: ProposalChange::ReplaceRanges { edits },
                     origin: Some(origin),
@@ -159,6 +169,21 @@ mod tests {
         assert_eq!(command.get_name(), "termdraft-agent");
         assert!(Arguments::try_parse_from(["termdraft-agent", "workspace"]).is_ok());
         assert!(Arguments::try_parse_from(["termdraft-agent", "read"]).is_ok());
+        assert!(
+            Arguments::try_parse_from([
+                "termdraft-agent",
+                "propose",
+                "--path",
+                "notes/draft.md",
+                "--revision",
+                "0:abc",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Arguments::try_parse_from(["termdraft-agent", "propose", "--revision", "0:abc",])
+                .is_err()
+        );
         assert!(
             Arguments::try_parse_from(["termdraft-agent", "read", "--socket", "/tmp/session.sock"])
                 .is_err()

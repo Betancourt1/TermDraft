@@ -1152,7 +1152,7 @@ fn draw_agent_sharing(frame: &mut Frame, area: Rect, block: Block<'_>, root: &st
         Line::from(""),
         Line::from("termdraft-agent workspace").style(Style::new().fg(TEXT)),
         Line::from("termdraft-agent read").style(Style::new().fg(TEXT)),
-        Line::from("termdraft-agent propose --revision <revision> SOURCE")
+        Line::from("termdraft-agent propose --path <path> --revision <revision> SOURCE")
             .style(Style::new().fg(TEXT)),
         Line::from("No socket path or token needs to be copied.").style(Style::new().fg(MUTED)),
         Line::from(""),

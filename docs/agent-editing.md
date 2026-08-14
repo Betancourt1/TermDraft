@@ -61,13 +61,15 @@ Put the proposed complete UTF-8 source in a file, then run:
 
 ```bash
 termdraft-agent propose \
+  --path PATH_FROM_READ \
   --revision REVISION_FROM_READ \
   --origin my-agent \
   proposed.md
 ```
 
-Use `-` or omit the final path to read the proposed source from standard input. The proposal always
-targets the active document whose revision was returned by `read`; `workspace` is read-only. A valid
+Use `-` or omit the final source-file argument to read the proposed source from standard input. The
+proposal targets the exact workspace-relative path and revision returned by `read`; `workspace` is
+read-only. If the active tab changed, TermDraft rejects the request before opening a review. A valid
 response contains a `proposal_id` and reports `pending_review`; it does not mean the source was
 applied.
 
@@ -81,6 +83,7 @@ For a bounded set of replacements, submit a JSON array instead:
 
 ```bash
 termdraft-agent propose-ranges \
+  --path PATH_FROM_READ \
   --revision REVISION_FROM_READ \
   edits.json
 ```
@@ -113,7 +116,9 @@ An accepted proposal:
 - captures before/after checkpoints when Local History is enabled for the workspace;
 - leaves the saved baseline and file on disk unchanged until the user explicitly saves.
 
-The bridge is available on macOS and Linux through Unix domain sockets. Existing scripts may still
+The bridge is available on macOS and Linux through Unix domain sockets. Protocol version 2 binds
+every proposal to both the workspace-relative path and source revision returned by `read`, so a tab
+switch cannot retarget identical source accidentally. Existing scripts may still
 provide `--socket` and `--token` together as an explicit connection override; normal interactive
 use does not need either value. The bridge does not open TCP, run a model, contact a cloud service,
 follow paths outside the workspace, stream edits, or write files directly.
