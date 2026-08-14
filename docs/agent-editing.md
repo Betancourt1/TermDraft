@@ -38,10 +38,17 @@ termdraft-agent workspace
 The `workspace` response contains ordered `documents` and `warnings`. Each supported `.md`,
 `.markdown`, or `.txt` document includes its workspace-relative `path`, `source`, `revision`,
 `dirty`, `open`, and `conflict` state. Open documents use their exact TermDraft buffers, including
-unsaved changes. Unopened documents use stable current disk reads. Ignored directories, symbolic
-links, unsupported files, and paths outside the workspace remain unavailable. Scan or source-read
-failures are returned as warnings. Responses exceeding 64 MiB fail without returning a partial
-workspace.
+unsaved changes, even if the corresponding disk file is missing after it was opened. An open path
+that is replaced by a symlink, non-file, or outside-workspace resolution remains excluded.
+Unopened documents use stable current disk reads. Ignored directories, symbolic links, unsupported
+files, and paths outside the workspace remain unavailable. Scan or source-read failures are
+returned as warnings.
+
+TermDraft captures the open-buffer state when it accepts the request, then scans and reads unopened
+files on a cancellable worker so a large workspace does not block editor input. Each document is
+limited to 16 MiB and the complete encoded response is limited to 64 MiB. Reaching either limit
+fails the whole request with a clear error instead of returning a partial workspace. Revoking
+sharing interrupts the request at the next bounded scan/read step.
 
 ## Read the active document
 

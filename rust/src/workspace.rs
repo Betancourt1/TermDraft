@@ -210,6 +210,11 @@ impl Workspace {
 
     #[must_use]
     pub fn scan_report(&self) -> WorkspaceScan {
+        self.scan_report_until(|| false)
+    }
+
+    #[must_use]
+    pub(crate) fn scan_report_until(&self, cancelled: impl Fn() -> bool) -> WorkspaceScan {
         let ignored: HashSet<&str> = IGNORED_DIRECTORIES.iter().copied().collect();
         let mut report = WorkspaceScan::default();
         for result in WalkBuilder::new(&self.root)
@@ -227,6 +232,9 @@ impl Workspace {
             })
             .build()
         {
+            if cancelled() {
+                break;
+            }
             let entry = match result {
                 Ok(entry) => entry,
                 Err(error) => {

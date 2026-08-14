@@ -8,17 +8,18 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tempfile::{Builder, TempDir};
 
 pub const PROTOCOL_VERSION: u8 = 2;
 pub const MAX_AGENT_SOURCE_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_AGENT_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_REQUEST_BYTES: u64 = 32 * 1024 * 1024;
-const MAX_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_RESPONSE_BYTES: u64 = MAX_AGENT_RESPONSE_BYTES as u64;
 const MAX_CONNECTION_BYTES: u64 = 4 * 1024;
 const APPLICATION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 const WORKSPACE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -126,9 +127,15 @@ struct StoredConnection {
 pub struct AgentCall {
     pub action: AgentAction,
     response: Sender<AgentResponse>,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl AgentCall {
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.shutdown.load(Ordering::Relaxed)
+    }
+
     pub fn respond(self, response: AgentResponse) {
         let _ = self.response.send(response);
     }
@@ -394,11 +401,13 @@ fn serve(
     listener: &UnixListener,
     token: &str,
     request_tx: &Sender<AgentCall>,
-    shutdown: &AtomicBool,
+    shutdown: &Arc<AtomicBool>,
 ) {
     while !shutdown.load(Ordering::Relaxed) {
         match listener.accept() {
-            Ok((stream, _)) => handle_connection(stream, token, request_tx),
+            Ok((stream, _)) => {
+                handle_connection(stream, token, request_tx, shutdown);
+            }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(10));
             }
@@ -407,7 +416,12 @@ fn serve(
     }
 }
 
-fn handle_connection(mut stream: UnixStream, token: &str, request_tx: &Sender<AgentCall>) {
+fn handle_connection(
+    mut stream: UnixStream,
+    token: &str,
+    request_tx: &Sender<AgentCall>,
+    shutdown: &Arc<AtomicBool>,
+) {
     if let Err(error) = stream.set_nonblocking(false) {
         let response = AgentResponse::error(format!("cannot configure agent connection: {error}"));
         let _ = write_response(&mut stream, &response);
@@ -426,32 +440,74 @@ fn handle_connection(mut stream: UnixStream, token: &str, request_tx: &Sender<Ag
             .send(AgentCall {
                 action,
                 response: response_tx,
+                shutdown: Arc::clone(shutdown),
             })
             .map_err(|_| "TermDraft closed the sharing session".to_owned())?;
-        response_rx
-            .recv_timeout(response_timeout)
-            .map_err(|_| "TermDraft did not answer the request in time".to_owned())
+        let deadline = Instant::now() + response_timeout;
+        loop {
+            if shutdown.load(Ordering::Relaxed) {
+                return Err("TermDraft closed the sharing session".to_owned());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err("TermDraft did not answer the request in time".to_owned());
+            }
+            match response_rx.recv_timeout(remaining.min(Duration::from_millis(50))) {
+                Ok(response) => return Ok(response),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err("TermDraft closed the sharing session".to_owned());
+                }
+            }
+        }
     });
     let response = response.unwrap_or_else(AgentResponse::error);
     let _ = write_response(&mut stream, &response);
 }
 
 fn write_response(stream: &mut UnixStream, response: &AgentResponse) -> io::Result<()> {
-    let bytes = response_bytes(response, MAX_RESPONSE_BYTES)?;
-    stream.write_all(&bytes)?;
-    stream.flush()
+    write_response_with_limit(stream, response, MAX_RESPONSE_BYTES)
 }
 
-fn response_bytes(response: &AgentResponse, limit: u64) -> io::Result<Vec<u8>> {
-    let mut bytes = serde_json::to_vec(response).map_err(io::Error::other)?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) >= limit {
-        bytes = serde_json::to_vec(&AgentResponse::error(
-            "agent workspace response exceeds the 64 MiB limit",
-        ))
+fn write_response_with_limit(
+    writer: &mut impl Write,
+    response: &AgentResponse,
+    limit: u64,
+) -> io::Result<()> {
+    if json_size(response)? >= limit {
+        serde_json::to_writer(
+            &mut *writer,
+            &AgentResponse::error("agent workspace response exceeds the 64 MiB limit"),
+        )
         .map_err(io::Error::other)?;
+    } else {
+        serde_json::to_writer(&mut *writer, response).map_err(io::Error::other)?;
     }
-    bytes.push(b'\n');
-    Ok(bytes)
+    writer.write_all(b"\n")?;
+    writer.flush()
+}
+
+#[derive(Default)]
+struct ByteCounter(u64);
+
+impl Write for ByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0 = self
+            .0
+            .checked_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+            .ok_or_else(|| io::Error::other("serialized agent response is too large"))?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+pub(crate) fn json_size(value: &impl Serialize) -> io::Result<u64> {
+    let mut counter = ByteCounter::default();
+    serde_json::to_writer(&mut counter, value).map_err(io::Error::other)?;
+    Ok(counter.0)
 }
 
 fn read_request(stream: &mut UnixStream, token: &str) -> Result<AgentAction, String> {
@@ -668,12 +724,42 @@ mod tests {
             warnings: Vec::new(),
         };
 
-        let bytes = response_bytes(&response, 128).unwrap();
+        let mut bytes = Vec::new();
+        write_response_with_limit(&mut bytes, &response, 128).unwrap();
         let bounded: AgentResponse = serde_json::from_slice(&bytes).unwrap();
 
         assert!(matches!(
             bounded,
             AgentResponse::Error { ref message } if message.contains("64 MiB")
+        ));
+    }
+
+    #[test]
+    fn dropping_a_session_interrupts_a_pending_workspace_request() {
+        let session = AgentSession::start(PathBuf::from("/workspace")).unwrap();
+        let socket = session.socket_path().to_path_buf();
+        let token = session.token().to_owned();
+        let client = thread::spawn(move || request(&socket, &token, AgentAction::ReadWorkspace));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let call = loop {
+            if let Some(call) = session.drain_calls().into_iter().next() {
+                break call;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "workspace request was not delivered"
+            );
+            thread::sleep(Duration::from_millis(5));
+        };
+
+        let started = Instant::now();
+        drop(session);
+
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(call.is_cancelled());
+        assert!(matches!(
+            client.join().unwrap().unwrap(),
+            AgentResponse::Error { ref message } if message.contains("closed the sharing session")
         ));
     }
 

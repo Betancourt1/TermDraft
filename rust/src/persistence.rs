@@ -71,6 +71,19 @@ pub enum SaveError {
 ///
 /// Returns an error when the path is not a stable regular file or its contents are not UTF-8.
 pub fn load_file(path: &Path) -> anyhow::Result<LoadedFile> {
+    load_file_with_limit(path, None)
+}
+
+/// Read a stable regular UTF-8 file while refusing content above `max_bytes`.
+///
+/// # Errors
+///
+/// Returns an error when the path is unsafe, unstable, invalid UTF-8, or larger than the limit.
+pub fn load_file_bounded(path: &Path, max_bytes: usize) -> anyhow::Result<LoadedFile> {
+    load_file_with_limit(path, Some(max_bytes))
+}
+
+fn load_file_with_limit(path: &Path, max_bytes: Option<usize>) -> anyhow::Result<LoadedFile> {
     let path = path.to_path_buf();
     let before = fs::symlink_metadata(&path)?;
     anyhow::ensure!(
@@ -85,8 +98,33 @@ pub fn load_file(path: &Path) -> anyhow::Result<LoadedFile> {
     options.custom_flags(libc::O_NOFOLLOW);
     let mut file = options.open(&path)?;
     let opened = file.metadata()?;
-    let mut bytes = Vec::with_capacity(opened.len().try_into().unwrap_or(0));
-    file.read_to_end(&mut bytes)?;
+    if let Some(max_bytes) = max_bytes {
+        anyhow::ensure!(
+            opened.len() <= u64::try_from(max_bytes).unwrap_or(u64::MAX),
+            "file exceeds the {max_bytes}-byte read limit"
+        );
+    }
+    let capacity = opened
+        .len()
+        .try_into()
+        .unwrap_or(0)
+        .min(max_bytes.unwrap_or(usize::MAX));
+    let mut bytes = Vec::with_capacity(capacity);
+    if let Some(max_bytes) = max_bytes {
+        (&mut file)
+            .take(
+                u64::try_from(max_bytes)
+                    .unwrap_or(u64::MAX)
+                    .saturating_add(1),
+            )
+            .read_to_end(&mut bytes)?;
+        anyhow::ensure!(
+            bytes.len() <= max_bytes,
+            "file exceeds the {max_bytes}-byte read limit"
+        );
+    } else {
+        file.read_to_end(&mut bytes)?;
+    }
     let after = file.metadata()?;
 
     let opened_snapshot = FileSnapshot::from_bytes_and_metadata(&bytes, &opened);
@@ -242,6 +280,18 @@ mod tests {
             fs::read(path).unwrap(),
             b"\xef\xbb\xbf# title\r\nchanged\r\n"
         );
+    }
+
+    #[test]
+    fn bounded_load_rejects_a_file_before_returning_partial_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("large.md");
+        fs::write(&path, "0123456789").unwrap();
+
+        let error = load_file_bounded(&path, 8).unwrap_err();
+
+        assert!(error.to_string().contains("8-byte read limit"));
+        assert_eq!(fs::read_to_string(path).unwrap(), "0123456789");
     }
 
     #[test]

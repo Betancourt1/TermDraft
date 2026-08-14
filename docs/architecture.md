@@ -22,7 +22,8 @@ App state ───────────────────────�
    │                                                        ▲
    ├── keyboard / paste / mouse event ──────────────────────┤
    ├── background fresh-scan workspace-text search ─────────┤
-   ├── private workspace agent read / active proposal ───────┤
+   ├── background bounded workspace agent read ────────────┤
+   ├── private active-document read / proposal ─────────────┤
    ├── 2 s active/inactive-file and workspace poll ─────────┤
    ├── 500 ms recovery flush ────────────────────────────────┤
    ├── SIGTERM / SIGHUP state drain ─────────────────────────┤
@@ -38,10 +39,12 @@ a temporary per-process log. Plain text input and paste contents are redacted fr
 There is no async runtime or general worker pool. Recursive workspace indexing and text search run
 on cancellable revisioned threads. An explicitly opened agent session has one private Unix-listener
 thread that validates bounded requests and forwards them to the application event loop; it never
-edits source itself. File reads/saves, mutations, session I/O, recovery operations, and diagnostics
-otherwise run synchronously. Startup only scans the workspace root before the first frame. This
-keeps ordering explicit and avoids blocking launch on a recursive walk, although another slow
-filesystem operation can still delay a frame. Python performs most I/O through Textual workers.
+edits source itself. A workspace-read request snapshots open buffers in the event loop, then scans
+and reads unopened files on one cancellable worker. File saves, mutations, session I/O, recovery
+operations, and diagnostics otherwise run synchronously. Startup only scans the workspace root
+before the first frame. This keeps ordering explicit and avoids blocking launch on a recursive
+walk, although another slow filesystem operation can still delay a frame. Python performs most I/O
+through Textual workers.
 
 ## Module map
 
@@ -179,11 +182,14 @@ live private descriptor, while the listener accepts only protocol-versioned, siz
 requests carrying its internal token. Multiple live sessions produce an ambiguity error instead of
 an inferred workspace choice.
 
-Workspace reads reuse `Workspace::scan_report`: supported documents are sorted by relative path,
-ignored directories and symlinks stay excluded, scan/read failures become warnings, open tabs use
-their exact live buffers, and unopened documents use stable disk reads. The serialized response is
-bounded by the bridge's 64 MiB response limit. Active-document reads return the authoritative live
-source plus its generation-and-digest revision.
+Workspace reads reuse the cancellable `Workspace::scan_report` traversal: supported documents are
+sorted by relative path, ignored directories and symlinks stay excluded, scan/read failures become
+warnings, open tabs use their exact request-time buffers even when their disk path is missing, and
+unopened documents use stable bounded disk reads. Collection runs outside the event loop, rejects
+any document above 16 MiB, and accounts for encoded JSON while building the response so the 64 MiB
+cap fails before an unbounded aggregate is retained. Revocation wakes the listener promptly and
+cancels the collector between traversal entries and bounded file reads. Active-document reads
+return the authoritative live source plus its generation-and-digest revision.
 
 A proposal supplies the active document's workspace-relative path, exact revision, and either a
 complete replacement or non-overlapping UTF-8 byte ranges. The application rejects stale,

@@ -30,7 +30,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::agent_bridge::{
     AgentAction, AgentCall, AgentResponse, AgentSession, AgentWorkspaceDocument,
-    MAX_AGENT_SOURCE_BYTES, ProposalChange, RangeEdit,
+    MAX_AGENT_RESPONSE_BYTES, MAX_AGENT_SOURCE_BYTES, ProposalChange, RangeEdit, json_size,
 };
 use crate::bindings::{Action as BindingAction, BindingScope};
 use crate::checkpoint::{
@@ -53,7 +53,9 @@ use crate::markdown::{
     render_markdown_with_source_lines,
 };
 use crate::path_filter::parse_path_filter;
-use crate::persistence::{LoadedFile, SaveError, load_file, normalize_line_endings, save_atomic};
+use crate::persistence::{
+    LoadedFile, SaveError, load_file, load_file_bounded, normalize_line_endings, save_atomic,
+};
 use time::{Duration as TimeDuration, OffsetDateTime};
 
 #[cfg(test)]
@@ -71,7 +73,8 @@ use crate::session::{DocumentViewState, MAX_SESSION_DOCUMENTS, SessionState, Ses
 use crate::theme::Theme;
 use crate::ui;
 use crate::workspace::{
-    Workspace, WorkspaceEntry, WorkspaceScan, has_editable_suffix, paths_are_spelling_aliases,
+    IGNORED_DIRECTORIES, Workspace, WorkspaceEntry, WorkspaceScan, has_editable_suffix,
+    paths_are_spelling_aliases,
 };
 use crate::workspace_entries::{
     copy_entry, create_file, create_folder, move_entry, move_to_trash, rename_entry,
@@ -232,6 +235,26 @@ pub struct AgentProposal {
     pub proposed_source: String,
     pub diff: Vec<HistoryDiffLine>,
     pub diff_truncated: bool,
+}
+
+#[derive(Clone, Debug)]
+struct AgentOpenDocument {
+    path: PathBuf,
+    relative: PathBuf,
+    source: String,
+    revision: String,
+    dirty: bool,
+    conflict: bool,
+}
+
+#[derive(serde::Serialize)]
+struct AgentWorkspaceDocumentRef<'a> {
+    path: &'a str,
+    source: &'a str,
+    revision: &'a str,
+    dirty: bool,
+    open: bool,
+    conflict: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2634,7 +2657,27 @@ impl App {
         }
         self.sync_active_document();
         if matches!(call.action, AgentAction::ReadWorkspace) {
-            call.respond(self.agent_workspace_response());
+            let workspace = self.workspace.clone();
+            let open_documents =
+                match self.agent_open_documents(MAX_AGENT_SOURCE_BYTES, MAX_AGENT_RESPONSE_BYTES) {
+                    Ok(documents) => documents,
+                    Err(response) => {
+                        call.respond(response);
+                        return;
+                    }
+                };
+            thread::spawn(move || {
+                let response = agent_workspace_response_with_limits(
+                    &workspace,
+                    open_documents,
+                    MAX_AGENT_SOURCE_BYTES,
+                    MAX_AGENT_RESPONSE_BYTES,
+                    || call.is_cancelled(),
+                );
+                if !call.is_cancelled() {
+                    call.respond(response);
+                }
+            });
             return;
         }
         let Some(index) = self.active_tab else {
@@ -2679,44 +2722,74 @@ impl App {
         }
     }
 
-    fn agent_workspace_response(&self) -> AgentResponse {
-        let scan = self.workspace.scan_report();
-        let mut warnings = scan.warnings;
-        let mut documents = Vec::new();
-        for entry in scan.entries.into_iter().filter(|entry| !entry.is_dir) {
-            if let Some(tab) = self.tabs.iter().find(|tab| tab.document.path == entry.path) {
-                let document = &tab.document;
-                documents.push(AgentWorkspaceDocument {
-                    path: entry.relative.display().to_string(),
-                    source: document.text.clone(),
-                    revision: revision_label(document.source_revision),
-                    dirty: document.is_dirty(),
-                    open: true,
-                    conflict: document.conflict || document.recovery_conflict,
-                });
+    fn agent_open_documents(
+        &self,
+        max_document_bytes: usize,
+        max_response_bytes: usize,
+    ) -> Result<Vec<AgentOpenDocument>, AgentResponse> {
+        let empty_response = AgentResponse::Workspace {
+            documents: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let mut encoded_size = json_size(&empty_response)
+            .map_err(|_| AgentResponse::error("cannot measure the agent workspace response"))?;
+        let response_limit = u64::try_from(max_response_bytes).unwrap_or(u64::MAX);
+        if encoded_size >= response_limit {
+            return Err(AgentResponse::error(
+                "agent workspace response exceeds the size limit",
+            ));
+        }
+        let mut candidates = Vec::new();
+        for (index, tab) in self.tabs.iter().enumerate() {
+            let Ok(relative) = tab.document.path.strip_prefix(&self.workspace.root) else {
+                continue;
+            };
+            let relative = relative.to_path_buf();
+            if !agent_workspace_path_is_allowed(&relative)
+                || !agent_open_path_is_shareable(&tab.document.path, &self.workspace.root)
+            {
                 continue;
             }
-            match load_file(&entry.path) {
-                Ok(loaded) => {
-                    let document = loaded.into_document();
-                    documents.push(AgentWorkspaceDocument {
-                        path: entry.relative.display().to_string(),
-                        source: document.text,
-                        revision: revision_label(document.source_revision),
-                        dirty: false,
-                        open: false,
-                        conflict: false,
-                    });
-                }
-                Err(error) => {
-                    warnings.push(format!("Cannot read {}: {error}", entry.relative.display()));
-                }
+            if tab.document.text.len() > max_document_bytes {
+                return Err(agent_document_limit_error(&relative));
             }
+            let path = relative.display().to_string();
+            let revision = revision_label(tab.document.source_revision);
+            let preflight = AgentWorkspaceDocumentRef {
+                path: &path,
+                source: &tab.document.text,
+                revision: &revision,
+                dirty: tab.document.is_dirty(),
+                open: true,
+                conflict: tab.document.conflict || tab.document.recovery_conflict,
+            };
+            let item_size = json_size(&preflight)
+                .map_err(|_| AgentResponse::error("cannot measure an agent workspace document"))?;
+            reserve_agent_workspace_item(
+                &mut encoded_size,
+                item_size,
+                candidates.len(),
+                response_limit,
+            )?;
+            candidates.push((
+                index,
+                AgentOpenDocument {
+                    path: tab.document.path.clone(),
+                    relative,
+                    source: String::new(),
+                    revision,
+                    dirty: tab.document.is_dirty(),
+                    conflict: tab.document.conflict || tab.document.recovery_conflict,
+                },
+            ));
         }
-        AgentResponse::Workspace {
-            documents,
-            warnings,
-        }
+        Ok(candidates
+            .into_iter()
+            .map(|(index, mut document)| {
+                document.source.clone_from(&self.tabs[index].document.text);
+                document
+            })
+            .collect())
     }
 
     fn receive_agent_proposal(
@@ -7410,6 +7483,226 @@ fn build_history_diff(checkpoint: &str, current: &str) -> (Vec<HistoryDiffLine>,
     (lines, truncated)
 }
 
+struct AgentWorkspaceCollector {
+    documents: Vec<AgentWorkspaceDocument>,
+    warnings: Vec<String>,
+    encoded_size: u64,
+    response_limit: u64,
+    document_limit: usize,
+}
+
+impl AgentWorkspaceCollector {
+    fn new(document_limit: usize, response_limit: usize) -> Result<Self, AgentResponse> {
+        let empty_response = AgentResponse::Workspace {
+            documents: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let encoded_size = json_size(&empty_response)
+            .map_err(|_| AgentResponse::error("cannot measure the agent workspace response"))?;
+        let response_limit = u64::try_from(response_limit).unwrap_or(u64::MAX);
+        if encoded_size >= response_limit {
+            return Err(AgentResponse::error(
+                "agent workspace response exceeds the size limit",
+            ));
+        }
+        Ok(Self {
+            documents: Vec::new(),
+            warnings: Vec::new(),
+            encoded_size,
+            response_limit,
+            document_limit,
+        })
+    }
+
+    fn add_warning(&mut self, warning: String) -> Result<(), AgentResponse> {
+        let item_size = json_size(&warning)
+            .map_err(|_| AgentResponse::error("cannot measure an agent workspace warning"))?;
+        self.reserve(item_size, self.warnings.len())?;
+        self.warnings.push(warning);
+        Ok(())
+    }
+
+    fn add_open_document(&mut self, open: AgentOpenDocument) -> Result<(), AgentResponse> {
+        if open.source.len() > self.document_limit {
+            return Err(agent_document_limit_error(&open.relative));
+        }
+        self.add_document(AgentWorkspaceDocument {
+            path: open.relative.display().to_string(),
+            source: open.source,
+            revision: open.revision,
+            dirty: open.dirty,
+            open: true,
+            conflict: open.conflict,
+        })
+    }
+
+    fn add_disk_document(&mut self, entry: &WorkspaceEntry) -> Result<(), AgentResponse> {
+        match fs::symlink_metadata(&entry.path) {
+            Ok(metadata)
+                if metadata.len() > u64::try_from(self.document_limit).unwrap_or(u64::MAX) =>
+            {
+                return Err(agent_document_limit_error(&entry.relative));
+            }
+            Ok(_) => {}
+            Err(error) => {
+                return self
+                    .add_warning(format!("Cannot read {}: {error}", entry.relative.display()));
+            }
+        }
+        match load_file_bounded(&entry.path, self.document_limit) {
+            Ok(loaded) => {
+                let document = loaded.into_document();
+                self.add_document(AgentWorkspaceDocument {
+                    path: entry.relative.display().to_string(),
+                    source: document.text,
+                    revision: revision_label(document.source_revision),
+                    dirty: false,
+                    open: false,
+                    conflict: false,
+                })
+            }
+            Err(error) if error.to_string().contains("read limit") => {
+                Err(agent_document_limit_error(&entry.relative))
+            }
+            Err(error) => {
+                self.add_warning(format!("Cannot read {}: {error}", entry.relative.display()))
+            }
+        }
+    }
+
+    fn add_document(&mut self, document: AgentWorkspaceDocument) -> Result<(), AgentResponse> {
+        let item_size = json_size(&document)
+            .map_err(|_| AgentResponse::error("cannot measure an agent workspace document"))?;
+        self.reserve(item_size, self.documents.len())?;
+        self.documents.push(document);
+        Ok(())
+    }
+
+    fn reserve(&mut self, item_size: u64, item_count: usize) -> Result<(), AgentResponse> {
+        reserve_agent_workspace_item(
+            &mut self.encoded_size,
+            item_size,
+            item_count,
+            self.response_limit,
+        )
+    }
+
+    fn finish(mut self) -> AgentResponse {
+        self.documents.sort_by(|left, right| {
+            left.path
+                .to_lowercase()
+                .cmp(&right.path.to_lowercase())
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        AgentResponse::Workspace {
+            documents: self.documents,
+            warnings: self.warnings,
+        }
+    }
+}
+
+fn agent_workspace_response_with_limits(
+    workspace: &Workspace,
+    open_documents: Vec<AgentOpenDocument>,
+    max_document_bytes: usize,
+    max_response_bytes: usize,
+    cancelled: impl Fn() -> bool,
+) -> AgentResponse {
+    let mut collector = match AgentWorkspaceCollector::new(max_document_bytes, max_response_bytes) {
+        Ok(collector) => collector,
+        Err(response) => return response,
+    };
+    let scan = workspace.scan_report_until(&cancelled);
+    if cancelled() {
+        return AgentResponse::error("agent workspace read was cancelled");
+    }
+    for warning in scan.warnings {
+        if let Err(response) = collector.add_warning(warning) {
+            return response;
+        }
+    }
+
+    let mut open_by_path = open_documents
+        .into_iter()
+        .map(|document| (document.path.clone(), document))
+        .collect::<HashMap<_, _>>();
+    for entry in scan.entries.into_iter().filter(|entry| !entry.is_dir) {
+        if cancelled() {
+            return AgentResponse::error("agent workspace read was cancelled");
+        }
+        let result = if let Some(open) = open_by_path.remove(&entry.path) {
+            collector.add_open_document(open)
+        } else {
+            collector.add_disk_document(&entry)
+        };
+        if let Err(response) = result {
+            return response;
+        }
+    }
+
+    let mut remaining_open = open_by_path.into_values().collect::<Vec<_>>();
+    remaining_open.sort_by(|left, right| {
+        left.relative
+            .to_string_lossy()
+            .to_lowercase()
+            .cmp(&right.relative.to_string_lossy().to_lowercase())
+    });
+    for open in remaining_open {
+        if cancelled() {
+            return AgentResponse::error("agent workspace read was cancelled");
+        }
+        if let Err(response) = collector.add_open_document(open) {
+            return response;
+        }
+    }
+    collector.finish()
+}
+
+fn reserve_agent_workspace_item(
+    encoded_size: &mut u64,
+    item_size: u64,
+    item_count: usize,
+    response_limit: u64,
+) -> Result<(), AgentResponse> {
+    let separator = u64::from(item_count > 0);
+    let next_size = encoded_size
+        .checked_add(separator)
+        .and_then(|size| size.checked_add(item_size))
+        .filter(|size| *size < response_limit)
+        .ok_or_else(|| AgentResponse::error("agent workspace response exceeds the size limit"))?;
+    *encoded_size = next_size;
+    Ok(())
+}
+
+fn agent_document_limit_error(path: &Path) -> AgentResponse {
+    AgentResponse::error(format!(
+        "agent workspace document {} exceeds the per-document size limit",
+        path.display()
+    ))
+}
+
+fn agent_workspace_path_is_allowed(relative: &Path) -> bool {
+    !relative.as_os_str().is_empty()
+        && has_editable_suffix(relative)
+        && relative.components().all(|component| match component {
+            std::path::Component::Normal(name) => name
+                .to_str()
+                .is_none_or(|name| !IGNORED_DIRECTORIES.contains(&name)),
+            _ => false,
+        })
+}
+
+fn agent_open_path_is_shareable(path: &Path, workspace_root: &Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => false,
+        Ok(_) => path
+            .canonicalize()
+            .is_ok_and(|resolved| resolved.starts_with(workspace_root)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+        Err(_) => false,
+    }
+}
+
 fn revision_label(revision: SourceRevision) -> String {
     let mut digest = String::with_capacity(revision.sha256.len() * 2);
     for byte in revision.sha256 {
@@ -12060,12 +12353,13 @@ command_manage_recovery = "Z"
     }
 
     #[test]
-    fn agent_workspace_uses_open_buffers_and_unopened_disk_documents() {
+    fn agent_workspace_keeps_missing_open_buffers_but_excludes_symlink_replacements() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         fs::create_dir_all(root.join("notes")).unwrap();
         fs::create_dir_all(root.join(".git")).unwrap();
         fs::write(root.join("active.md"), "saved\n").unwrap();
+        fs::write(root.join("linked.md"), "linked buffer\n").unwrap();
         fs::write(root.join("notes/context.txt"), "disk context\n").unwrap();
         fs::write(root.join(".git/hidden.md"), "hidden\n").unwrap();
         fs::write(root.join("unreadable.md"), [0xff, 0xfe]).unwrap();
@@ -12073,6 +12367,11 @@ command_manage_recovery = "Z"
         let mut app = App::new(workspace).unwrap();
         app.open_document(&root.join("active.md")).unwrap();
         app.active_tab_mut().unwrap().editor.insert_str("draft ");
+        app.sync_active_document();
+        app.open_document(&root.join("linked.md")).unwrap();
+        fs::remove_file(root.join("active.md")).unwrap();
+        fs::remove_file(root.join("linked.md")).unwrap();
+        std::os::unix::fs::symlink("notes/context.txt", root.join("linked.md")).unwrap();
         app.open_agent_sharing();
 
         let session = app.agent_session.as_ref().unwrap();
@@ -12120,8 +12419,114 @@ command_manage_recovery = "Z"
         assert!(
             documents
                 .iter()
-                .all(|document| !document.path.contains(".git"))
+                .all(|document| !document.path.contains(".git") && document.path != "linked.md")
         );
+    }
+
+    #[test]
+    fn agent_open_snapshot_preflights_each_source_before_cloning() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::write(root.join("large.md"), "0123456789").unwrap();
+        let workspace = Workspace::from_target(root).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.open_document(&root.join("large.md")).unwrap();
+
+        let error = app.agent_open_documents(8, 1_024).unwrap_err();
+
+        assert!(matches!(
+            error,
+            AgentResponse::Error { ref message }
+                if message.contains("large.md") && message.contains("per-document")
+        ));
+    }
+
+    #[test]
+    fn agent_open_snapshot_preflights_its_aggregate_before_cloning() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::write(root.join("first.md"), "first source").unwrap();
+        fs::write(root.join("second.md"), "second source").unwrap();
+        let workspace = Workspace::from_target(root).unwrap();
+        let mut app = App::new(workspace).unwrap();
+        app.open_document(&root.join("first.md")).unwrap();
+        app.open_document(&root.join("second.md")).unwrap();
+        let snapshots = app.agent_open_documents(1_024, usize::MAX).unwrap();
+        let first = &snapshots[0];
+        let first_document = AgentWorkspaceDocument {
+            path: first.relative.display().to_string(),
+            source: first.source.clone(),
+            revision: first.revision.clone(),
+            dirty: first.dirty,
+            open: true,
+            conflict: first.conflict,
+        };
+        let empty = AgentResponse::Workspace {
+            documents: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let one_document_limit =
+            json_size(&empty).unwrap() + json_size(&first_document).unwrap() + 1;
+
+        let error = app
+            .agent_open_documents(1_024, usize::try_from(one_document_limit).unwrap())
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            AgentResponse::Error { ref message } if message.contains("response exceeds")
+        ));
+    }
+
+    #[test]
+    fn agent_workspace_rejects_a_document_above_its_read_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::write(root.join("large.md"), "0123456789").unwrap();
+        let workspace = Workspace::from_target(root).unwrap();
+
+        let response =
+            agent_workspace_response_with_limits(&workspace, Vec::new(), 8, 1_024, || false);
+
+        assert!(matches!(
+            response,
+            AgentResponse::Error { ref message }
+                if message.contains("large.md") && message.contains("per-document")
+        ));
+    }
+
+    #[test]
+    fn agent_workspace_rejects_an_aggregate_response_above_its_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::write(root.join("first.md"), "first source").unwrap();
+        fs::write(root.join("second.md"), "second source").unwrap();
+        let workspace = Workspace::from_target(root).unwrap();
+        let complete =
+            agent_workspace_response_with_limits(&workspace, Vec::new(), 1_024, usize::MAX, || {
+                false
+            });
+        let AgentResponse::Workspace { documents, .. } = complete else {
+            panic!("expected an unbounded workspace response");
+        };
+        let empty = AgentResponse::Workspace {
+            documents: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let one_document_limit = json_size(&empty).unwrap() + json_size(&documents[0]).unwrap() + 1;
+
+        let response = agent_workspace_response_with_limits(
+            &workspace,
+            Vec::new(),
+            1_024,
+            usize::try_from(one_document_limit).unwrap(),
+            || false,
+        );
+
+        assert!(matches!(
+            response,
+            AgentResponse::Error { ref message } if message.contains("response exceeds")
+        ));
     }
 
     #[test]

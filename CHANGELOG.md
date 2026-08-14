@@ -19,6 +19,9 @@ supported releases.
 - Expanded Agent sharing from one fixed document to the current workspace while keeping proposals
   revision-bound to the active document and preserving explicit review, Recovery, Undo, and no-save
   behavior.
+- Build Agent workspace snapshots on a cancellable worker, cap each document at 16 MiB, and enforce
+  the 64 MiB encoded-response limit while collecting the snapshot rather than after accumulating
+  the complete workspace in memory.
 
 ### Fixed
 
@@ -26,6 +29,8 @@ supported releases.
   claiming that no sharing session is active.
 - Bind every Agent proposal to the workspace-relative document path returned by `read`, preventing
   an active-tab switch from retargeting a proposal when two documents have the same source revision.
+- Keep an open document's live buffer in Agent workspace results when its disk file is missing,
+  while continuing to exclude ignored directories, unsupported files, and outside paths.
 
 ## [0.9.1] - 2026-08-10
 
