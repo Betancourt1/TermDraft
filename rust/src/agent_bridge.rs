@@ -265,6 +265,9 @@ fn discover_connection_with(
             Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
                 permission_denied = true;
             }
+            Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
+                let _ = fs::remove_dir_all(entry.path());
+            }
             Err(_) => {}
         }
     }
@@ -796,5 +799,34 @@ mod tests {
 
         assert!(!socket.exists());
         assert!(!socket.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn discovery_prunes_dead_refused_session_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let session_dir = root.path().join(format!("{SESSION_PREFIX}dead"));
+        fs::create_dir(&session_dir).unwrap();
+        fs::set_permissions(&session_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let socket_path = session_dir.join(SOCKET_FILE);
+        let token = "a".repeat(64);
+        write_connection(
+            &session_dir,
+            &AgentConnection {
+                socket_path: socket_path.clone(),
+                token,
+            },
+        )
+        .unwrap();
+
+        // Create a dummy file for the socket path so read_private_connection sees a socket
+        // Actually, we can use UnixListener, bind, then drop listener so the socket file remains but connection is refused
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600)).unwrap();
+        drop(listener);
+
+        assert!(session_dir.exists());
+        let error = discover_connection_in(root.path()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(!session_dir.exists());
     }
 }

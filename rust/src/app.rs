@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::fs;
-use std::io::{self, stdout};
+use std::io::{self, IsTerminal as _, stdout};
 use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::{Command as ProcessCommand, Stdio};
@@ -24,7 +24,7 @@ use ratatui::crossterm::execute;
 use ratatui::layout::{Position, Rect};
 use ratatui::widgets::ListState;
 #[cfg(unix)]
-use signal_hook::consts::{SIGHUP, SIGTERM};
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 use tui_textarea::{CursorMove, TextArea};
 use unicode_width::UnicodeWidthStr;
 
@@ -8480,18 +8480,24 @@ fn run_with_options(
             let mut next_recovery_flush = Instant::now() + Duration::from_millis(500);
             while !app.should_quit {
                 if observe_shutdown_request(&mut app, &shutdown_requested) {
-                    continue;
+                    break;
                 }
                 app.schedule_preview_render();
                 app.start_due_preview_render();
                 if needs_draw {
                     if let Err(error) = terminal.draw(|frame| ui::draw(frame, &mut app)) {
+                        if is_terminal_disconnect_error(&error) {
+                            app.trace_runtime_error(&format!("terminal disconnected during draw: {error}"));
+                            break;
+                        }
                         app.trace_runtime_error(&format!("draw terminal: {error}"));
                         return Err(error.into());
                     }
                     needs_draw = false;
                 }
-                let received_event = match event::poll(app.preview_poll_timeout()) {
+                let poll_timeout = app.preview_poll_timeout();
+                let poll_start = Instant::now();
+                let received_event = match event::poll(poll_timeout) {
                     Ok(true) => match event::read() {
                         Ok(event) => {
                             app.trace_event(&event);
@@ -8518,13 +8524,32 @@ fn run_with_options(
                             app.should_quit = true;
                             false
                         }
+                        Err(error) if is_terminal_disconnect_error(&error) => {
+                            app.trace_runtime_error(&format!("terminal disconnected during read: {error}"));
+                            app.should_quit = true;
+                            false
+                        }
                         Err(error) => {
                             app.trace_runtime_error(&format!("read terminal event: {error}"));
                             return Err(error.into());
                         }
                     },
-                    Ok(false) => false,
+                    Ok(false) => {
+                        if poll_timeout >= Duration::from_millis(10)
+                            && poll_start.elapsed() < Duration::from_millis(1)
+                            && !io::stdin().is_terminal()
+                        {
+                            app.trace_runtime_error("terminal disconnected: stdin is no longer a terminal");
+                            app.should_quit = true;
+                        }
+                        false
+                    }
                     Err(_error) if shutdown_requested.load(Ordering::Relaxed) => {
+                        app.should_quit = true;
+                        false
+                    }
+                    Err(error) if is_terminal_disconnect_error(&error) => {
+                        app.trace_runtime_error(&format!("terminal disconnected during poll: {error}"));
                         app.should_quit = true;
                         false
                     }
@@ -8533,6 +8558,9 @@ fn run_with_options(
                         return Err(error.into());
                     }
                 };
+                if app.should_quit {
+                    break;
+                }
                 needs_draw |= received_event && !app.should_quit;
                 needs_draw |= app.poll_agent_requests();
                 needs_draw |= app.poll_preview_results();
@@ -8545,14 +8573,30 @@ fn run_with_options(
                     } else {
                         SetCursorStyle::SteadyBlock
                     };
-                    execute!(stdout(), shape)?;
+                    if let Err(error) = execute!(stdout(), shape) {
+                        if is_terminal_disconnect_error(&error) {
+                            app.trace_runtime_error(&format!("terminal disconnected during cursor mode update: {error}"));
+                            break;
+                        }
+                        return Err(error.into());
+                    }
                     rendered_mode = app.mode;
                 }
                 if rendered_theme != app.theme {
-                    set_terminal_cursor_color(&mut stdout(), app.theme)?;
+                    if let Err(error) = set_terminal_cursor_color(&mut stdout(), app.theme) {
+                        if is_terminal_disconnect_error(&error) {
+                            app.trace_runtime_error(&format!("terminal disconnected during cursor color update: {error}"));
+                            break;
+                        }
+                        return Err(error.into());
+                    }
                     rendered_theme = app.theme;
                 }
                 if Instant::now() >= next_disk_poll {
+                    if !io::stdin().is_terminal() {
+                        app.trace_runtime_error("terminal disconnected: stdin lost terminal status");
+                        break;
+                    }
                     needs_draw |= app.poll_external_state();
                     app.persist_session_if_changed();
                     next_disk_poll = Instant::now() + Duration::from_secs(2);
@@ -8565,12 +8609,26 @@ fn run_with_options(
             app.flush_state();
             Ok(())
         })();
-        if let Err(error) = terminal_extras.restore() {
-            app.trace_runtime_error(&format!("restore mouse and cursor state: {error}"));
-            return Err(error).context("restore mouse and cursor state");
-        }
+        terminal_extras.restore();
         result
     })
+}
+
+fn is_terminal_disconnect_error(error: &io::Error) -> bool {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::UnexpectedEof | io::ErrorKind::BrokenPipe | io::ErrorKind::NotConnected
+    ) {
+        return true;
+    }
+    #[cfg(unix)]
+    if let Some(raw) = error.raw_os_error() {
+        return raw == libc::EIO
+            || raw == libc::EPIPE
+            || raw == libc::EBADF
+            || raw == libc::ENOTTY;
+    }
+    false
 }
 
 fn observe_shutdown_request(app: &mut App, requested: &AtomicBool) -> bool {
@@ -8590,6 +8648,8 @@ fn install_shutdown_handlers() -> anyhow::Result<Arc<AtomicBool>> {
             .context("install SIGTERM shutdown handler")?;
         signal_hook::flag::register(SIGHUP, Arc::clone(&requested))
             .context("install SIGHUP shutdown handler")?;
+        signal_hook::flag::register(SIGINT, Arc::clone(&requested))
+            .context("install SIGINT shutdown handler")?;
     }
     Ok(requested)
 }
@@ -8615,18 +8675,17 @@ impl TerminalExtrasGuard {
         Ok(guard)
     }
 
-    fn restore(&mut self) -> io::Result<()> {
+    fn restore(&mut self) {
         if self.active {
-            execute!(
+            let _ = execute!(
                 stdout(),
                 DisableMouseCapture,
                 PopKeyboardEnhancementFlags,
                 SetCursorStyle::DefaultUserShape
-            )?;
-            reset_terminal_cursor_color(&mut stdout())?;
+            );
+            let _ = reset_terminal_cursor_color(&mut stdout());
             self.active = false;
         }
-        Ok(())
     }
 }
 
@@ -8690,6 +8749,52 @@ mod tests {
             output,
             b"\x1b]12;#174d46\x1b\\\x1b]12;#75342e\x1b\\\x1b]12;#164f63\x1b\\\x1b]112\x1b\\"
         );
+    }
+
+    #[test]
+    fn terminal_disconnect_errors_are_detected() {
+        assert!(is_terminal_disconnect_error(&io::Error::from(
+            io::ErrorKind::UnexpectedEof
+        )));
+        assert!(is_terminal_disconnect_error(&io::Error::from(
+            io::ErrorKind::BrokenPipe
+        )));
+        assert!(is_terminal_disconnect_error(&io::Error::from(
+            io::ErrorKind::NotConnected
+        )));
+        #[cfg(unix)]
+        {
+            assert!(is_terminal_disconnect_error(&io::Error::from_raw_os_error(
+                libc::EIO
+            )));
+            assert!(is_terminal_disconnect_error(&io::Error::from_raw_os_error(
+                libc::EPIPE
+            )));
+            assert!(is_terminal_disconnect_error(&io::Error::from_raw_os_error(
+                libc::EBADF
+            )));
+            assert!(is_terminal_disconnect_error(&io::Error::from_raw_os_error(
+                libc::ENOTTY
+            )));
+        }
+        assert!(!is_terminal_disconnect_error(&io::Error::from(
+            io::ErrorKind::PermissionDenied
+        )));
+        assert!(!is_terminal_disconnect_error(&io::Error::from(
+            io::ErrorKind::NotFound
+        )));
+    }
+
+    #[test]
+    fn shutdown_request_observes_signal_flag_and_requests_quit() {
+        let mut app = App::new(Workspace::from_target(Path::new(".")).unwrap()).unwrap();
+        let flag = AtomicBool::new(false);
+        assert!(!observe_shutdown_request(&mut app, &flag));
+        assert!(!app.should_quit);
+
+        flag.store(true, Ordering::Relaxed);
+        assert!(observe_shutdown_request(&mut app, &flag));
+        assert!(app.should_quit);
     }
 
     fn execute_palette_action(app: &mut App, action: CommandAction) {
