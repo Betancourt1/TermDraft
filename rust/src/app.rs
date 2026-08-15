@@ -8487,7 +8487,9 @@ fn run_with_options(
                 if needs_draw {
                     if let Err(error) = terminal.draw(|frame| ui::draw(frame, &mut app)) {
                         if is_terminal_disconnect_error(&error) {
-                            app.trace_runtime_error(&format!("terminal disconnected during draw: {error}"));
+                            app.trace_runtime_error(&format!(
+                                "terminal disconnected during draw: {error}"
+                            ));
                             break;
                         }
                         app.trace_runtime_error(&format!("draw terminal: {error}"));
@@ -8525,7 +8527,9 @@ fn run_with_options(
                             false
                         }
                         Err(error) if is_terminal_disconnect_error(&error) => {
-                            app.trace_runtime_error(&format!("terminal disconnected during read: {error}"));
+                            app.trace_runtime_error(&format!(
+                                "terminal disconnected during read: {error}"
+                            ));
                             app.should_quit = true;
                             false
                         }
@@ -8539,7 +8543,9 @@ fn run_with_options(
                             && poll_start.elapsed() < Duration::from_millis(1)
                             && !io::stdin().is_terminal()
                         {
-                            app.trace_runtime_error("terminal disconnected: stdin is no longer a terminal");
+                            app.trace_runtime_error(
+                                "terminal disconnected: stdin is no longer a terminal",
+                            );
                             app.should_quit = true;
                         }
                         false
@@ -8549,7 +8555,9 @@ fn run_with_options(
                         false
                     }
                     Err(error) if is_terminal_disconnect_error(&error) => {
-                        app.trace_runtime_error(&format!("terminal disconnected during poll: {error}"));
+                        app.trace_runtime_error(&format!(
+                            "terminal disconnected during poll: {error}"
+                        ));
                         app.should_quit = true;
                         false
                     }
@@ -8575,7 +8583,9 @@ fn run_with_options(
                     };
                     if let Err(error) = execute!(stdout(), shape) {
                         if is_terminal_disconnect_error(&error) {
-                            app.trace_runtime_error(&format!("terminal disconnected during cursor mode update: {error}"));
+                            app.trace_runtime_error(&format!(
+                                "terminal disconnected during cursor mode update: {error}"
+                            ));
                             break;
                         }
                         return Err(error.into());
@@ -8585,7 +8595,9 @@ fn run_with_options(
                 if rendered_theme != app.theme {
                     if let Err(error) = set_terminal_cursor_color(&mut stdout(), app.theme) {
                         if is_terminal_disconnect_error(&error) {
-                            app.trace_runtime_error(&format!("terminal disconnected during cursor color update: {error}"));
+                            app.trace_runtime_error(&format!(
+                                "terminal disconnected during cursor color update: {error}"
+                            ));
                             break;
                         }
                         return Err(error.into());
@@ -8594,7 +8606,9 @@ fn run_with_options(
                 }
                 if Instant::now() >= next_disk_poll {
                     if !io::stdin().is_terminal() {
-                        app.trace_runtime_error("terminal disconnected: stdin lost terminal status");
+                        app.trace_runtime_error(
+                            "terminal disconnected: stdin lost terminal status",
+                        );
                         break;
                     }
                     needs_draw |= app.poll_external_state();
@@ -8623,10 +8637,7 @@ fn is_terminal_disconnect_error(error: &io::Error) -> bool {
     }
     #[cfg(unix)]
     if let Some(raw) = error.raw_os_error() {
-        return raw == libc::EIO
-            || raw == libc::EPIPE
-            || raw == libc::EBADF
-            || raw == libc::ENOTTY;
+        return raw == libc::EIO || raw == libc::EPIPE || raw == libc::EBADF || raw == libc::ENOTTY;
     }
     false
 }
