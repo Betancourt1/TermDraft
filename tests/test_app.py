@@ -1397,7 +1397,7 @@ async def test_external_watcher_requires_consent_for_mixed_line_ending_reload(
     async with app.run_test(size=(100, 30)) as pilot:
         path.write_bytes(source)
         app._check_external_in_background()
-        await pilot.pause()
+        await _wait_until(pilot, lambda: isinstance(app.screen, MixedLineEndingsDialog))
 
         assert isinstance(app.screen, MixedLineEndingsDialog)
         assert app.document is not None
