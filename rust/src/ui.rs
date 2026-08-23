@@ -79,7 +79,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let Some(overlay) = &app.overlay {
         draw_overlay(frame, app, overlay, app_area);
     }
-    app.theme.apply(frame.buffer_mut());
+    app.theme.apply(
+        frame.buffer_mut(),
+        app.config.appearance.transparent_background,
+    );
 }
 
 fn draw_title(frame: &mut Frame, app: &App, area: Rect) {
@@ -3224,6 +3227,32 @@ mod tests {
             POPUP_BACKGROUND
         );
         assert_eq!(buffer[(popup_area.x, popup_area.y)].fg, POPUP_BORDER);
+    }
+
+    #[test]
+    fn transparent_background_uses_terminal_surfaces_and_keeps_popup_border() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::from_target(directory.path()).unwrap();
+        let mut config = Config::default();
+        config.appearance.transparent_background = true;
+        let mut app = App::with_config(workspace, config).unwrap();
+        app.theme = Theme::Paper;
+        app.overlay = Some(Overlay::Message("Done".to_owned()));
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let popup_area = popup(terminal.backend().buffer().area, 62, 7);
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(99, 12)].bg, Color::Reset);
+        assert_eq!(
+            buffer[(popup_area.x + 3, popup_area.y + 1)].bg,
+            Color::Reset
+        );
+        assert_eq!(
+            buffer[(popup_area.x, popup_area.y)].fg,
+            Color::Rgb(128, 149, 140)
+        );
     }
 
     #[test]

@@ -9038,6 +9038,9 @@ soft_wrap = false
 show_line_numbers = false
 view_mode = "split"
 
+[appearance]
+transparent_background = true
+
 [recovery]
 retention_days = 45
 
@@ -9051,6 +9054,7 @@ command_manage_recovery = "Z"
         assert!(!app.config.editor.soft_wrap);
         assert!(!app.config.editor.show_line_numbers);
         assert_eq!(app.config.editor.view_mode, StartupView::Split);
+        assert!(app.config.appearance.transparent_background);
         assert_eq!(app.config.recovery.retention_days, 45);
         assert_eq!(
             app.config

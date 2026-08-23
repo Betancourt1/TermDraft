@@ -3,18 +3,21 @@
 Notable changes to TermDraft are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use semantic versioning.
 
-TermDraft currently releases on the 0.x line, with no 1.0 roadmap at present. The former 1.x and
-2.0 tags were withdrawn on 2026-07-20; their notes remain below as development history rather than
-supported releases.
+TermDraft currently releases on the 0.x line, with no 1.0 roadmap at present. Versions 0.9.0 and
+0.9.1 were unpublished development milestones whose changes are included in 0.9.2. The former 1.x
+and 2.0 tags were withdrawn on 2026-07-20; their notes remain below as development history rather
+than supported releases.
 
 ## [Unreleased]
 
-## [0.9.2] - 2026-08-13
+## [0.9.2] - 2026-08-23
 
 ### Added
 
 - Added `termdraft-agent workspace` to read every supported document in the explicitly shared
   workspace, using exact unsaved buffers for open tabs and stable disk reads for unopened files.
+- Added an opt-in `appearance.transparent_background` setting that lets the terminal emulator's
+  background show through while retaining interaction-state fills.
 
 ### Changed
 
@@ -33,8 +36,11 @@ supported releases.
   an active-tab switch from retargeting a proposal when two documents have the same source revision.
 - Keep an open document's live buffer in Agent workspace results when its disk file is missing,
   while continuing to exclude ignored directories, unsupported files, and outside paths.
+- Exit cleanly when the terminal disconnects and remove refused stale Agent-session directories.
+- Preserve the current editor viewport while typing, undoing, or redoing until the cursor crosses a
+  visible boundary, then scroll only enough to reveal it.
 
-## [0.9.1] - 2026-08-10
+## 0.9.1 — unpublished development milestone (2026-08-10)
 
 ### Changed
 
@@ -49,7 +55,7 @@ supported releases.
 - Refuse automatic discovery when more than one live Agent sharing session exists instead of
   guessing which draft the agent should access.
 
-## [0.9.0] - 2026-08-09
+## 0.9.0 — unpublished development milestone (2026-08-09)
 
 ### Added
 
@@ -299,8 +305,6 @@ supported releases.
 
 [Unreleased]: https://github.com/Betancourt1/TermDraft/compare/v0.9.2...HEAD
 [0.9.2]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.9.2
-[0.9.1]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.9.1
-[0.9.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.9.0
 [0.8.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.8.0
 [0.7.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.7.0
 [0.6.0]: https://github.com/Betancourt1/TermDraft/releases/tag/v0.6.0

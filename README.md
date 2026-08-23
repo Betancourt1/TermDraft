@@ -217,11 +217,21 @@ soft_wrap = true
 show_line_numbers = true
 startup_mode = "command" # or "write"
 view_mode = "inline"     # or "split"
+
+[appearance]
+# Uses the terminal emulator's background color or configured transparency.
+transparent_background = false
 ```
 
 Configuration is strict. The generated template documents all 53 `[keybindings]` IDs; valid
 overrides apply to global, editor, preview, and COMMAND actions. Collisions, reserved keys, and
 unknown settings are rejected. Invalid live reloads leave the active configuration untouched.
+
+Set `transparent_background = true` to stop TermDraft from painting its ordinary background
+surfaces. Selection, cursor-line, divider, and focus colors remain visible. Actual translucency is
+controlled by the terminal emulator; TermDraft supplies a transparent terminal background rather
+than configuring terminal opacity itself. Press `R` after editing `config.toml` to apply the option
+without restarting.
 
 `theme.tcss` is created for compatibility but is not evaluated by the Rust frontend. Press `t` in
 COMMAND mode to cycle from the default Carbon theme through Paper, Linen, Mist, Midnight, and Void.

@@ -62,7 +62,7 @@ menu; the focused Files key layer is a second contextual menu.
 | Interaction modes | Explicit COMMAND and WRITE modes, block/bar cursors, `Esc` protection, Yazi-style movement |
 | Runtime tabs | Independent buffers and undo histories; open-file reuse; next, previous, and guarded close |
 | Command palette | Python's 32 actions plus four native actions, preserving six groups and effective shortcuts where bound |
-| Configurable commands | The 52 compatible binding IDs plus `command_change_theme`; generated template entries, strict parsing, collision checks, effective overrides, and `R` reload |
+| Configurable commands | The 52 compatible binding IDs plus `command_change_theme`; generated template entries, strict parsing, transparent-background appearance, collision checks, effective overrides, and `R` reload |
 | File finding | Fuzzy relative-path search, shared include/exclude filters, normalized matching, bounded ranking |
 | Workspace text search | Fresh workspace discovery; literal, fuzzy, whole-word, and regex modes; case toggle; path filter; dirty/open overrides; warnings; deterministic 100-result bound; cancellable revisioned background search |
 | Active-document search | Case-aware find, previous/next, single replace, Replace All, read-only search, and one-step undo for Replace All |
@@ -412,7 +412,7 @@ cargo test --locked --release
 
 Results at this checkpoint:
 
-- 272 Rust library tests and 7 Rust binary tests pass;
+- 280 Rust library tests and 7 Rust binary tests pass;
 - the current responsiveness gates and real-PTY journey are documented in
   [docs/responsiveness.md](docs/responsiveness.md);
 - strict Clippy and rustfmt pass;

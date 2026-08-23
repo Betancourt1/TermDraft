@@ -29,6 +29,10 @@ startup_mode = "command"
 # "inline" previews every line except the cursor line. Use "split" for two panes.
 view_mode = "inline"
 
+[appearance]
+# Let the terminal emulator provide the background color or transparency.
+transparent_background = false
+
 [recovery]
 # Used only when you explicitly choose age-based cleanup in Recovery Manager.
 retention_days = 30
@@ -103,6 +107,7 @@ pub const THEME_TEMPLATE: &str = r"/* TermDraft user theme overrides.
 pub struct Config {
     pub root: PathBuf,
     pub editor: EditorConfig,
+    pub appearance: AppearanceConfig,
     pub recovery: RecoveryConfig,
     pub theme: Theme,
     /// Entries explicitly loaded from `[keybindings]`.
@@ -116,6 +121,7 @@ impl Default for Config {
         Self {
             root: PathBuf::new(),
             editor: EditorConfig::default(),
+            appearance: AppearanceConfig::default(),
             recovery: RecoveryConfig::default(),
             theme: Theme::default(),
             keybinding_overrides: BTreeMap::new(),
@@ -220,6 +226,12 @@ pub enum StartupView {
     Split,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct AppearanceConfig {
+    pub transparent_background: bool,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct RecoveryConfig {
@@ -236,6 +248,7 @@ impl Default for RecoveryConfig {
 #[serde(default, deny_unknown_fields)]
 struct ConfigFile {
     editor: EditorConfig,
+    appearance: AppearanceConfig,
     recovery: RecoveryConfig,
     keybindings: BTreeMap<String, String>,
 }
@@ -326,6 +339,7 @@ pub fn load(root: PathBuf) -> Result<Config, ConfigError> {
     Ok(Config {
         root,
         editor: parsed.editor,
+        appearance: parsed.appearance,
         recovery: parsed.recovery,
         theme,
         keybinding_overrides: parsed.keybindings,
@@ -440,6 +454,8 @@ soft_wrap = false
 show_line_numbers = false
 startup_mode = "write"
 view_mode = "split"
+[appearance]
+transparent_background = true
 [recovery]
 retention_days = 45
 "#,
@@ -453,6 +469,7 @@ retention_days = 45
         assert!(!config.editor.show_line_numbers);
         assert_eq!(config.editor.startup_mode, StartupMode::Write);
         assert_eq!(config.editor.view_mode, StartupView::Split);
+        assert!(config.appearance.transparent_background);
         assert_eq!(config.recovery.retention_days, 45);
         assert_eq!(config.keybindings["save"], "ctrl+s");
         assert!(config.keybinding_overrides.is_empty());

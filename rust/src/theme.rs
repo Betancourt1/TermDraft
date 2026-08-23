@@ -89,14 +89,14 @@ impl Theme {
         }
     }
 
-    pub(crate) fn apply(self, buffer: &mut Buffer) {
+    pub(crate) fn apply(self, buffer: &mut Buffer, transparent_background: bool) {
         let palette = self.palette();
         let area = buffer.area;
         for row in area.top()..area.bottom() {
             for column in area.left()..area.right() {
                 let cell = &mut buffer[(column, row)];
                 cell.fg = palette.foreground(cell.fg);
-                cell.bg = palette.background_color(cell.bg);
+                cell.bg = palette.background_color(cell.bg, transparent_background);
             }
         }
     }
@@ -288,8 +288,19 @@ impl Palette {
         }
     }
 
-    const fn background_color(self, source: Color) -> Color {
-        if matches!(source, Color::Reset) {
+    const fn background_color(self, source: Color, transparent: bool) -> Color {
+        if transparent
+            && matches!(
+                source,
+                Color::Reset
+                    | Color::Black
+                    | Color::Rgb(6, 6, 6)
+                    | Color::Rgb(16, 16, 16)
+                    | Color::Rgb(28, 28, 28)
+            )
+        {
+            Color::Reset
+        } else if matches!(source, Color::Reset) {
             self.background
         } else {
             self.foreground(source)
@@ -363,7 +374,7 @@ mod tests {
         buffer[(1, 0)].set_fg(Color::Rgb(242, 242, 242));
         buffer[(1, 0)].set_bg(Color::Rgb(44, 44, 44));
 
-        Theme::Paper.apply(&mut buffer);
+        Theme::Paper.apply(&mut buffer, false);
 
         assert_eq!(buffer[(0, 0)].fg, rgb(48, 43, 39));
         assert_eq!(buffer[(0, 0)].bg, rgb(247, 243, 234));
@@ -379,7 +390,7 @@ mod tests {
         mist[(1, 0)].set_fg(Color::Black);
         mist[(1, 0)].set_bg(Color::Gray);
 
-        Theme::Mist.apply(&mut mist);
+        Theme::Mist.apply(&mut mist, false);
 
         assert_eq!(mist[(0, 0)].fg, rgb(40, 54, 60));
         assert_eq!(mist[(0, 0)].bg, rgb(244, 247, 248));
@@ -392,11 +403,38 @@ mod tests {
         void[(1, 0)].set_fg(Color::Black);
         void[(1, 0)].set_bg(Color::Gray);
 
-        Theme::Void.apply(&mut void);
+        Theme::Void.apply(&mut void, false);
 
         assert_eq!(void[(0, 0)].fg, rgb(220, 232, 229));
         assert_eq!(void[(0, 0)].bg, rgb(0, 0, 0));
         assert_eq!(void[(1, 0)].fg, rgb(0, 0, 0));
         assert_eq!(void[(1, 0)].bg, rgb(91, 244, 224));
+    }
+
+    #[test]
+    fn transparent_background_keeps_interaction_emphasis() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 7, 1));
+        for (column, background) in [
+            Color::Reset,
+            Color::Black,
+            Color::Rgb(6, 6, 6),
+            Color::Rgb(16, 16, 16),
+            Color::Rgb(28, 28, 28),
+            Color::Rgb(10, 10, 10),
+            Color::Rgb(44, 44, 44),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            buffer[(u16::try_from(column).unwrap(), 0)].set_bg(background);
+        }
+
+        Theme::Paper.apply(&mut buffer, true);
+
+        for column in 0..5 {
+            assert_eq!(buffer[(column, 0)].bg, Color::Reset);
+        }
+        assert_eq!(buffer[(5, 0)].bg, rgb(241, 236, 226));
+        assert_eq!(buffer[(6, 0)].bg, rgb(207, 222, 216));
     }
 }

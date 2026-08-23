@@ -41,8 +41,10 @@ out of scope.
 | Snapshot memory | The 64 MiB bridge cap was applied only after the complete response had been accumulated and encoded. | Preflight 16 MiB per document and 64 MiB aggregate limits, count encoded JSON while collecting, and fail the whole request without partial context. | Complete in `619d263` |
 | Missing and replaced paths | A missing open buffer was absent from the disk scan; an open path replaced by a symlink must not re-enter through the live-buffer override. | Include genuinely missing open buffers; exclude symlink, non-file, unreadable-metadata, ignored, unsupported, outside, and outside-resolving paths. | Complete in `619d263` |
 | Dependency tree | Locked direct dependencies are coherent; reported duplicates are transitive. `ignore` is locked at 0.4.29 while its current patch documentation is 0.4.31. | Avoid unrelated dependency churn in this safety release; schedule a separate patch review. | Deferred |
-| Plane history | The earlier 0.9 module still describes active-document-only scope and several implemented items remain Backlog. | Create a distinct 0.9.2 module with commit-backed issues; preserve the historical gate instead of silently changing it. | Required for candidate tracking |
-| Local configuration | A default-profile smoke check on this Mac stops because the existing `~/.termdraft/config.toml` contains an unsupported `[appearance]` section; the strict parser expects only current schema fields. | Do not rewrite user configuration implicitly. Track a separate decision about migration, removal, or continued strict rejection before claiming installed-app compatibility. | Open decision |
+| Plane history | The earlier 0.9 module describes active-document-only scope. | Keep the dedicated 0.9.2 module and reconcile it with the final release commit and publication evidence. | Final reconciliation pending |
+| Local configuration | The existing `~/.termdraft/config.toml` intentionally enables `appearance.transparent_background`. | Restore the complete transparent-surface implementation from `6ebfade` without rewriting the user configuration. | Complete in the final candidate |
+| Terminal lifecycle | A closed terminal could surface I/O errors and stale refused Agent sessions remained discoverable. | Exit cleanly on disconnect and prune refused stale session directories. | Complete in `d539ee1` |
+| Editor viewport | Rebuilding Inline presentation after edits reset the derived viewport. | Preserve the viewport while the cursor remains visible and move only to the nearest boundary when it leaves. | Complete in `e8db662` |
 
 The implementation follows the existing standard-library worker/channel model. Rust's
 [`recv_timeout`](https://doc.rust-lang.org/stable/std/sync/mpsc/struct.Receiver.html) supports a
@@ -63,7 +65,7 @@ the workspace exclusions authoritative while cancellation is checked between ent
 - Cover identical-document tab switches, missing versus symlink-replaced open paths, per-document
   and aggregate caps, bounded file reads, and pending-request revocation.
 
-### 2. Local release candidate — current stage
+### 2. Final release candidate — current stage
 
 - Set Cargo package metadata to 0.9.2 and date the changelog section.
 - Run formatting and strict Clippy.
@@ -73,21 +75,23 @@ the workspace exclusions authoritative while cancellation is checked between ent
   cleanly without changing the fixture.
 - Reconcile the commit-backed module, issues, and this roadmap in Plane.
 
-Observed local evidence on 2026-08-13:
+The final candidate source tree passed the following checks on 2026-08-23. Its resulting commit SHA
+must be recorded in the hosted CI, release, tap, and Plane evidence before publication:
 
 - strict formatting and all-target/all-feature Clippy pass at package version 0.9.2;
-- debug and optimized Rust suites each pass 272 library plus 7 binary tests;
+- debug and optimized Rust suites each pass 280 library plus 7 binary tests;
 - the Python compatibility oracle passes 681 tests with the expected 2 platform skips;
 - optimized `termdraft` and `termdraft-agent` both report 0.9.2, help/commands complete, and
   repository inspection reports 23 supported documents;
-- an isolated config/state real-PTY launch opened and rendered a UTF-8 fixture, exited cleanly, and
-  preserved its SHA-256 `4245937780a4db55b3bb990d51b5b0ec48e60bba9c36d421c589f5398c680cf5`;
+- an isolated-state real-PTY launch used the normal user configuration, rendered a disposable
+  Markdown fixture, exited cleanly, and preserved its SHA-256
+  `b2c20430742d4b49fc7e4804c297a79aae62b06a2c8b0aa0c05c312587467c69`;
 - all disposable PTY, configuration, and state directories were removed after verification.
 
-These checks establish a local candidate only. They do not resolve the separate existing
-`[appearance]` configuration decision or provide hosted/publication evidence.
+These checks establish local readiness for the transparency, terminal-lifecycle, and
+viewport-preservation lineage. They do not establish hosted CI, artifact, or publication state.
 
-### 3. Publication — pending separate authorization
+### 3. Publication — authorized, pending final audit and verification
 
 - Push the exact audited candidate and wait for hosted macOS and Linux CI on that commit.
 - Create a new `v0.9.2` tag only after hosted checks pass.

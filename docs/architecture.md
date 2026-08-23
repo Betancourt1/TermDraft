@@ -55,7 +55,7 @@ through Textual workers.
 | `agent_bridge.rs` | private Unix session, connection descriptor, authentication, and bounded request channel |
 | `app.rs` | modes, tabs, focus, overlays, events, polling, search worker, transitions, sessions, recovery UI |
 | `ui.rs` | responsive Ratatui layout, workbench regions, popup rendering, inline status |
-| `theme.rs` | six built-in palettes and final-frame semantic color mapping |
+| `theme.rs` | six built-in palettes, transparent surfaces, and final-frame semantic color mapping |
 | `bindings.rs` | 53-action contract, parsing, scopes, collision/reserved-key validation |
 | `config.rs` | strict compatible TOML, generated templates, paths, editor and recovery settings |
 | `editor.rs` | `tui-textarea-2` setup, cursor styling, and inline presentation |
@@ -345,7 +345,10 @@ remains startup-only.
 `theme.tcss` is created as a no-clobber compatibility template but is never parsed or watched.
 Rust instead provides Paper, Linen, and Mist light themes plus Midnight, Void, and Carbon dark
 themes. `t` cycles them and atomically stores the selected built-in theme in `theme-choice` beside
-`config.toml`, so the next launch restores it; `--safe-mode` remains behaviorally redundant.
+`config.toml`, so the next launch restores it. The optional
+`appearance.transparent_background = true` setting maps ordinary application and popup surfaces to
+the terminal's default background while retaining semantic cursor, selection, focus, and divider
+fills; `--safe-mode` remains behaviorally redundant.
 
 The command palette preserves Python's 32 actions and adds native Change theme, Create checkpoint,
 Open Local History, and Agent sharing actions, rendered as a searchable grouped two-column grid with
