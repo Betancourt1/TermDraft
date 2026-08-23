@@ -1397,7 +1397,14 @@ async def test_external_watcher_requires_consent_for_mixed_line_ending_reload(
     async with app.run_test(size=(100, 30)) as pilot:
         path.write_bytes(source)
         app._check_external_in_background()
-        await _wait_until(pilot, lambda: isinstance(app.screen, MixedLineEndingsDialog))
+        await _wait_until(
+            pilot,
+            lambda: (
+                isinstance(app.screen, MixedLineEndingsDialog)
+                and len(app.screen.query("#mixed-cancel")) == 1
+                and app.screen.query_one("#mixed-cancel", Button).region.width > 0
+            ),
+        )
 
         assert isinstance(app.screen, MixedLineEndingsDialog)
         assert app.document is not None
@@ -1405,6 +1412,7 @@ async def test_external_watcher_requires_consent_for_mixed_line_ending_reload(
         assert app.editor.read_only
 
         await pilot.click("#mixed-cancel")
+        await _wait_until(pilot, lambda: not isinstance(app.screen, MixedLineEndingsDialog))
         assert app.editor.read_only
         assert path.read_bytes() == source
 
