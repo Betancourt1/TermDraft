@@ -39,6 +39,8 @@ than supported releases.
 - Exit cleanly when the terminal disconnects and remove refused stale Agent-session directories.
 - Preserve the current editor viewport while typing, undoing, or redoing until the cursor crosses a
   visible boundary, then scroll only enough to reveal it.
+- Clear and fully repaint transparent terminal frames so scrolled text cannot remain visible behind
+  the current editor contents.
 
 ## 0.9.1 — unpublished development milestone (2026-08-10)
 

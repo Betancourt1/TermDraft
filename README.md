@@ -230,8 +230,9 @@ unknown settings are rejected. Invalid live reloads leave the active configurati
 Set `transparent_background = true` to stop TermDraft from painting its ordinary background
 surfaces. Selection, cursor-line, divider, and focus colors remain visible. Actual translucency is
 controlled by the terminal emulator; TermDraft supplies a transparent terminal background rather
-than configuring terminal opacity itself. Press `R` after editing `config.toml` to apply the option
-without restarting.
+than configuring terminal opacity itself. Transparent frames are fully repainted to prevent stale
+glyphs in terminal emulators that composite translucent surfaces. Press `R` after editing
+`config.toml` to apply the option without restarting.
 
 `theme.tcss` is created for compatibility but is not evaluated by the Rust frontend. Press `t` in
 COMMAND mode to cycle from the default Carbon theme through Paper, Linen, Mist, Midnight, and Void.

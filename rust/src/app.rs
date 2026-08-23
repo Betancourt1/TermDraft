@@ -20,7 +20,8 @@ use ratatui::crossterm::event::{
     KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
-use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{Clear as ClearTerminal, ClearType as TerminalClearType};
+use ratatui::crossterm::{execute, queue};
 use ratatui::layout::{Position, Rect};
 use ratatui::widgets::ListState;
 #[cfg(unix)]
@@ -8491,6 +8492,13 @@ fn run_with_options(
                 app.schedule_preview_render();
                 app.start_due_preview_render();
                 if needs_draw {
+                    if let Err(error) = queue_transparent_frame_clear(
+                        terminal.backend_mut(),
+                        app.config.appearance.transparent_background,
+                    ) {
+                        app.trace_runtime_error(&format!("prepare terminal redraw: {error}"));
+                        return Err(error.into());
+                    }
                     if let Err(error) = terminal.draw(|frame| ui::draw(frame, &mut app)) {
                         if is_terminal_disconnect_error(&error) {
                             app.trace_runtime_error(&format!(
@@ -8634,6 +8642,16 @@ fn run_with_options(
     })
 }
 
+fn queue_transparent_frame_clear(
+    output: &mut impl io::Write,
+    transparent_background: bool,
+) -> io::Result<()> {
+    if transparent_background {
+        queue!(output, ClearTerminal(TerminalClearType::All))?;
+    }
+    Ok(())
+}
+
 fn is_terminal_disconnect_error(error: &io::Error) -> bool {
     if matches!(
         error.kind(),
@@ -8766,6 +8784,17 @@ mod tests {
             output,
             b"\x1b]12;#174d46\x1b\\\x1b]12;#75342e\x1b\\\x1b]12;#164f63\x1b\\\x1b]112\x1b\\"
         );
+    }
+
+    #[test]
+    fn transparent_frames_queue_a_full_terminal_clear() {
+        let mut transparent = Vec::new();
+        queue_transparent_frame_clear(&mut transparent, true).unwrap();
+        assert_eq!(transparent, b"\x1b[2J");
+
+        let mut opaque = Vec::new();
+        queue_transparent_frame_clear(&mut opaque, false).unwrap();
+        assert!(opaque.is_empty());
     }
 
     #[test]
