@@ -19,7 +19,9 @@ use crate::app::{
 use crate::checkpoint::{Checkpoint, CheckpointReason};
 use crate::coordinate_diagnostic::CoordinateDiagnostic;
 use crate::document::LineEnding;
-use crate::editor::{editor_scroll_offset, restore_editor_scroll, style_cursor};
+use crate::editor::{
+    editor_scroll_offset, preserve_editor_scroll, restore_editor_scroll, style_cursor,
+};
 #[cfg(test)]
 use crate::markdown::render_markdown;
 use crate::markdown_help::MARKDOWN_SYNTAX_HELP;
@@ -320,9 +322,15 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
     let scroll_restore = tab
         .pending_scroll_restore
         .then_some((tab.editor_scroll_x, tab.editor_scroll_y));
+    let scroll_preservation = (tab.pending_edit_scroll_preservation && scroll_restore.is_none())
+        .then_some((tab.editor_scroll_x, tab.editor_scroll_y));
     frame.render_widget(&tab.editor, area);
     if let Some((scroll_x, scroll_y)) = scroll_restore {
         restore_editor_scroll(&mut tab.editor, area, scroll_x, scroll_y);
+        frame.render_widget(&tab.editor, area);
+    } else if let Some((scroll_x, scroll_y)) = scroll_preservation
+        && preserve_editor_scroll(&mut tab.editor, area, scroll_x, scroll_y)
+    {
         frame.render_widget(&tab.editor, area);
     }
     let cursor_position = if inline {
@@ -338,6 +346,10 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
         if let Some((scroll_x, scroll_y)) = scroll_restore {
             restore_editor_scroll(&mut tab.inline_editor, area, scroll_x, scroll_y);
             frame.render_widget(&tab.inline_editor, area);
+        } else if let Some((scroll_x, scroll_y)) = scroll_preservation
+            && preserve_editor_scroll(&mut tab.inline_editor, area, scroll_x, scroll_y)
+        {
+            frame.render_widget(&tab.inline_editor, area);
         }
         (tab.editor_scroll_x, tab.editor_scroll_y) = editor_scroll_offset(&tab.inline_editor, area);
         tab.inline_editor.rendered_cursor_position()
@@ -346,6 +358,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
         tab.editor.rendered_cursor_position()
     };
     tab.pending_scroll_restore = false;
+    tab.pending_edit_scroll_preservation = false;
     if show_cursor
         && mode == Mode::Write
         && let Some(position) = cursor_position

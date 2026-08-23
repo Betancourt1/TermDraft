@@ -110,6 +110,48 @@ pub fn restore_editor_scroll(editor: &mut TextArea<'_>, area: Rect, target_x: u1
     }
 }
 
+/// Preserve a previous viewport, moving it only enough to reveal the cursor.
+pub fn preserve_editor_scroll(
+    editor: &mut TextArea<'_>,
+    area: Rect,
+    target_x: u16,
+    target_y: u16,
+) -> bool {
+    if area.is_empty() {
+        return false;
+    }
+    let Some(cursor) = editor.rendered_cursor_position() else {
+        return false;
+    };
+    let (current_x, current_y) = editor_scroll_offset(editor, area);
+    let visual_x = u32::from(current_x) + u32::from(cursor.x.saturating_sub(area.x));
+    let visual_y = u32::from(current_y) + u32::from(cursor.y.saturating_sub(area.y));
+    let target_x = nearest_visible_scroll(target_x, visual_x, area.width);
+    let target_y = nearest_visible_scroll(target_y, visual_y, area.height);
+    let rows = scroll_delta(target_y, current_y);
+    let columns = scroll_delta(target_x, current_x);
+    if rows == 0 && columns == 0 {
+        return false;
+    }
+    let cursor = editor.cursor();
+    editor.scroll((rows, columns));
+    debug_assert_eq!(editor.cursor(), cursor);
+    true
+}
+
+fn nearest_visible_scroll(target: u16, cursor: u32, extent: u16) -> u16 {
+    let target = u32::from(target);
+    let end = target + u32::from(extent);
+    let nearest = if cursor < target {
+        cursor
+    } else if cursor >= end {
+        cursor.saturating_add(1).saturating_sub(u32::from(extent))
+    } else {
+        target
+    };
+    u16::try_from(nearest).unwrap_or(u16::MAX)
+}
+
 fn scroll_delta(target: u16, current: u16) -> i16 {
     if target >= current {
         i16::try_from(target - current).unwrap_or(i16::MAX)
@@ -957,6 +999,14 @@ mod tests {
 
         assert_eq!(restored.cursor(), saved_cursor);
         assert_eq!(editor_scroll_offset(&restored, area), saved_scroll);
+    }
+
+    #[test]
+    fn nearest_visible_scroll_moves_only_at_viewport_boundaries() {
+        assert_eq!(nearest_visible_scroll(10, 9, 5), 9);
+        assert_eq!(nearest_visible_scroll(10, 10, 5), 10);
+        assert_eq!(nearest_visible_scroll(10, 14, 5), 10);
+        assert_eq!(nearest_visible_scroll(10, 15, 5), 11);
     }
 
     #[test]

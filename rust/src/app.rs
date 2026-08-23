@@ -897,6 +897,7 @@ pub struct EditorTab {
     pub(crate) preview_scroll_x: u16,
     pub(crate) preview_scroll_y: u16,
     pub(crate) pending_scroll_restore: bool,
+    pub(crate) pending_edit_scroll_preservation: bool,
     inline_source_lines: Vec<String>,
     inline_cursor: (usize, usize),
     pending_mixed_open: bool,
@@ -926,6 +927,7 @@ impl EditorTab {
             preview_scroll_x: 0,
             preview_scroll_y: 0,
             pending_scroll_restore: false,
+            pending_edit_scroll_preservation: false,
             pending_mixed_open: false,
             undo_groups: Vec::new(),
             redo_groups: Vec::new(),
@@ -970,6 +972,7 @@ impl EditorTab {
             preview_scroll_x: 0,
             preview_scroll_y: 0,
             pending_scroll_restore: false,
+            pending_edit_scroll_preservation: false,
             pending_mixed_open: false,
             undo_groups: Vec::new(),
             redo_groups: Vec::new(),
@@ -1085,6 +1088,7 @@ impl EditorTab {
         }
         self.undo_groups.push(history_items);
         self.redo_groups.clear();
+        self.pending_edit_scroll_preservation = true;
     }
 
     fn cut_selection(&mut self) -> bool {
@@ -1108,6 +1112,7 @@ impl EditorTab {
         if applied > 0 {
             self.redo_groups.push(applied);
             self.sync_document();
+            self.pending_edit_scroll_preservation = true;
         }
     }
 
@@ -1123,6 +1128,7 @@ impl EditorTab {
         if applied > 0 {
             self.undo_groups.push(applied);
             self.sync_document();
+            self.pending_edit_scroll_preservation = true;
         }
     }
 
@@ -10463,6 +10469,124 @@ command_manage_recovery = "Z"
 
         terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
         assert_eq!(terminal.backend().buffer(), &after_scroll_up);
+    }
+
+    #[test]
+    fn hybrid_typing_preserves_the_viewport_until_the_cursor_leaves_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        let source = (0..40)
+            .map(|line| format!("# Line {line:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, source).unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut config = Config::default();
+        config.editor.startup_mode = StartupMode::Write;
+        let mut app = App::with_config(workspace, config).unwrap();
+        app.active_tab_mut()
+            .unwrap()
+            .editor
+            .move_cursor(CursorMove::Jump(20, 0));
+        let mut terminal = Terminal::new(TestBackend::new(100, 16)).unwrap();
+
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        app.active_tab_mut().unwrap().inline_editor.scroll((3, 0));
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let cursor_before_typing = app
+            .active_tab()
+            .unwrap()
+            .inline_editor
+            .rendered_cursor_position()
+            .unwrap();
+        let scroll_before_typing = app.active_tab().unwrap().editor_scroll_y;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+
+        assert_eq!(
+            app.active_tab()
+                .unwrap()
+                .inline_editor
+                .rendered_cursor_position()
+                .unwrap()
+                .y,
+            cursor_before_typing.y
+        );
+        assert_eq!(
+            app.active_tab().unwrap().editor_scroll_y,
+            scroll_before_typing
+        );
+
+        for _ in 0..10 {
+            app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        }
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+
+        let tab = app.active_tab().unwrap();
+        let editor_area = ui::editor_area(app.ui_regions.editor.unwrap());
+        let expected_scroll = u16::try_from(tab.editor.cursor().0 + 1)
+            .unwrap()
+            .saturating_sub(editor_area.height);
+        assert_eq!(tab.editor_scroll_y, expected_scroll);
+        assert_eq!(
+            tab.inline_editor.rendered_cursor_position().unwrap().y,
+            editor_area.bottom().saturating_sub(1)
+        );
+    }
+
+    #[test]
+    fn hybrid_backspace_scrolls_only_to_the_nearest_visible_row() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        let source = (0..40)
+            .map(|line| format!("Line {line:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, source).unwrap();
+        let workspace = Workspace::from_target(&path).unwrap();
+        let mut config = Config::default();
+        config.editor.startup_mode = StartupMode::Write;
+        let mut app = App::with_config(workspace, config).unwrap();
+        app.active_tab_mut()
+            .unwrap()
+            .editor
+            .move_cursor(CursorMove::Jump(20, 0));
+        let mut terminal = Terminal::new(TestBackend::new(100, 16)).unwrap();
+
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        app.active_tab_mut().unwrap().inline_editor.scroll((3, 0));
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let scroll_before_edit = app.active_tab().unwrap().editor_scroll_y;
+        app.active_tab_mut()
+            .unwrap()
+            .editor
+            .move_cursor(CursorMove::Jump(scroll_before_edit, 0));
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let editor_area = ui::editor_area(app.ui_regions.editor.unwrap());
+        assert_eq!(
+            app.active_tab().unwrap().editor_scroll_y,
+            scroll_before_edit
+        );
+        assert_eq!(
+            app.active_tab()
+                .unwrap()
+                .inline_editor
+                .rendered_cursor_position()
+                .unwrap()
+                .y,
+            editor_area.y
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+
+        let tab = app.active_tab().unwrap();
+        assert_eq!(tab.editor_scroll_y, scroll_before_edit.saturating_sub(1));
+        assert_eq!(
+            tab.inline_editor.rendered_cursor_position().unwrap().y,
+            editor_area.y
+        );
     }
 
     #[test]
