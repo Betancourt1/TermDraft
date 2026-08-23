@@ -330,10 +330,12 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
     frame.render_widget(&tab.editor, area);
     if let Some((scroll_x, scroll_y)) = scroll_restore {
         restore_editor_scroll(&mut tab.editor, area, scroll_x, scroll_y);
+        frame.render_widget(Clear, area);
         frame.render_widget(&tab.editor, area);
     } else if let Some((scroll_x, scroll_y)) = scroll_preservation
         && preserve_editor_scroll(&mut tab.editor, area, scroll_x, scroll_y)
     {
+        frame.render_widget(Clear, area);
         frame.render_widget(&tab.editor, area);
     }
     let cursor_position = if inline {
@@ -348,10 +350,12 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect, inline: bool) {
         frame.render_widget(&tab.inline_editor, area);
         if let Some((scroll_x, scroll_y)) = scroll_restore {
             restore_editor_scroll(&mut tab.inline_editor, area, scroll_x, scroll_y);
+            frame.render_widget(Clear, area);
             frame.render_widget(&tab.inline_editor, area);
         } else if let Some((scroll_x, scroll_y)) = scroll_preservation
             && preserve_editor_scroll(&mut tab.inline_editor, area, scroll_x, scroll_y)
         {
+            frame.render_widget(Clear, area);
             frame.render_widget(&tab.inline_editor, area);
         }
         (tab.editor_scroll_x, tab.editor_scroll_y) = editor_scroll_offset(&tab.inline_editor, area);

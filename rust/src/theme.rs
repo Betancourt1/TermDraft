@@ -1,6 +1,6 @@
 //! Built-in terminal themes applied to the completed Ratatui frame.
 
-use ratatui::buffer::{Buffer, CellDiffOption};
+use ratatui::buffer::Buffer;
 use ratatui::style::Color;
 
 /// The six built-in visual themes available from COMMAND mode.
@@ -89,10 +89,6 @@ impl Theme {
         }
     }
 
-    #[allow(
-        deprecated,
-        reason = "preserve legacy wide-cell skip markers while forcing redraws"
-    )]
     pub(crate) fn apply(self, buffer: &mut Buffer, transparent_background: bool) {
         let palette = self.palette();
         let area = buffer.area;
@@ -101,12 +97,6 @@ impl Theme {
                 let cell = &mut buffer[(column, row)];
                 cell.fg = palette.foreground(cell.fg);
                 cell.bg = palette.background_color(cell.bg, transparent_background);
-                if transparent_background
-                    && !cell.skip
-                    && matches!(cell.diff_option, CellDiffOption::None)
-                {
-                    cell.set_diff_option(CellDiffOption::AlwaysUpdate);
-                }
             }
         }
     }
@@ -443,12 +433,6 @@ mod tests {
 
         for column in 0..5 {
             assert_eq!(buffer[(column, 0)].bg, Color::Reset);
-        }
-        for column in 0..7 {
-            assert_eq!(
-                buffer[(column, 0)].diff_option,
-                CellDiffOption::AlwaysUpdate
-            );
         }
         assert_eq!(buffer[(5, 0)].bg, rgb(241, 236, 226));
         assert_eq!(buffer[(6, 0)].bg, rgb(207, 222, 216));

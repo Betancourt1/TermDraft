@@ -348,9 +348,9 @@ themes. `t` cycles them and atomically stores the selected built-in theme in `th
 `config.toml`, so the next launch restores it. The optional
 `appearance.transparent_background = true` setting maps ordinary application and popup surfaces to
 the terminal's default background while retaining semantic cursor, selection, focus, and divider
-fills. Transparent frames queue a terminal clear and mark their cells for a complete repaint so the
-terminal compositor cannot retain glyphs from a prior viewport; opaque frames keep Ratatui's
-incremental diff path. `--safe-mode` remains behaviorally redundant.
+fills. When viewport preservation adjusts an editor after its initial layout, the editor rectangle
+is cleared before the corrected second render so vacated cells cannot retain text from the first
+layout. `--safe-mode` remains behaviorally redundant.
 
 The command palette preserves Python's 32 actions and adds native Change theme, Create checkpoint,
 Open Local History, and Agent sharing actions, rendered as a searchable grouped two-column grid with
