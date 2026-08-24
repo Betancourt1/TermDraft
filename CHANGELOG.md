@@ -37,8 +37,8 @@ than supported releases.
 - Keep an open document's live buffer in Agent workspace results when its disk file is missing,
   while continuing to exclude ignored directories, unsupported files, and outside paths.
 - Exit cleanly when the terminal disconnects and remove refused stale Agent-session directories.
-- Preserve the current editor viewport while typing, undoing, or redoing until the cursor crosses a
-  visible boundary, then scroll only enough to reveal it.
+- Keep the caret on its previous screen row across typing, multiline paste, cut, undo, and redo;
+  when no visible row can be preserved, scroll only enough to reveal it at the nearest boundary.
 - Clear the editor surface before a viewport-adjusted second render so prior text cannot remain in
   vacated cells or duplicate across rows.
 

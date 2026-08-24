@@ -887,6 +887,12 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
 ];
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct EditScrollPreservation {
+    pub(crate) editor_cursor_y: Option<u16>,
+    pub(crate) inline_cursor_y: Option<u16>,
+}
+
 pub struct EditorTab {
     pub document: Document,
     pub editor: TextArea<'static>,
@@ -897,7 +903,7 @@ pub struct EditorTab {
     pub(crate) preview_scroll_x: u16,
     pub(crate) preview_scroll_y: u16,
     pub(crate) pending_scroll_restore: bool,
-    pub(crate) pending_edit_scroll_preservation: bool,
+    pub(crate) pending_edit_scroll_preservation: Option<EditScrollPreservation>,
     inline_source_lines: Vec<String>,
     inline_cursor: (usize, usize),
     pending_mixed_open: bool,
@@ -927,7 +933,7 @@ impl EditorTab {
             preview_scroll_x: 0,
             preview_scroll_y: 0,
             pending_scroll_restore: false,
-            pending_edit_scroll_preservation: false,
+            pending_edit_scroll_preservation: None,
             pending_mixed_open: false,
             undo_groups: Vec::new(),
             redo_groups: Vec::new(),
@@ -972,7 +978,7 @@ impl EditorTab {
             preview_scroll_x: 0,
             preview_scroll_y: 0,
             pending_scroll_restore: false,
-            pending_edit_scroll_preservation: false,
+            pending_edit_scroll_preservation: None,
             pending_mixed_open: false,
             undo_groups: Vec::new(),
             redo_groups: Vec::new(),
@@ -1088,7 +1094,20 @@ impl EditorTab {
         }
         self.undo_groups.push(history_items);
         self.redo_groups.clear();
-        self.pending_edit_scroll_preservation = true;
+        self.preserve_edit_scroll();
+    }
+
+    fn preserve_edit_scroll(&mut self) {
+        self.pending_edit_scroll_preservation = Some(EditScrollPreservation {
+            editor_cursor_y: self
+                .editor
+                .rendered_cursor_position()
+                .map(|position| position.y),
+            inline_cursor_y: self
+                .inline_editor
+                .rendered_cursor_position()
+                .map(|position| position.y),
+        });
     }
 
     fn cut_selection(&mut self) -> bool {
@@ -1112,7 +1131,7 @@ impl EditorTab {
         if applied > 0 {
             self.redo_groups.push(applied);
             self.sync_document();
-            self.pending_edit_scroll_preservation = true;
+            self.preserve_edit_scroll();
         }
     }
 
@@ -1128,7 +1147,7 @@ impl EditorTab {
         if applied > 0 {
             self.undo_groups.push(applied);
             self.sync_document();
-            self.pending_edit_scroll_preservation = true;
+            self.preserve_edit_scroll();
         }
     }
 
@@ -10476,7 +10495,7 @@ command_manage_recovery = "Z"
     }
 
     #[test]
-    fn hybrid_typing_preserves_the_viewport_until_the_cursor_leaves_it() {
+    fn hybrid_edits_preserve_the_cursor_screen_row() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("note.md");
         let source = (0..40)
@@ -10539,15 +10558,75 @@ command_manage_recovery = "Z"
         terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
 
         let tab = app.active_tab().unwrap();
-        let editor_area = ui::editor_area(app.ui_regions.editor.unwrap());
-        let expected_scroll = u16::try_from(tab.editor.cursor().0 + 1)
-            .unwrap()
-            .saturating_sub(editor_area.height);
-        assert_eq!(tab.editor_scroll_y, expected_scroll);
+        assert_eq!(tab.editor_scroll_y, scroll_before_typing.saturating_add(10));
         assert_eq!(
             tab.inline_editor.rendered_cursor_position().unwrap().y,
-            editor_area.bottom().saturating_sub(1)
+            cursor_before_typing.y
         );
+    }
+
+    #[test]
+    fn multiline_paste_preserves_the_cursor_screen_row_in_both_editor_views() {
+        for view in [StartupView::Inline, StartupView::Split] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("note.md");
+            let source = (0..40)
+                .map(|line| format!("Line {line:02}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            fs::write(&path, source).unwrap();
+            let workspace = Workspace::from_target(&path).unwrap();
+            let mut config = Config::default();
+            config.editor.startup_mode = StartupMode::Write;
+            config.editor.view_mode = view;
+            let mut app = App::with_config(workspace, config).unwrap();
+            app.active_tab_mut()
+                .unwrap()
+                .editor
+                .move_cursor(CursorMove::Jump(20, 0));
+            let width = if view == StartupView::Inline {
+                100
+            } else {
+                140
+            };
+            let mut terminal = Terminal::new(TestBackend::new(width, 16)).unwrap();
+
+            terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+            let tab = app.active_tab_mut().unwrap();
+            if view == StartupView::Inline {
+                tab.inline_editor.scroll((3, 0));
+            } else {
+                tab.editor.scroll((3, 0));
+            }
+            terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+            let cursor_before_paste = if view == StartupView::Inline {
+                app.active_tab()
+                    .unwrap()
+                    .inline_editor
+                    .rendered_cursor_position()
+            } else {
+                app.active_tab().unwrap().editor.rendered_cursor_position()
+            }
+            .unwrap();
+
+            app.paste_into_document("first\nsecond\nthird\nfourth\nfifth\nsixth");
+            terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+
+            let tab = app.active_tab().unwrap();
+            let cursor_after_paste = if view == StartupView::Inline {
+                tab.inline_editor.rendered_cursor_position()
+            } else {
+                tab.editor.rendered_cursor_position()
+            }
+            .unwrap();
+            assert_eq!(cursor_after_paste.y, cursor_before_paste.y, "{view:?}");
+            assert_eq!(tab.editor.cursor(), (25, 5));
+            assert!(
+                tab.document
+                    .text
+                    .contains("first\nsecond\nthird\nfourth\nfifth\nsixthLine 20")
+            );
+        }
     }
 
     #[test]

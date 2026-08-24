@@ -110,12 +110,13 @@ pub fn restore_editor_scroll(editor: &mut TextArea<'_>, area: Rect, target_x: u1
     }
 }
 
-/// Preserve a previous viewport, moving it only enough to reveal the cursor.
+/// Preserve the cursor's visible screen row, or reveal it from the nearest viewport boundary.
 pub fn preserve_editor_scroll(
     editor: &mut TextArea<'_>,
     area: Rect,
     target_x: u16,
     target_y: u16,
+    cursor_screen_y: Option<u16>,
 ) -> bool {
     if area.is_empty() {
         return false;
@@ -127,7 +128,15 @@ pub fn preserve_editor_scroll(
     let visual_x = u32::from(current_x) + u32::from(cursor.x.saturating_sub(area.x));
     let visual_y = u32::from(current_y) + u32::from(cursor.y.saturating_sub(area.y));
     let target_x = nearest_visible_scroll(target_x, visual_x, area.width);
-    let target_y = nearest_visible_scroll(target_y, visual_y, area.height);
+    let target_y = cursor_screen_y
+        .filter(|screen_y| area.y <= *screen_y && *screen_y < area.bottom())
+        .map_or_else(
+            || nearest_visible_scroll(target_y, visual_y, area.height),
+            |screen_y| {
+                u16::try_from(visual_y.saturating_sub(u32::from(screen_y - area.y)))
+                    .unwrap_or(u16::MAX)
+            },
+        );
     let rows = scroll_delta(target_y, current_y);
     let columns = scroll_delta(target_x, current_x);
     if rows == 0 && columns == 0 {

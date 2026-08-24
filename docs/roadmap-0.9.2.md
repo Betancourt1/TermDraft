@@ -44,7 +44,7 @@ out of scope.
 | Plane history | The earlier 0.9 module describes active-document-only scope. | Keep the dedicated 0.9.2 module and reconcile it with the final release commit and publication evidence. | Final reconciliation pending |
 | Local configuration | The existing `~/.termdraft/config.toml` intentionally enables `appearance.transparent_background`. | Restore the complete transparent-surface implementation from `6ebfade` without rewriting the user configuration. | Complete in the final candidate |
 | Terminal lifecycle | A closed terminal could surface I/O errors and stale refused Agent sessions remained discoverable. | Exit cleanly on disconnect and prune refused stale session directories. | Complete in `d539ee1` |
-| Editor viewport | Rebuilding Inline presentation after edits reset the derived viewport. | Preserve the viewport while the cursor remains visible and move only to the nearest boundary when it leaves. | Complete in `e8db662` |
+| Editor viewport | Rebuilding Inline presentation after edits reset the derived viewport, while multiline paste moved the caret to the bottom boundary. | Preserve the caret's prior screen row for every edit and use the nearest boundary only when no visible row is available. | Complete in `e8db662` plus the final cursor-row correction |
 
 The implementation follows the existing standard-library worker/channel model. Rust's
 [`recv_timeout`](https://doc.rust-lang.org/stable/std/sync/mpsc/struct.Receiver.html) supports a

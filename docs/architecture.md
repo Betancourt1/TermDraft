@@ -151,6 +151,11 @@ selection. The pure continuation service either continues a supported marker, en
 or requests an ordinary newline; the grouped editor history keeps that operation undoable as one
 action.
 
+Every document edit retains the last rendered caret row for both the source and Inline editors. The
+next draw scrolls the edited caret back to that row; if no visible row was available, it falls back
+to the nearest viewport boundary. Typing, multiline paste, cut, undo, redo, replacement, and
+Markdown continuation share this behavior.
+
 ## Source revisions and split preview
 
 Every open Rust document carries a `SourceRevision`: a monotonic in-memory generation plus the
