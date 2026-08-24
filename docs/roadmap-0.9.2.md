@@ -79,7 +79,7 @@ The final candidate source tree passed the following checks on 2026-08-23. Its r
 must be recorded in the hosted CI, release, tap, and Plane evidence before publication:
 
 - strict formatting and all-target/all-feature Clippy pass at package version 0.9.2;
-- debug and optimized Rust suites each pass 280 library plus 7 binary tests;
+- debug and optimized Rust suites each pass 281 library plus 7 binary tests;
 - the Python compatibility oracle passes 681 tests with the expected 2 platform skips;
 - optimized `termdraft` and `termdraft-agent` both report 0.9.2, help/commands complete, and
   repository inspection reports 23 supported documents;
